@@ -1,0 +1,30 @@
+version: '3.8'
+
+# Use this when PostgreSQL runs natively on the host and only Redis
+# needs to be containerized alongside the bot.
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: tarjimon8_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  bot:
+    build: .
+    container_name: tarjimon8_bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    depends_on:
+      - redis
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # Host PostgreSQL is reachable at 5432 on the host machine.
+    # Set POSTGRES_HOST=host.docker.internal in .env.
+
+volumes:
+  redis_data:
