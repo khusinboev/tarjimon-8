@@ -1,19 +1,29 @@
+# Versiyalar birgalikda hal qilingan (pip resolver) va sinovdan o'tgan.
+# Yangilashda `pip install -U` dan keyin botni ishga tushirib tekshiring.
+
 # Telegram Bot
-aiogram==3.4.1
-aiohttp==3.9.3
+aiogram==3.30.0
+aiohttp==3.10.11
 
 # Database
-SQLAlchemy==2.0.25
-asyncpg==0.29.0
-alembic==1.13.1
+SQLAlchemy==2.0.36
+asyncpg==0.30.0
+alembic==1.14.0
+# Alembic va migratsiya skriptlari uchun sync drayver
+psycopg2-binary==2.9.10
 
-# Redis
-redis==5.0.1
+# Redis — kesh, rate-limit, FSM
+redis==5.2.1
 
-# Configuration
-python-dotenv==1.0.0
-pydantic==2.5.3
-pydantic-settings==2.1.0
+# Konfiguratsiya
+python-dotenv==1.2.2
+pydantic==2.13.4
+pydantic-settings==2.14.2
 
-# Utilities
-loguru==0.7.2
+# Tarjima
+deep-translator==1.11.4
+# Til aniqlash: lokal, tarmoqsiz. `translations.source_lang_detected` uchun.
+py3langid==0.3.0
+
+# Ovoz (TTS)
+edge-tts==7.2.8

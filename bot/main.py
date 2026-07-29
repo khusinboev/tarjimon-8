@@ -1,65 +1,108 @@
+from __future__ import annotations
+
 import asyncio
 import logging
+import sys
+
 from aiogram import Bot, Dispatcher
-from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramNetworkError
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.fsm.storage.redis import RedisStorage
 
 from bot.config.settings import settings
+from bot.database.redis import get_redis
 from bot.database.session import init_db
-from bot.handlers.user import start, common, subscription
 from bot.handlers.admin import panel
-from bot.middlewares.analytics import AnalyticsMiddleware
+from bot.handlers.user import common, history, languages, settings as user_settings
+from bot.handlers.user import start, subscription, translate, tts
+from bot.middlewares.context import ContextMiddleware
+from bot.middlewares.subscription import SubscriptionMiddleware
 
-# Configure logging
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO),
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    stream=sys.stdout,
 )
 logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
 logging.getLogger("sqlalchemy.pool").setLevel(logging.WARNING)
+logging.getLogger("aiogram.event").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
-async def main():
-    """Main function to start the bot"""
+async def build_storage(redis):
+    """FSM holatlari uchun Redis. Yo'q bo'lsa — xotira (restart'da yo'qoladi)."""
+    if redis is None:
+        logger.warning("Redis mavjud emas — FSM xotirada saqlanadi")
+        return MemoryStorage()
+    return RedisStorage.from_url(settings.REDIS_FSM_URL)
 
-    # Initialize database
-    logger.info("Initializing database...")
+
+async def connect_redis():
+    try:
+        client = get_redis()
+        await client.ping()
+        logger.info("Redis ulandi")
+        return client
+    except Exception as exc:
+        # Redis kesh va limit uchun. Usiz bot ishlaydi, faqat sekinroq.
+        logger.warning("Redis ulanmadi (%s) — kesh va rate-limit o'chirilgan", exc)
+        return None
+
+
+async def main() -> None:
+    logger.info("Ma'lumotlar bazasi tekshirilmoqda...")
     await init_db()
 
-    # Initialize bot and dispatcher
+    redis = await connect_redis()
+
     bot = Bot(
         token=settings.BOT_TOKEN,
-        default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
-    dp = Dispatcher()
+    dp = Dispatcher(storage=await build_storage(redis))
 
-    # Middlewares
-    dp.message.middleware(AnalyticsMiddleware())
+    # Kontekst har bir update uchun bir marta: session, user, events, session_id.
+    dp.update.outer_middleware(ContextMiddleware(redis))
 
-    # Register handlers
+    # Obuna tekshiruvi kontekstdan keyin — u `data["user"]` ga tayanadi.
+    subscription_guard = SubscriptionMiddleware()
+    dp.message.middleware(subscription_guard)
+    dp.callback_query.middleware(subscription_guard)
+
+    # Tartib muhim: `translate` keng `F.text` filtriga ega, shuning uchun oxirida.
     dp.include_router(start.router)
     dp.include_router(subscription.router)
+    dp.include_router(languages.router)
+    dp.include_router(user_settings.router)
+    dp.include_router(history.router)
+    dp.include_router(tts.router)
     dp.include_router(panel.router)
     dp.include_router(common.router)
+    dp.include_router(translate.router)
 
-    # Start bot
-    logger.info("Bot started successfully!")
+    me = await bot.get_me()
+    logger.info("Bot ishga tushdi: @%s (id=%s)", me.username, me.id)
+
     try:
         while True:
             try:
-                await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+                await dp.start_polling(
+                    bot, allowed_updates=dp.resolve_used_update_types()
+                )
                 break
             except TelegramNetworkError as exc:
-                logger.warning("Telegram network error: %s. Reconnecting in 5s...", exc)
+                logger.warning("Tarmoq xatosi: %s. 5 soniyadan keyin qayta ulanish...", exc)
                 await asyncio.sleep(5)
     finally:
         await bot.session.close()
+        if redis is not None:
+            await redis.aclose()
 
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
-        logger.info("Bot stopped!")
+        logger.info("Bot to'xtatildi")

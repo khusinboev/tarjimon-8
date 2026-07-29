@@ -1,27 +1,29 @@
-from aiogram import Router, F
+from __future__ import annotations
+
+from aiogram import F, Router
 from aiogram.types import Message
-from bot.database.session import AsyncSessionLocal
-from bot.services.subscription_service import SubscriptionService
-from bot.keyboards.inline import get_subscription_keyboard
 
-router = Router()
+from bot.config.settings import settings
+from bot.database.models import User
+from bot.keyboards.user import BTN_HELP, main_menu
+from bot.services.events import EventService, EventType
+from bot.utils import texts
+
+router = Router(name="common")
 
 
-@router.message(F.text)
-async def handle_text_message(message: Message):
-    """Handle any text message from users"""
-    async with AsyncSessionLocal() as session:
-        service = SubscriptionService(session, message.bot)
-        not_subscribed = await service.check_user_subscriptions(message.from_user.id)
-
-    if not_subscribed:
-        await message.answer(
-            "❗️ Botdan foydalanish uchun quyidagi kanallarga obuna bo'lishingiz kerak:",
-            reply_markup=get_subscription_keyboard(not_subscribed),
-        )
-        return
-
+@router.message(F.text == BTN_HELP)
+async def show_help(
+    message: Message, user: User, events: EventService, session_id
+) -> None:
+    await events.log(
+        EventType.MENU_OPENED,
+        user_id=user.id,
+        chat_id=message.chat.id,
+        session_id=session_id,
+        menu="help",
+    )
     await message.answer(
-        "📩 Xabaringiz qabul qilindi!\n"
-        "Tez orada javob beramiz."
+        texts.HELP.format(limit=settings.DAILY_TRANSLATION_LIMIT),
+        reply_markup=main_menu(),
     )

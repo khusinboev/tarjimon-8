@@ -1,19 +1,20 @@
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from typing import List, Optional
+
 from pydantic import Field
-from typing import Optional, List
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    """Application settings"""
+    """Ilova sozlamalari. Manba: .env fayl yoki muhit o'zgaruvchilari."""
 
-    # Bot Configuration
+    # ── Telegram ──────────────────────────────────────────────
     BOT_TOKEN: str = Field(..., description="Telegram Bot Token")
-    ADMIN_USER_ID: int = Field(..., description="Main Admin User ID")
+    ADMIN_USER_ID: int = Field(..., description="Asosiy admin user ID")
     ADMIN_USER_IDS_RAW: Optional[str] = Field(default=None, alias="ADMIN_USER_IDS")
 
     @property
     def ADMIN_USER_IDS(self) -> List[int]:
-        # Supports comma-separated ADMIN_USER_IDS, falls back to ADMIN_USER_ID.
+        # Vergul bilan ajratilgan ADMIN_USER_IDS, bo'lmasa ADMIN_USER_ID.
         if self.ADMIN_USER_IDS_RAW:
             parsed: List[int] = []
             for part in self.ADMIN_USER_IDS_RAW.split(","):
@@ -25,9 +26,9 @@ class Settings(BaseSettings):
                 return parsed
         return [self.ADMIN_USER_ID]
 
-    # Database
-    POSTGRES_USER: str = Field(default="botuser")
-    POSTGRES_PASSWORD: str = Field(default="botpassword")
+    # ── Ma'lumotlar bazasi ────────────────────────────────────
+    POSTGRES_USER: str = Field(default="postgres")
+    POSTGRES_PASSWORD: str = Field(default="postgres")
     POSTGRES_DB: str = Field(default="tarjimon8")
     POSTGRES_HOST: str = Field(default="localhost")
     POSTGRES_PORT: int = Field(default=5432)
@@ -42,20 +43,71 @@ class Settings(BaseSettings):
             f"@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
         )
 
-    # Redis
+    @property
+    def SYNC_DATABASE_URL(self) -> str:
+        """Alembic va migratsiya skriptlari uchun — ular async ishlamaydi."""
+        return self.DATABASE_URL.replace("postgresql+asyncpg://", "postgresql+psycopg2://")
+
+    DB_POOL_SIZE: int = Field(default=10)
+    DB_MAX_OVERFLOW: int = Field(default=20)
+
+    # ── Redis ─────────────────────────────────────────────────
     REDIS_HOST: str = Field(default="localhost")
     REDIS_PORT: int = Field(default=6379)
     REDIS_DB: int = Field(default=0)
+    REDIS_PASSWORD: Optional[str] = Field(default=None)
 
-    # Environment
+    @property
+    def REDIS_URL(self) -> str:
+        auth = f":{self.REDIS_PASSWORD}@" if self.REDIS_PASSWORD else ""
+        return f"redis://{auth}{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
+
+    # FSM holatlari uchun alohida Redis DB — kesh bilan aralashmasin.
+    REDIS_FSM_DB: int = Field(default=1)
+
+    @property
+    def REDIS_FSM_URL(self) -> str:
+        auth = f":{self.REDIS_PASSWORD}@" if self.REDIS_PASSWORD else ""
+        return f"redis://{auth}{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_FSM_DB}"
+
+    # ── Tarjima ───────────────────────────────────────────────
+    TRANSLATION_PROVIDER: str = Field(default="deep_translator")
+    TRANSLATION_TIMEOUT: int = Field(default=15, description="soniya")
+    TRANSLATION_MAX_CHARS: int = Field(default=4500)
+    TRANSLATION_CACHE_TTL: int = Field(default=86400, description="soniya, 24 soat")
+    DEFAULT_SOURCE_LANG: str = Field(default="auto")
+    DEFAULT_TARGET_LANG: str = Field(default="uz")
+
+    # ── TTS ───────────────────────────────────────────────────
+    TTS_PROVIDER: str = Field(default="edge")
+    TTS_MAX_CHARS: int = Field(default=1000)
+    TTS_TIMEOUT: int = Field(default=30)
+
+    # ── Limitlar ──────────────────────────────────────────────
+    DAILY_TRANSLATION_LIMIT: int = Field(default=50)
+    DAILY_TTS_LIMIT: int = Field(default=30)
+    # Spam himoyasi: RATE_LIMIT_WINDOW soniyada RATE_LIMIT_REQUESTS ta so'rov.
+    RATE_LIMIT_REQUESTS: int = Field(default=20)
+    RATE_LIMIT_WINDOW: int = Field(default=60)
+
+    # ── Voqealar jurnali ──────────────────────────────────────
+    # "all" — har bir tugma bosish ham yoziladi (ML uchun to'liq yo'l).
+    # "important" — faqat tarjima/TTS/limit/obuna/xato.
+    # "off" — o'chirilgan.
+    EVENT_LOG_LEVEL: str = Field(default="all")
+    # Seans oynasi: shu vaqt ichidagi harakatlar bitta session_id ostida.
+    SESSION_WINDOW_MINUTES: int = Field(default=30)
+
+    # ── Ilova ─────────────────────────────────────────────────
     ENVIRONMENT: str = Field(default="production")
+    LOG_LEVEL: str = Field(default="INFO")
     AUTO_CREATE_SCHEMA: bool = Field(default=False)
 
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=True,
-        extra="ignore"
+        extra="ignore",
     )
 
 

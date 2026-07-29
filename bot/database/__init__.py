@@ -1,12 +1,36 @@
-from .models import Base, User, Channel, Broadcast, BroadcastDelivery
+from .models import (
+    AdminAction,
+    Base,
+    Broadcast,
+    BroadcastDelivery,
+    Channel,
+    Chat,
+    DailyUsage,
+    Event,
+    Language,
+    Translation,
+    TranslationSignal,
+    TtsRequest,
+    User,
+    UserSettings,
+)
 from .session import get_session, init_db
 
 __all__ = [
     "Base",
     "User",
+    "UserSettings",
+    "Language",
+    "Translation",
+    "TranslationSignal",
+    "TtsRequest",
+    "Event",
+    "DailyUsage",
     "Channel",
     "Broadcast",
     "BroadcastDelivery",
+    "Chat",
+    "AdminAction",
     "get_session",
     "init_db",
 ]

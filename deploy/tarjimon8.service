@@ -1,0 +1,34 @@
+[Unit]
+Description=Tarjimon-8 Telegram bot
+After=network-online.target postgresql.service redis-server.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/home/tarjimon8/app
+EnvironmentFile=/home/tarjimon8/app/.env
+ExecStart=/home/tarjimon8/venv/bin/python -m bot.main
+
+Restart=always
+RestartSec=5s
+# Botni qayta ishga tushirish sikliga tushib qolishdan saqlaydi:
+# 5 daqiqada 5 martadan ko'p yiqilsa, xizmat to'xtaydi va diqqat talab qiladi.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+MemoryMax=1G
+# Loglar journald ga tushadi: journalctl -u tarjimon8 -f
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tarjimon8
+
+# Minimal himoya — bot faqat o'z papkasiga yozishi kerak.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=false
+
+[Install]
+WantedBy=multi-user.target

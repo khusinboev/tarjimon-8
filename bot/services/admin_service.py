@@ -20,6 +20,7 @@ from bot.database.models import User, Channel
 from bot.database.repositories.user_repository import UserRepository
 from bot.database.repositories.channel_repository import ChannelRepository
 from bot.database.repositories.broadcast_repository import BroadcastRepository
+from bot.database.repositories.translation_repository import TranslationRepository
 
 
 logger = logging.getLogger(__name__)
@@ -34,6 +35,7 @@ class AdminService:
         self.user_repo = UserRepository(session)
         self.channel_repo = ChannelRepository(session)
         self.broadcast_repo = BroadcastRepository(session)
+        self.translation_repo = TranslationRepository(session)
 
     async def _fetch_chat_via_http(self, chat_id: str) -> tuple[bool, dict | str]:
         """Fallback for Telegram API schema changes that aiogram can't decode yet."""
@@ -84,16 +86,34 @@ class AdminService:
         return True, status
 
     async def get_stats(self) -> dict:
-        total_users = await self.user_repo.get_total_users()
-        active_week = await self.user_repo.get_active_users(days=7)
+        total_users = await self.user_repo.count_total()
+        active_week = await self.user_repo.count_active_since(days=7)
+        active_day = await self.user_repo.count_active_since(days=1)
+        new_day = await self.user_repo.count_new_since(days=1)
+        by_status = await self.user_repo.count_by_status()
 
-        channels_result = await self.session.execute(select(func.count(Channel.id)).where(Channel.is_active == True))
+        channels_result = await self.session.execute(
+            select(func.count(Channel.id)).where(Channel.is_active.is_(True))
+        )
         active_channels = channels_result.scalar_one() or 0
+
+        translations_total = await self.translation_repo.count_total()
+        translations_day = await self.translation_repo.count_since(days=1)
+        errors_day, attempts_day = await self.translation_repo.error_rate_since(days=1)
+        top_pairs = await self.translation_repo.top_language_pairs(limit=5)
 
         return {
             "total_users": total_users,
             "active_week": active_week,
+            "active_day": active_day,
+            "new_day": new_day,
+            "blocked": by_status.get("blocked_bot", 0),
             "active_channels": active_channels,
+            "translations_total": translations_total,
+            "translations_day": translations_day,
+            "errors_day": errors_day,
+            "attempts_day": attempts_day,
+            "top_pairs": top_pairs,
         }
 
     async def add_channel(
@@ -259,21 +279,23 @@ class AdminService:
         if mode not in {"copy", "forward"}:
             raise ValueError("mode must be 'copy' or 'forward'")
 
-        user_ids = await self.user_repo.get_all_active_user_ids(exclude_user_id=admin_id)
+        # `(user_id, telegram_id)` juftliklari: birinchisi FK uchun, ikkinchisi
+        # Telegram API uchun. Sxemada FK'lar `users.id` ga qaraydi.
+        targets = await self.user_repo.iter_broadcast_targets(exclude_user_id=admin_id)
         preview = (source_message.text or source_message.caption or "<media>")[:500]
         broadcast = await self.broadcast_repo.create_broadcast(
             created_by=admin_id,
             mode=mode,
             content_preview=preview,
-            total_targets=len(user_ids),
+            total_targets=len(targets),
         )
 
         success = 0
         failed = 0
         cancelled = False
-        total = len(user_ids)
+        total = len(targets)
 
-        for i, user_id in enumerate(user_ids, start=1):
+        for i, (user_id, telegram_id) in enumerate(targets, start=1):
             status = await self.broadcast_repo.get_status(broadcast.id)
             if status == "cancel_requested":
                 cancelled = True
@@ -286,13 +308,13 @@ class AdminService:
                 try:
                     if mode == "forward":
                         await self.bot.forward_message(
-                            chat_id=user_id,
+                            chat_id=telegram_id,
                             from_chat_id=source_message.chat.id,
                             message_id=source_message.message_id,
                         )
                     else:
                         await self.bot.copy_message(
-                            chat_id=user_id,
+                            chat_id=telegram_id,
                             from_chat_id=source_message.chat.id,
                             message_id=source_message.message_id,
                         )
@@ -303,7 +325,7 @@ class AdminService:
                     await asyncio.sleep(wait_time)
                 except TelegramForbiddenError:
                     error_text = "forbidden"
-                    await self.user_repo.mark_user_blocked(user_id)
+                    await self.user_repo.mark_blocked(user_id)
                     break
                 except TelegramBadRequest as e:
                     error_text = str(e)

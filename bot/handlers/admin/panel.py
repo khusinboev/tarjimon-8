@@ -50,13 +50,35 @@ async def show_stats(message: Message):
         service = AdminService(session, message.bot)
         stats = await service.get_stats()
 
-    text = (
-        f"📊 Statistika\n\n"
-        f"Jami foydalanuvchi: {stats['total_users']}\n"
-        f"So'nggi 7 kun aktiv: {stats['active_week']}\n"
-        f"Aktiv kanallar: {stats['active_channels']}"
-    )
-    await message.answer(text, reply_markup=admin_main_keyboard())
+    attempts = stats["attempts_day"]
+    error_pct = (stats["errors_day"] / attempts * 100) if attempts else 0.0
+
+    lines = [
+        "📊 <b>Statistika</b>",
+        "",
+        "<b>Foydalanuvchilar</b>",
+        f"Jami: {stats['total_users']:,}".replace(",", " "),
+        f"Bugun yangi: {stats['new_day']}",
+        f"Bugun aktiv: {stats['active_day']}",
+        f"7 kun aktiv: {stats['active_week']}",
+        f"Botni bloklagan: {stats['blocked']}",
+        "",
+        "<b>Tarjimalar</b>",
+        f"Jami: {stats['translations_total']:,}".replace(",", " "),
+        f"Bugun: {stats['translations_day']}",
+        f"Xatolik ulushi (bugun): {error_pct:.1f}%",
+    ]
+
+    if stats["top_pairs"]:
+        lines.append("")
+        lines.append("<b>Ommabop yo'nalishlar</b>")
+        for src, dst, count in stats["top_pairs"]:
+            lines.append(f"{src or '?'} → {dst}: {count:,}".replace(",", " "))
+
+    lines.append("")
+    lines.append(f"Aktiv kanallar: {stats['active_channels']}")
+
+    await message.answer("\n".join(lines), reply_markup=admin_main_keyboard())
 
 
 @router.message(F.text == "🔧 Kanallar", F.from_user.func(lambda u: u and is_admin(u.id)))
@@ -108,7 +130,7 @@ async def channel_add_username(message: Message, state: FSMContext):
 
 
 @router.message(AdminStates.waiting_channel_add_button_url, F.from_user.func(lambda u: u and is_admin(u.id)))
-async def channel_add_finish(message: Message, state: FSMContext):
+async def channel_add_finish(message: Message, state: FSMContext, user):
     data = await state.get_data()
     button_text = data.get("channel_button_text", "")
     username = data.get("channel_username", "")
@@ -121,7 +143,8 @@ async def channel_add_finish(message: Message, state: FSMContext):
                 button_text=button_text,
                 channel_username=username,
                 button_url=button_url,
-                added_by=message.from_user.id,
+                # FK `users.id` ga qaraydi, `telegram_id` ga emas.
+                added_by=user.id,
             )
     except Exception as exc:
         logger.exception("Unexpected error in channel_add_finish")
@@ -183,7 +206,7 @@ async def broadcast_copy_start(message: Message, state: FSMContext):
 
 
 @router.message(AdminStates.waiting_broadcast_message, F.from_user.func(lambda u: u and is_admin(u.id)))
-async def broadcast_send(message: Message, state: FSMContext):
+async def broadcast_send(message: Message, state: FSMContext, user):
     data = await state.get_data()
     mode = data.get("broadcast_mode")
 
@@ -209,7 +232,7 @@ async def broadcast_send(message: Message, state: FSMContext):
     async with AsyncSessionLocal() as session:
         service = AdminService(session, message.bot)
         result = await service.run_broadcast(
-            admin_id=message.from_user.id,
+            admin_id=user.id,
             source_message=message,
             mode=mode,
             progress_callback=progress_callback,
