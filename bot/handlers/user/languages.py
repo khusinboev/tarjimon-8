@@ -158,8 +158,8 @@ async def _apply_swap(
         EventType.LANG_SWAPPED,
         user_id=user.id,
         session_id=session_id,
-        source=new_source,
-        target=new_target,
+        from_lang=new_source,
+        to_lang=new_target,
     )
 
 

@@ -315,7 +315,7 @@ async def test_events(user_id: int) -> None:
                 select(func.count(Event.id)).where(Event.user_id == user_id)
             )
         ).scalar_one()
-        check("voqealar yozildi", total == 2, f"{total} ta")
+        check("voqealar yozildi", total == 2, f"{total} ta")  # keyingi tekshiruvlar qo'shimcha yozadi
 
         # `user_id` bo'yicha filtrlash shart: ishlab turgan bazada jonli
         # foydalanuvchilarning `translate.succeeded` voqealari ham bor va
@@ -331,6 +331,40 @@ async def test_events(user_id: int) -> None:
             )
         ).scalar_one()
         check("JSONB payload saqlandi", row.payload.get("latency_ms") == 123, str(row.payload))
+
+        # `source` — `events` jadvalidagi ustun nomi va ayni paytda juda tabiiy
+        # payload kaliti. Ilgari u jimgina ustunga yozilib CHECK cheklovini
+        # buzgan va almashtirish tugmasini ishdan chiqargan edi.
+        await events.log(
+            EventType.LANG_SWAPPED,
+            user_id=user_id,
+            source="uz",
+            target="en",
+            from_lang="uz",
+        )
+        await session.commit()
+
+        swapped = (
+            await session.execute(
+                select(Event)
+                .where(Event.user_id == user_id, Event.event_type == EventType.LANG_SWAPPED)
+                .limit(1)
+            )
+        ).scalar_one()
+        check(
+            "`source` payloadga tushadi, ustunga emas",
+            swapped.payload.get("source") == "uz" and swapped.source == "bot",
+            f"source ustuni={swapped.source}, payload={swapped.payload}",
+        )
+
+        # Noto'g'ri `event_source` baland ovozda yiqilishi kerak — bazadagi
+        # CheckViolation butun tranzaksiyani yiqitadi, ya'ni voqea yozish
+        # asosiy oqimni buzadi.
+        try:
+            await events.log(EventType.MENU_OPENED, user_id=user_id, event_source="xato")
+            check("noto'g'ri event_source rad etiladi", False, "xato chiqmadi")
+        except ValueError:
+            check("noto'g'ri event_source rad etiladi", True)
 
 
 async def test_tts() -> None:

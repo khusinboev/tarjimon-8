@@ -45,7 +45,7 @@ async def cmd_start(
         chat_id=message.chat.id,
         session_id=session_id,
         is_new=is_new_user,
-        source=payload or None,
+        start_param=payload or None,
     )
 
     template = t.WELCOME if is_new_user else t.WELCOME_BACK

@@ -103,6 +103,13 @@ def _should_log(event_type: str) -> bool:
     return True
 
 
+# `events.source` ustunining ruxsat etilgan qiymatlari (bazada CHECK bilan ham
+# cheklangan). Bu yerda ham tekshiramiz, chunki noto'g'ri qiymat bazaga
+# yetganda CheckViolationError butun tranzaksiyani yiqitadi — ya'ni voqea
+# yozish asosiy oqimni buzadi, aynan bo'lmasligi kerak narsa.
+EVENT_SOURCES = frozenset({"bot", "admin", "system", "webhook"})
+
+
 class EventService:
     """Voqealarni yozadi. Yozish hech qachon asosiy oqimni to'xtatmasligi kerak."""
 
@@ -116,11 +123,26 @@ class EventService:
         user_id: Optional[int] = None,
         chat_id: Optional[int] = None,
         session_id: Optional[uuid.UUID] = None,
-        source: str = "bot",
+        event_source: str = "bot",
         **payload: Any,
     ) -> None:
+        """Voqeani yozadi. Nomlangan argumentlardan boshqasi `payload` ga tushadi.
+
+        Diqqat — `event_source`, `source` emas: `source` payload kaliti sifatida
+        juda tabiiy ("referal manbai", "manba tili") va u ustun nomi bilan
+        to'qnashib, jimgina ustunga yozilib qolardi. Natijada `lang.swapped`
+        voqeasi `source='uz'` bilan yozilib CHECK cheklovini buzgan va
+        almashtirish tugmasi ishlamay qolgan edi.
+        """
         if not _should_log(event_type):
             return
+
+        if event_source not in EVENT_SOURCES:
+            # Baland ovozda yiqilamiz: bu kod xatosi, ma'lumot xatosi emas.
+            raise ValueError(
+                f"Noto'g'ri event_source: {event_source!r}. "
+                f"Ruxsat etilgan: {', '.join(sorted(EVENT_SOURCES))}"
+            )
 
         self.session.add(
             Event(
@@ -128,7 +150,7 @@ class EventService:
                 chat_id=chat_id,
                 session_id=session_id,
                 event_type=event_type,
-                source=source,
+                source=event_source,
                 payload=payload,
             )
         )
