@@ -42,6 +42,17 @@ from bot.services.events import EventType, utcnow
 FULL_BLOCK = "█"
 EMPTY_BLOCK = "░"
 
+# `<pre>` qatorining eng katta kengligi.
+#
+# Telefonda monoshirina matn ~30–32 belgi sig'adi. Undan uzun bo'lsa Telegram
+# blokni gorizontal siljitadigan qiladi: xabar buzilmaydi, lekin bir qarashda
+# to'liq ko'rinmaydi va o'ngga surish kerak bo'ladi.
+#
+# Shu sababdan ustunlar soni va chiziq uzunligi shu chegaraga moslangan.
+# Dud sinovi har bir `<pre>` qatorini shu bo'yicha tekshiradi — keyinchalik
+# ustun qo'shilsa sinov ogohlantiradi.
+MAX_PRE_WIDTH = 30
+
 
 def num(value: int | float | None) -> str:
     """Raqamni probel bilan ajratadi: 37457 → "37 457"."""
@@ -309,12 +320,13 @@ class StatsService:
 # ─────────────────────────────────────────────────────────────
 #  Chiqarish
 # ─────────────────────────────────────────────────────────────
-# Emojisiz: bu nomlar `<pre>` jadvaliga tushadi (yuqoridagi `table` izohiga qarang).
+# Emojisiz va qisqa: bu nomlar `<pre>` jadvaliga tushadi va telefon kengligiga
+# sig'ishi kerak (yuqoridagi `table` va `MAX_PRE_WIDTH` izohlariga qarang).
 STATUS_LABELS = {
     "active": "Aktiv",
     "blocked_bot": "Bloklagan",
-    "deleted": "Yetib bo'lmas",
-    "banned": "Taqiqlangan",
+    "deleted": "O'chgan",
+    "banned": "Taqiq",
 }
 
 LANG_LABELS = {"uz": "O‘zbek", "en": "Ingliz", "id": "Indonez"}
@@ -338,11 +350,11 @@ def render(s: Stats) -> str:
             (
                 STATUS_LABELS.get(key, key),
                 num(count),
-                bar(count, s.users_total),
+                bar(count, s.users_total, 5),
                 f"{percent(count, s.users_total):.0f}%",
             )
         )
-    parts.append(f"<pre>{table(status_rows, align='lrlr')}</pre>")
+    parts.append(f"<pre>{table(status_rows, align='lrlr', gap=1)}</pre>")
 
     growth = table(
         [
@@ -395,29 +407,34 @@ def render(s: Stats) -> str:
             (
                 LANG_LABELS.get(code, code),
                 num(count),
-                bar(count, s.users_total, 8),
+                bar(count, s.users_total, 5),
                 f"{percent(count, s.users_total):.0f}%",
             )
             for code, count in s.users_by_lang.items()
         ]
         parts.append(
             "<blockquote expandable>🗣 <b>Interfeys tillari</b>\n"
-            f"<pre>{table(lang_rows, align='lrlr')}</pre></blockquote>"
+            f"<pre>{table(lang_rows, align='lrlr', gap=1)}</pre></blockquote>"
         )
 
     # ── Qolgan bo'limlar ──
+    # Ikki ustun: uch ustunli variant telefon kengligidan oshib ketardi.
+    # "⭐" emas, "Stars": emoji `<pre>` ichida ustunni siljitadi.
     other = [
-        ("Ovoz", num(s.tts_total), f"bugun {num(s.tts_day)}"),
-        # "⭐" emas, "Stars": emoji `<pre>` ichida ustunni siljitadi.
-        ("Homiylik (Stars)", num(s.donations_stars), f"{num(s.donations_count)} marta"),
-        ("Homiylik 30 kun", num(s.donations_stars_month), ""),
-        ("Murojaat", num(s.support_total), f"bugun {num(s.support_day)}"),
-        ("Voqealar", num(s.events_total), f"bugun {num(s.events_day)}"),
-        ("Kanallar", num(s.active_channels), ""),
+        ("Ovoz", num(s.tts_total)),
+        ("Ovoz bugun", num(s.tts_day)),
+        ("Stars", num(s.donations_stars)),
+        ("Stars 30 kun", num(s.donations_stars_month)),
+        ("Homiylik soni", num(s.donations_count)),
+        ("Murojaat", num(s.support_total)),
+        ("Murojaat bugun", num(s.support_day)),
+        ("Voqealar", num(s.events_total)),
+        ("Voqea bugun", num(s.events_day)),
+        ("Kanallar", num(s.active_channels)),
     ]
     parts.append(
         "<blockquote expandable>📦 <b>Qolgan ko'rsatkichlar</b>\n"
-        f"<pre>{table(other, align='lrr')}</pre></blockquote>"
+        f"<pre>{table(other, align='lr')}</pre></blockquote>"
     )
 
     if s.last_broadcast:

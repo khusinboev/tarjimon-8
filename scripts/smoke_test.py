@@ -669,6 +669,30 @@ async def test_stats() -> None:
 
     out = render(data)
     check("Telegram chegarasiga sig'adi", len(out) < 4096, f"{len(out)} belgi")
+
+    # Telefonda `<pre>` bloki ekran kengligidan oshsa Telegram uni gorizontal
+    # siljitadigan qiladi — xabar buzilmaydi, lekin to'liq ko'rinmaydi.
+    import re as _re
+
+    from bot.services.stats import MAX_PRE_WIDTH
+
+    pre_lines = [
+        line
+        for block in _re.findall(r"<pre>(.*?)</pre>", out, _re.S)
+        for line in block.split("\n")
+    ]
+    too_wide = [line for line in pre_lines if len(line) > MAX_PRE_WIDTH]
+    longest = max((len(line) for line in pre_lines), default=0)
+    check(
+        f"barcha <pre> qatorlari <= {MAX_PRE_WIDTH} belgi (telefon)",
+        not too_wide,
+        f"eng uzun {longest}" + (f", oshgan: {too_wide[:2]}" if too_wide else ""),
+    )
+    # Emoji `len()` da 1-2 belgi, ekranda boshqacha kenglikda — ustunlar siljiydi.
+    emoji_lines = [
+        line for line in pre_lines if any(ord(ch) > 0x2500 and ch not in "█░→" for ch in line)
+    ]
+    check("<pre> ichida emoji yo'q", not emoji_lines, str(emoji_lines[:2]))
     check("yig'iladigan blok bor", "<blockquote expandable>" in out)
     check("monoshirina jadval bor", "<pre>" in out)
     # Ochilgan teglar yopilgan bo'lishi shart, aks holda Telegram xabarni rad etadi.
