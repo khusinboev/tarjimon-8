@@ -105,12 +105,12 @@ async def test_locales() -> None:
 
     # Menyu tugmalari to'plami tarjima handleri uchun muhim: har bir tildagi
     # tugma matni "tarjima qilinadigan matn" deb qabul qilinmasligi kerak.
-    check("menyu tugmalari 9 ta (3 til × 3 tugma)", len(locales.MENU_BUTTONS) == 9)
+    check("menyu tugmalari 12 ta (3 til × 4 tugma)", len(locales.MENU_BUTTONS) == 12)
     for code in locales.SUPPORTED:
         t = locales.get(code)
         in_set = all(
             btn in locales.MENU_BUTTONS
-            for btn in (t.BTN_LANGUAGES, t.BTN_CONTACT, t.BTN_HELP)
+            for btn in (t.BTN_LANGUAGES, t.BTN_DONATE, t.BTN_CONTACT, t.BTN_HELP)
         )
         check(f"{code}: tugmalari filtrga kiradi", in_set)
 
@@ -404,8 +404,9 @@ async def test_keyboards() -> None:
 
         menu = main_menu(t)
         labels = [b.text for row in menu.keyboard for b in row]
-        check(f"{code}: menyuda 3 tugma", len(labels) == 3, ", ".join(labels))
+        check(f"{code}: menyuda 4 tugma", len(labels) == 4, ", ".join(labels))
         check(f"{code}: murojaat tugmasi bor", t.BTN_CONTACT in labels)
+        check(f"{code}: homiylik tugmasi bor", t.BTN_DONATE in labels)
         check(
             f"{code}: tarix va sozlama tugmasi yo'q",
             not any(
@@ -504,11 +505,97 @@ async def test_support() -> None:
     await client.aclose()
 
 
+async def test_donate(user_id: int) -> None:
+    """Homiylik: klaviatura, yozuv va takroriy to'lov himoyasi."""
+    print("\n[13] Homiylik (Telegram Stars)")
+    from sqlalchemy import delete
+    from sqlalchemy.exc import IntegrityError
+
+    from bot.database.models import Donation
+    from bot.keyboards.user import donate_amounts
+
+    t = locales.get("uz")
+    markup = donate_amounts(t, settings.DONATE_PRESETS)
+    codes = [b.callback_data for row in markup.inline_keyboard for b in row]
+    check(
+        "presetlar tugma bo'ldi",
+        all(f"donate:{n}" in codes for n in settings.DONATE_PRESETS),
+        str(codes),
+    )
+    check("boshqa miqdor tugmasi bor", "donate:custom" in codes)
+
+    async with AsyncSessionLocal() as session:
+        charge = "test_charge_smoke_1"
+        await session.execute(
+            delete(Donation).where(Donation.telegram_payment_charge_id == charge)
+        )
+        await session.commit()
+
+        session.add(
+            Donation(
+                user_id=user_id,
+                stars=50,
+                currency="XTR",
+                telegram_payment_charge_id=charge,
+                invoice_payload="donate:50",
+                status="paid",
+            )
+        )
+        await session.commit()
+        row = (
+            await session.execute(
+                select(Donation).where(Donation.telegram_payment_charge_id == charge)
+            )
+        ).scalar_one()
+        check("homiylik yozildi", row.stars == 50 and row.status == "paid")
+
+    # Takroriy to'lov xabari ikkinchi yozuv yaratmasligi kerak — Telegram bir
+    # to'lov haqida bir necha marta xabar berishi mumkin.
+    async with AsyncSessionLocal() as session:
+        session.add(
+            Donation(
+                user_id=user_id,
+                stars=50,
+                currency="XTR",
+                telegram_payment_charge_id=charge,
+                status="paid",
+            )
+        )
+        try:
+            await session.commit()
+            check("takroriy to'lov rad etiladi", False, "ikkinchi yozuv o'tdi")
+        except IntegrityError:
+            await session.rollback()
+            check("takroriy to'lov rad etiladi", True)
+
+    # Manfiy va nol miqdor bazaga tushmasligi kerak.
+    async with AsyncSessionLocal() as session:
+        session.add(
+            Donation(
+                user_id=user_id,
+                stars=0,
+                telegram_payment_charge_id="test_charge_smoke_zero",
+            )
+        )
+        try:
+            await session.commit()
+            check("nol miqdor rad etiladi", False, "0 ⭐ o'tdi")
+        except IntegrityError:
+            await session.rollback()
+            check("nol miqdor rad etiladi", True)
+
+    async with AsyncSessionLocal() as session:
+        await session.execute(
+            delete(Donation).where(Donation.user_id == user_id)
+        )
+        await session.commit()
+
+
 async def cleanup() -> None:
     async with AsyncSessionLocal() as session:
         from sqlalchemy import delete
 
-        from bot.database.models import DailyUsage, User
+        from bot.database.models import DailyUsage, Donation, User
 
         user = (
             await session.execute(
@@ -521,6 +608,7 @@ async def cleanup() -> None:
             )
             await session.execute(delete(Event).where(Event.user_id == user.id))
             await session.execute(delete(Translation).where(Translation.user_id == user.id))
+            await session.execute(delete(Donation).where(Donation.user_id == user.id))
             await session.execute(delete(DailyUsage).where(DailyUsage.user_id == user.id))
             await session.delete(user)
             await session.commit()
@@ -545,6 +633,7 @@ async def main() -> None:
     await test_tts()
     await test_keyboards()
     await test_support()
+    await test_donate(user_id)
 
     await cleanup()
     await engine.dispose()

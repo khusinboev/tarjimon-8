@@ -43,6 +43,11 @@ class SubscriptionMiddleware(BaseMiddleware):
             return await handler(event, data)
 
         if isinstance(event, Message):
+            # To'lov tasdig'i hech qachon to'silmasligi kerak: pul allaqachon
+            # o'tgan, xabarni yutib yuborsak homiylik bazaga yozilmasdi va
+            # foydalanuvchi tasdiq ham olmasdi.
+            if event.successful_payment is not None:
+                return await handler(event, data)
             text = (event.text or "").strip()
             if any(text.startswith(cmd) for cmd in ALLOWED_COMMANDS):
                 return await handler(event, data)

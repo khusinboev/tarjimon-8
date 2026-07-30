@@ -83,6 +83,21 @@ class Settings(BaseSettings):
     TTS_MAX_CHARS: int = Field(default=1000)
     TTS_TIMEOUT: int = Field(default=30)
 
+    # ── Homiylik (Telegram Stars) ─────────────────────────────
+    # Stars butun sonda o'lchanadi, valyuta kodi XTR.
+    DONATE_PRESETS_RAW: str = Field(default="10,25,50,100,250,500", alias="DONATE_PRESETS")
+    DONATE_MIN: int = Field(default=1)
+    DONATE_MAX: int = Field(default=10000)
+
+    @property
+    def DONATE_PRESETS(self) -> List[int]:
+        values = []
+        for part in self.DONATE_PRESETS_RAW.split(","):
+            part = part.strip()
+            if part.isdigit() and int(part) > 0:
+                values.append(int(part))
+        return values or [10, 25, 50, 100]
+
     # ── Adminga murojaat ──────────────────────────────────────
     SUPPORT_MAX_CHARS: int = Field(default=2000)
     # Spam himoyasi: SUPPORT_RATE_WINDOW soniyada SUPPORT_RATE_LIMIT ta murojaat.

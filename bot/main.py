@@ -15,7 +15,7 @@ from bot.config.settings import settings
 from bot.database.redis import get_redis
 from bot.database.session import init_db
 from bot.handlers.admin import panel
-from bot.handlers.user import common, languages, start, subscription
+from bot.handlers.user import common, donate, languages, start, subscription
 from bot.handlers.user import support, translate, tts
 from bot.middlewares.context import ContextMiddleware
 from bot.middlewares.subscription import SubscriptionMiddleware
@@ -81,6 +81,7 @@ async def main() -> None:
     dp.include_router(languages.router)
     dp.include_router(common.router)
     dp.include_router(support.router)
+    dp.include_router(donate.router)
     dp.include_router(tts.router)
     dp.include_router(panel.router)
     dp.include_router(translate.router)

@@ -10,6 +10,7 @@ NAME = "English"
 
 # ── Reply menu buttons ───────────────────────────────────────
 BTN_LANGUAGES = "🌐 Languages"
+BTN_DONATE = "⭐ Donate"
 BTN_CONTACT = "✉️ Contact admin"
 BTN_HELP = "ℹ️ Help"
 
@@ -138,3 +139,42 @@ CONTACT_RATE_LIMITED = (
     "You can send the next one in <b>{minutes}</b> minutes."
 )
 CONTACT_FAILED = "⚠️ Could not send the message. Please try again later."
+
+# ── Donations (Telegram Stars) ───────────────────────────────
+DONATE_INTRO = (
+    "⭐ <b>Donate</b>\n\n"
+    "This bot is free and ad-free. Servers and translation services, however, "
+    "cost money.\n\n"
+    "If the bot is useful to you, you can support it with Telegram Stars. "
+    "Any amount helps.\n\n"
+    "Pick an amount below:"
+)
+DONATE_INVOICE_TITLE = "Support the translator bot"
+DONATE_INVOICE_DESC = "{stars} ⭐ — thank you for supporting the bot!"
+DONATE_THANKS = (
+    "❤️ <b>Thank you!</b>\n\n"
+    "You donated <b>{stars} ⭐</b>. This directly helps keep the bot running.\n\n"
+    "Thank you so much for your support!"
+)
+DONATE_FAILED = "⚠️ Could not start the payment. Please try again later."
+DONATE_CUSTOM = "✏️ Other amount"
+DONATE_CUSTOM_PROMPT = (
+    "✏️ How many ⭐ would you like to donate?\n\n"
+    "Send the number ({min}–{max})."
+)
+DONATE_CUSTOM_INVALID = "❌ Send a number only, between {min} and {max}."
+
+# ── Relaunch announcement (scripts/broadcast_relaunch.py) ──
+RELAUNCH = (
+    "🎉 <b>The bot has been rebuilt and is back!</b>\n\n"
+    "Hi! We rewrote the bot from scratch — it is now faster, more stable and "
+    "easier to use.\n\n"
+    "<b>What's new:</b>\n\n"
+    "📋 <b>Easy copying</b> — tap the translation and it is copied\n"
+    "🔄 <b>Swap button</b> — reverse the direction with one tap\n"
+    "🔊 <b>Voice</b> — listen to any translation\n"
+    "🌐 <b>21 languages</b> — English, Russian, Uzbek, Turkish, Arabic and more\n"
+    "⚡️ <b>Speed</b> — repeated translations come back instantly\n"
+    "🗣 <b>Your language</b> — the interface follows your Telegram language\n\n"
+    "Just send any text to try it 👇"
+)

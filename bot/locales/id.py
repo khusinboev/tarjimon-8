@@ -9,6 +9,7 @@ NAME = "Indonesia"
 
 # ── Tombol menu utama ────────────────────────────────────────
 BTN_LANGUAGES = "🌐 Bahasa"
+BTN_DONATE = "⭐ Donasi"
 BTN_CONTACT = "✉️ Hubungi admin"
 BTN_HELP = "ℹ️ Bantuan"
 
@@ -137,3 +138,42 @@ CONTACT_RATE_LIMITED = (
     "Anda bisa mengirim lagi dalam <b>{minutes}</b> menit."
 )
 CONTACT_FAILED = "⚠️ Pesan tidak bisa dikirim. Coba lagi nanti."
+
+# ── Donasi (Telegram Stars) ──────────────────────────────────
+DONATE_INTRO = (
+    "⭐ <b>Donasi</b>\n\n"
+    "Bot ini gratis dan tanpa iklan. Namun server dan layanan terjemahan "
+    "membutuhkan biaya.\n\n"
+    "Jika bot ini bermanfaat, Anda bisa mendukungnya dengan Telegram Stars. "
+    "Berapa pun jumlahnya sangat membantu.\n\n"
+    "Pilih jumlah di bawah:"
+)
+DONATE_INVOICE_TITLE = "Dukung bot penerjemah"
+DONATE_INVOICE_DESC = "{stars} ⭐ — terima kasih telah mendukung bot ini!"
+DONATE_THANKS = (
+    "❤️ <b>Terima kasih!</b>\n\n"
+    "Anda berdonasi <b>{stars} ⭐</b>. Ini langsung membantu bot tetap berjalan.\n\n"
+    "Terima kasih banyak atas dukungan Anda!"
+)
+DONATE_FAILED = "⚠️ Pembayaran tidak bisa dimulai. Coba lagi nanti."
+DONATE_CUSTOM = "✏️ Jumlah lain"
+DONATE_CUSTOM_PROMPT = (
+    "✏️ Berapa ⭐ yang ingin Anda donasikan?\n\n"
+    "Kirim angkanya ({min}–{max})."
+)
+DONATE_CUSTOM_INVALID = "❌ Kirim angka saja, antara {min} dan {max}."
+
+# ── Pengumuman peluncuran ulang (scripts/broadcast_relaunch.py) ──
+RELAUNCH = (
+    "🎉 <b>Bot sudah diperbarui dan kembali aktif!</b>\n\n"
+    "Hai! Kami menulis ulang bot ini dari awal — sekarang lebih cepat, lebih "
+    "stabil, dan lebih nyaman.\n\n"
+    "<b>Yang baru:</b>\n\n"
+    "📋 <b>Mudah disalin</b> — ketuk hasil terjemahan, teks langsung tersalin\n"
+    "🔄 <b>Tombol tukar</b> — balik arah terjemahan dengan sekali ketuk\n"
+    "🔊 <b>Suara</b> — dengarkan hasil terjemahan\n"
+    "🌐 <b>21 bahasa</b> — Indonesia, Inggris, Rusia, Turki, Arab, dan lainnya\n"
+    "⚡️ <b>Cepat</b> — terjemahan yang sama kembali seketika\n"
+    "🗣 <b>Bahasa Anda</b> — antarmuka mengikuti bahasa Telegram Anda\n\n"
+    "Kirim teks apa pun untuk mencoba 👇"
+)

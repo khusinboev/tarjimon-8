@@ -46,7 +46,8 @@ def main_menu(t: ModuleType) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text=t.BTN_LANGUAGES)],
-            [KeyboardButton(text=t.BTN_CONTACT), KeyboardButton(text=t.BTN_HELP)],
+            [KeyboardButton(text=t.BTN_DONATE), KeyboardButton(text=t.BTN_CONTACT)],
+            [KeyboardButton(text=t.BTN_HELP)],
         ],
         resize_keyboard=True,
         is_persistent=True,
@@ -147,3 +148,29 @@ def translation_actions(
             ],
         ]
     )
+
+
+def donate_amounts(
+    t: ModuleType, presets: Sequence[int], *, per_row: int = 3
+) -> InlineKeyboardMarkup:
+    """Homiylik miqdorlari. Har bir tugma — Telegram Stars soni."""
+    rows: List[List[InlineKeyboardButton]] = []
+    row: List[InlineKeyboardButton] = []
+
+    for amount in presets:
+        row.append(
+            InlineKeyboardButton(
+                text=f"{amount} ⭐", callback_data=f"donate:{amount}"
+            )
+        )
+        if len(row) == per_row:
+            rows.append(row)
+            row = []
+
+    if row:
+        rows.append(row)
+
+    rows.append(
+        [InlineKeyboardButton(text=t.DONATE_CUSTOM, callback_data="donate:custom")]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=rows)

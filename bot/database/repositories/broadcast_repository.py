@@ -1,7 +1,7 @@
-from datetime import datetime
 from sqlalchemy import update, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from bot.database.models import Broadcast, BroadcastDelivery
+from bot.services.events import utcnow
 
 
 class BroadcastRepository:
@@ -17,7 +17,7 @@ class BroadcastRepository:
             content_preview=content_preview,
             total_targets=total_targets,
             status="running",
-            started_at=datetime.utcnow(),
+            started_at=utcnow(),
         )
         self.session.add(broadcast)
         await self.session.commit()
@@ -42,7 +42,7 @@ class BroadcastRepository:
                 status="completed",
                 success_count=success_count,
                 failed_count=failed_count,
-                finished_at=datetime.utcnow(),
+                finished_at=utcnow(),
             )
         )
         await self.session.commit()
@@ -54,7 +54,7 @@ class BroadcastRepository:
             .values(
                 status="failed",
                 failed_count=failed_count,
-                finished_at=datetime.utcnow(),
+                finished_at=utcnow(),
             )
         )
         await self.session.commit()
@@ -82,7 +82,7 @@ class BroadcastRepository:
                 status="cancelled",
                 success_count=success_count,
                 failed_count=failed_count,
-                finished_at=datetime.utcnow(),
+                finished_at=utcnow(),
             )
         )
         await self.session.commit()

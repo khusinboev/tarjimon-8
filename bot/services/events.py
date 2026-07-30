@@ -62,6 +62,11 @@ class EventType:
     SUPPORT_MESSAGE_SENT = "support.message_sent"
     SUPPORT_RATE_LIMITED = "support.rate_limited"
 
+    # Homiylik
+    DONATE_OPENED = "donate.opened"
+    DONATE_INVOICE_SENT = "donate.invoice_sent"
+    DONATE_PAID = "donate.paid"
+
     # Tizim
     BROADCAST_DELIVERED = "broadcast.delivered"
     ERROR_UNHANDLED = "error.unhandled"
@@ -89,6 +94,8 @@ IMPORTANT_EVENTS = frozenset(
         # Murojaat matni faqat shu voqeada saqlanadi — admin Telegram'da
         # o'tkazib yuborsa yagona nusxa bo'lib qoladi, shuning uchun "muhim".
         EventType.SUPPORT_MESSAGE_SENT,
+        # To'lov voqeasi har doim yoziladi — pul harakati hisobga olinishi kerak.
+        EventType.DONATE_PAID,
         EventType.ERROR_UNHANDLED,
     }
 )

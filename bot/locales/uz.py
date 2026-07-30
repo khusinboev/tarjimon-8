@@ -10,6 +10,7 @@ NAME = "O‘zbekcha"
 
 # ── Reply-menyu tugmalari ────────────────────────────────────
 BTN_LANGUAGES = "🌐 Tillar"
+BTN_DONATE = "⭐ Homiylik"
 BTN_CONTACT = "✉️ Adminga murojaat"
 BTN_HELP = "ℹ️ Yordam"
 
@@ -137,3 +138,42 @@ CONTACT_RATE_LIMITED = (
     "Keyingi xabarni <b>{minutes}</b> daqiqadan keyin yuborishingiz mumkin."
 )
 CONTACT_FAILED = "⚠️ Xabarni yuborib bo'lmadi. Keyinroq urinib ko'ring."
+
+# ── Homiylik (Telegram Stars) ────────────────────────────────
+DONATE_INTRO = (
+    "⭐ <b>Homiylik</b>\n\n"
+    "Bot bepul va reklamasiz ishlaydi. Server va tarjima xizmatlari esa "
+    "pul talab qiladi.\n\n"
+    "Agar bot sizga foydali bo'lsa, Telegram Stars bilan qo'llab-quvvatlashingiz "
+    "mumkin. Har qanday miqdor yordam beradi.\n\n"
+    "Quyidan miqdorni tanlang:"
+)
+DONATE_INVOICE_TITLE = "Tarjimon botga homiylik"
+DONATE_INVOICE_DESC = "{stars} ⭐ — botni qo'llab-quvvatlash uchun rahmat!"
+DONATE_THANKS = (
+    "❤️ <b>Rahmat!</b>\n\n"
+    "Siz <b>{stars} ⭐</b> homiylik qildingiz. Bu bot ishlab turishiga "
+    "to'g'ridan-to'g'ri yordam beradi.\n\n"
+    "Jamg'armangiz uchun katta rahmat!"
+)
+DONATE_FAILED = "⚠️ To'lovni boshlab bo'lmadi. Keyinroq urinib ko'ring."
+DONATE_CUSTOM = "✏️ Boshqa miqdor"
+DONATE_CUSTOM_PROMPT = (
+    "✏️ Necha ⭐ homiylik qilmoqchisiz?\n\n"
+    "Sonni yozib yuboring ({min}–{max})."
+)
+DONATE_CUSTOM_INVALID = "❌ Faqat son yuboring, {min} dan {max} gacha."
+
+# ── Qayta ishga tushish xabari (scripts/broadcast_relaunch.py) ──
+RELAUNCH = (
+    "🎉 <b>Bot yangilandi va qayta ishga tushdi!</b>\n\n"
+    "Salom! Botni to'liq qayta yozdik — endi tezroq, barqarorroq va qulayroq.\n\n"
+    "<b>Nima yangi:</b>\n\n"
+    "📋 <b>Nusxa olish oson</b> — tarjima ustiga bosasiz, matn nusxalanadi\n"
+    "🔄 <b>Almashtirish tugmasi</b> — yo'nalishni bir bosishda teskari qilasiz\n"
+    "🔊 <b>Ovoz</b> — tarjimani tinglashingiz mumkin\n"
+    "🌐 <b>21 til</b> — o'zbek, rus, ingliz, turk, arab va boshqalar\n"
+    "⚡️ <b>Tezlik</b> — takroriy tarjimalar bir zumda qaytadi\n"
+    "🗣 <b>Interfeys tilingizda</b> — Telegram tilingizga qarab avtomatik\n\n"
+    "Sinab ko'rish uchun shunchaki matn yuboring 👇"
+)

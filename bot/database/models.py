@@ -476,6 +476,44 @@ class Chat(Base):
     meta = _meta()
 
 
+class Donation(Base):
+    """Telegram Stars orqali homiylik.
+
+    Pul yozuvi — hech qachon o'chirilmaydi va o'zgartirilmaydi.
+    `telegram_payment_charge_id` unikal: Telegram bir to'lov haqida bir necha
+    marta xabar berishi mumkin, takroriy yozuv bo'lmasligi kerak. Shu id
+    qaytarish (`refundStarPayment`) uchun ham kerak, shuning uchun majburiy.
+    """
+
+    __tablename__ = "donations"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    user_id = Column(BigInteger, ForeignKey("users.id", ondelete="SET NULL"), index=True)
+
+    # Stars butun son bo'lib keladi (XTR valyutasida kasr yo'q).
+    stars = Column(Integer, nullable=False)
+    currency = Column(String(10), default="XTR", server_default=sql_text("'XTR'"), nullable=False)
+
+    telegram_payment_charge_id = Column(String(255), unique=True, nullable=False)
+    provider_payment_charge_id = Column(String(255))
+    invoice_payload = Column(String(255))
+
+    status = Column(
+        String(20), default="paid", server_default=sql_text("'paid'"), nullable=False, index=True
+    )
+    refunded_at = Column(DateTime(timezone=True))
+
+    created_at = _created_at(index=True)
+    meta = _meta()
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('paid', 'refunded')", name="ck_donations_status"
+        ),
+        CheckConstraint("stars > 0", name="ck_donations_stars_positive"),
+    )
+
+
 class AdminAction(Base):
     """Admin nima qilgani — audit izi."""
 
