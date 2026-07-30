@@ -72,7 +72,7 @@ async def main() -> None:
     dp.callback_query.middleware(subscription_guard)
 
     # Tartib muhim:
-    #  - menyu routerlari (`languages`, `common`) `support` dan oldin: murojaat
+    #  - menyu routerlari (`languages`, `common`, `donate`) `support` dan oldin: murojaat
     #    yozish holatida menyu tugmasi bosilsa u tugma sifatida ishlashi kerak,
     #    murojaat matni sifatida emas
     #  - `translate` eng oxirida: uning `F.text` filtri juda keng
@@ -80,8 +80,8 @@ async def main() -> None:
     dp.include_router(subscription.router)
     dp.include_router(languages.router)
     dp.include_router(common.router)
-    dp.include_router(support.router)
     dp.include_router(donate.router)
+    dp.include_router(support.router)
     dp.include_router(tts.router)
     dp.include_router(panel.router)
     dp.include_router(translate.router)

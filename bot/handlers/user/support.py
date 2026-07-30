@@ -207,7 +207,11 @@ async def receive_message(
         await message.answer(t.CONTACT_FAILED, reply_markup=main_menu(t))
 
 
-@router.message(StateFilter(SupportStates.waiting_message))
+# Buyruqlar bu yerga tushmasligi kerak: murojaat yozayotgan odam `/donate`
+# yozsa unga "matn yuboring" deb javob berish noto'g'ri bo'lardi. Buyruq
+# routerlari `support` dan oldin turadi, lekin filtrda ham aniq yozamiz —
+# keyinchalik yangi buyruq qo'shilib, tartibi keyinroq qolib ketishi mumkin.
+@router.message(StateFilter(SupportStates.waiting_message), ~F.text.startswith("/"))
 async def reject_non_text(message: Message, t: ModuleType) -> None:
     """Matn bo'lmagan hamma narsa — rasm, ovoz, stiker.
 
