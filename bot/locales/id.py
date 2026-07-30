@@ -124,6 +124,13 @@ UNSUPPORTED_INPUT = (
 TRANSLATION_NOT_FOUND = "Terjemahan ini tidak ditemukan (tombol kedaluwarsa)."
 LANGUAGE_NOT_AVAILABLE = "Bahasa ini tidak tersedia"
 
+DEVELOPER = (
+    "👨‍💻 <b>Pengembang bot</b>\n\n"
+    "@{admin}\n\n"
+    "Anda juga bisa menulis saran, pertanyaan atau laporan bug lewat "
+    "<b>✉️ Hubungi admin</b>."
+)
+
 # ── Hubungi admin ────────────────────────────────────────────
 CONTACT_PROMPT = (
     "✉️ <b>Hubungi admin</b>\n\n"

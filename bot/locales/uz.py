@@ -124,6 +124,13 @@ UNSUPPORTED_INPUT = (
 TRANSLATION_NOT_FOUND = "Bu tarjima topilmadi (eskirgan tugma)."
 LANGUAGE_NOT_AVAILABLE = "Bu til mavjud emas"
 
+DEVELOPER = (
+    "👨‍💻 <b>Bot dasturchisi</b>\n\n"
+    "@{admin}\n\n"
+    "Taklif, savol yoki xatolik haqida <b>✉️ Adminga murojaat</b> "
+    "bo'limi orqali ham yozishingiz mumkin."
+)
+
 # ── Adminga murojaat ─────────────────────────────────────────
 CONTACT_PROMPT = (
     "✉️ <b>Adminga murojaat</b>\n\n"

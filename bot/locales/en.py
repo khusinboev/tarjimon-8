@@ -125,6 +125,13 @@ UNSUPPORTED_INPUT = (
 TRANSLATION_NOT_FOUND = "This translation was not found (outdated button)."
 LANGUAGE_NOT_AVAILABLE = "This language is not available"
 
+DEVELOPER = (
+    "👨‍💻 <b>Bot developer</b>\n\n"
+    "@{admin}\n\n"
+    "You can also write about suggestions, questions or bugs via "
+    "<b>✉️ Contact admin</b>."
+)
+
 # ── Contact admin ────────────────────────────────────────────
 CONTACT_PROMPT = (
     "✉️ <b>Contact admin</b>\n\n"

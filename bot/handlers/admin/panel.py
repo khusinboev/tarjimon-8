@@ -33,11 +33,6 @@ def is_admin(user_id: int) -> bool:
     return user_id in settings.ADMIN_USER_IDS
 
 
-@router.message(Command("developer"))
-async def developer_info(message: Message):
-    await message.answer("Bot dasturchisi: @coder_admin_py")
-
-
 @router.message(Command("admin"), F.from_user.func(lambda u: u and is_admin(u.id)))
 @router.message(Command("panel"), F.from_user.func(lambda u: u and is_admin(u.id)))
 async def open_admin_panel(message: Message, state: FSMContext):

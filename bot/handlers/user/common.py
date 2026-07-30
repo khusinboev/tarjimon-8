@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import ModuleType
 
 from aiogram import F, Router
+from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
@@ -39,3 +40,14 @@ async def show_help(
         ),
         reply_markup=main_menu(t),
     )
+
+
+@router.message(Command("developer"))
+async def show_developer(message: Message, t: ModuleType) -> None:
+    """Dasturchi kontakti.
+
+    Ommaviy buyruq — shuning uchun foydalanuvchi tilida chiqadi va username
+    `settings` dan olinadi. Ilgari admin panelida qattiq yozilgan begona
+    username turgan edi.
+    """
+    await message.answer(t.DEVELOPER.format(admin=settings.ADMIN_USERNAME))
