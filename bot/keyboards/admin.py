@@ -26,6 +26,7 @@ def admin_broadcast_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="📨 Forward xabar yuborish"), KeyboardButton(text="📬 Oddiy xabar yuborish")],
+            [KeyboardButton(text="📊 Broadcast holati")],
             [KeyboardButton(text="⛔ Broadcastni to'xtatish")],
             [KeyboardButton(text="🔙 Orqaga")],
         ],

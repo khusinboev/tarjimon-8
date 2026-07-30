@@ -1,4 +1,4 @@
-from sqlalchemy import update, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from bot.database.models import Broadcast, BroadcastDelivery
 from bot.services.events import utcnow
@@ -94,3 +94,64 @@ class BroadcastRepository:
             .order_by(Broadcast.created_at.desc())
         )
         return list(result.scalars().all())
+
+    async def stats(self, limit: int = 5) -> list[dict]:
+        """Oxirgi tarqatishlar bo'yicha yetkazish hisobi.
+
+        `broadcasts.success_count` faqat tarqatish tugagach yoziladi, shuning
+        uchun ishlab turgan tarqatish uchun `broadcast_deliveries` dan
+        hisoblaymiz — admin jarayon davomida ham holatni ko'rishi kerak.
+        """
+        rows = await self.session.execute(
+            select(
+                Broadcast.id,
+                Broadcast.status,
+                Broadcast.total_targets,
+                Broadcast.content_preview,
+                Broadcast.started_at,
+                Broadcast.finished_at,
+                func.count(BroadcastDelivery.id)
+                .filter(BroadcastDelivery.status == "delivered")
+                .label("delivered"),
+                func.count(BroadcastDelivery.id)
+                .filter(BroadcastDelivery.status == "failed")
+                .label("failed"),
+            )
+            .outerjoin(BroadcastDelivery, BroadcastDelivery.broadcast_id == Broadcast.id)
+            .group_by(
+                Broadcast.id,
+                Broadcast.status,
+                Broadcast.total_targets,
+                Broadcast.content_preview,
+                Broadcast.started_at,
+                Broadcast.finished_at,
+            )
+            .order_by(Broadcast.id.desc())
+            .limit(limit)
+        )
+        return [
+            {
+                "id": r.id,
+                "status": r.status,
+                "total": r.total_targets,
+                "preview": r.content_preview,
+                "started_at": r.started_at,
+                "finished_at": r.finished_at,
+                "delivered": r.delivered,
+                "failed": r.failed,
+            }
+            for r in rows.all()
+        ]
+
+    async def failure_reasons(self, broadcast_id: int, limit: int = 5) -> list[tuple[str, int]]:
+        rows = await self.session.execute(
+            select(BroadcastDelivery.error, func.count(BroadcastDelivery.id))
+            .where(
+                BroadcastDelivery.broadcast_id == broadcast_id,
+                BroadcastDelivery.status == "failed",
+            )
+            .group_by(BroadcastDelivery.error)
+            .order_by(func.count(BroadcastDelivery.id).desc())
+            .limit(limit)
+        )
+        return [(r[0] or "noma'lum", r[1]) for r in rows.all()]

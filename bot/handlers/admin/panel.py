@@ -7,6 +7,7 @@ from aiogram.types import Message
 from aiogram.exceptions import TelegramBadRequest
 
 from bot.config.settings import settings
+from bot.database.repositories.broadcast_repository import BroadcastRepository
 from bot.database.session import AsyncSessionLocal
 from bot.keyboards.admin import (
     admin_main_keyboard,
@@ -15,6 +16,7 @@ from bot.keyboards.admin import (
     back_keyboard,
 )
 from bot.services.admin_service import AdminService
+from bot.services.events import utcnow
 from bot.states.admin import AdminStates
 
 
@@ -189,6 +191,58 @@ async def channel_list(message: Message):
 @router.message(F.text == "📤 Reklama", F.from_user.func(lambda u: u and is_admin(u.id)))
 async def broadcast_menu(message: Message):
     await message.answer("Reklama bo'limi", reply_markup=admin_broadcast_keyboard())
+
+
+@router.message(F.text == "📊 Broadcast holati", F.from_user.func(lambda u: u and is_admin(u.id)))
+async def broadcast_stats(message: Message, session):
+    """Oxirgi tarqatishlar hisoboti.
+
+    Skript orqali ishga tushirilgan tarqatishlar ham shu jadvallarga yozadi,
+    shuning uchun ular ham shu yerda ko'rinadi.
+    """
+    repo = BroadcastRepository(session)
+    rows = await repo.stats(limit=5)
+
+    if not rows:
+        await message.answer("Hozircha tarqatish bo'lmagan.", reply_markup=admin_broadcast_keyboard())
+        return
+
+    icons = {
+        "running": "🔄",
+        "completed": "✅",
+        "cancelled": "⛔",
+        "failed": "❌",
+        "cancel_requested": "⏸",
+        "created": "🆕",
+    }
+
+    lines = ["📊 <b>Tarqatishlar</b>", ""]
+    for row in rows:
+        processed = row["delivered"] + row["failed"]
+        total = row["total"] or 0
+        percent = (processed / total * 100) if total else 0.0
+
+        lines.append(f"{icons.get(row['status'], '•')} <b>#{row['id']}</b> — {row['status']}")
+        lines.append(f"   Yuborildi: <b>{row['delivered']:,}</b>".replace(",", " "))
+        lines.append(f"   Yetmadi: <b>{row['failed']:,}</b>".replace(",", " "))
+        lines.append(f"   Jarayon: {processed:,}/{total:,} ({percent:.1f}%)".replace(",", " "))
+
+        if row["status"] == "running" and row["started_at"] and processed:
+            elapsed = (utcnow() - row["started_at"]).total_seconds()
+            speed = processed / elapsed if elapsed > 0 else 0
+            remaining = total - processed
+            if speed > 0:
+                eta_min = remaining / speed / 60
+                lines.append(f"   Tezlik: {speed:.1f}/sek · qoldi ~{eta_min:.0f} daqiqa")
+
+        if row["failed"]:
+            reasons = await repo.failure_reasons(row["id"], limit=3)
+            pretty = ", ".join(f"{reason} ({count})" for reason, count in reasons)
+            lines.append(f"   Sabab: {pretty}")
+
+        lines.append("")
+
+    await message.answer("\n".join(lines), reply_markup=admin_broadcast_keyboard())
 
 
 @router.message(F.text == "📨 Forward xabar yuborish", F.from_user.func(lambda u: u and is_admin(u.id)))
