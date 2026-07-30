@@ -165,6 +165,15 @@ DONATE_CUSTOM_PROMPT = (
     "Sonni yozib yuboring ({min}–{max})."
 )
 DONATE_CUSTOM_INVALID = "❌ Faqat son yuboring, {min} dan {max} gacha."
+DONATE_CARD_BUTTON = "💳 Karta orqali"
+DONATE_CARDS = (
+    "💳 <b>Karta orqali homiylik</b>\n\n"
+    "Raqam ustiga bosing — nusxa olinadi.\n\n"
+    "🔵 <b>VISA</b>\n<code>{visa}</code>\n\n"
+    "🟢 <b>UzCard</b>\n<code>{uzcard}</code>\n\n"
+    "👤 {holder}\n\n"
+    "<i>Har qanday miqdor yordam beradi. Rahmat!</i>"
+)
 
 # ── Qayta ishga tushish xabari (scripts/broadcast_relaunch.py) ──
 RELAUNCH = (

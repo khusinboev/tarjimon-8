@@ -17,6 +17,7 @@ from bot.keyboards.admin import (
     back_keyboard,
 )
 from bot.services.admin_service import AdminService
+from bot.services.stats import StatsService, render as render_stats
 from bot.services.events import utcnow
 from bot.states.admin import AdminStates
 
@@ -52,39 +53,15 @@ async def go_back(message: Message, state: FSMContext):
 
 @router.message(F.text == "📊 Statistika", F.from_user.func(lambda u: u and is_admin(u.id)))
 async def show_stats(message: Message):
+    """Boy statistika.
+
+    Ko'rinish `bot/services/stats.py` da: tekislangan `<pre>` jadvallar,
+    ulush chiziqlari va uzun ro'yxatlar uchun yig'iladigan bloklar.
+    """
     async with AsyncSessionLocal() as session:
-        service = AdminService(session, message.bot)
-        stats = await service.get_stats()
+        data = await StatsService(session).collect()
 
-    attempts = stats["attempts_day"]
-    error_pct = (stats["errors_day"] / attempts * 100) if attempts else 0.0
-
-    lines = [
-        "📊 <b>Statistika</b>",
-        "",
-        "<b>Foydalanuvchilar</b>",
-        f"Jami: {stats['total_users']:,}".replace(",", " "),
-        f"Bugun yangi: {stats['new_day']}",
-        f"Bugun aktiv: {stats['active_day']}",
-        f"7 kun aktiv: {stats['active_week']}",
-        f"Botni bloklagan: {stats['blocked']}",
-        "",
-        "<b>Tarjimalar</b>",
-        f"Jami: {stats['translations_total']:,}".replace(",", " "),
-        f"Bugun: {stats['translations_day']}",
-        f"Xatolik ulushi (bugun): {error_pct:.1f}%",
-    ]
-
-    if stats["top_pairs"]:
-        lines.append("")
-        lines.append("<b>Ommabop yo'nalishlar</b>")
-        for src, dst, count in stats["top_pairs"]:
-            lines.append(f"{src or '?'} → {dst}: {count:,}".replace(",", " "))
-
-    lines.append("")
-    lines.append(f"Aktiv kanallar: {stats['active_channels']}")
-
-    await message.answer("\n".join(lines), reply_markup=admin_main_keyboard())
+    await message.answer(render_stats(data), reply_markup=admin_main_keyboard())
 
 
 @router.message(F.text == "🔧 Kanallar", F.from_user.func(lambda u: u and is_admin(u.id)))

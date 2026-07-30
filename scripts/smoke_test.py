@@ -637,6 +637,44 @@ async def test_broadcast() -> None:
         check(f"vaqtinchalik: {text!r:34}", not is_permanently_unreachable(text))
 
 
+async def test_stats() -> None:
+    """Statistika: ma'lumot yig'iladi va Telegram chegarasiga sig'adi."""
+    print("\n[15] Statistika")
+    from bot.services.stats import StatsService, bar, num, render, table
+
+    check("raqam probel bilan", num(37457) == "37 457", num(37457))
+    check("nol ulush bo'sh", bar(0, 100) == "░" * 10)
+    check("to'liq ulush to'la", bar(100, 100) == "█" * 10)
+    # Kichik lekin mavjud ulush ko'rinishi kerak, aks holda "umuman yo'q"
+    # degan noto'g'ri taassurot berardi.
+    check("kichik ulush ham ko'rinadi", bar(1, 1000).startswith("█"))
+    check("nol jami yiqilmaydi", bar(5, 0) == "░" * 10)
+
+    # Jadval ustunlari teng kenglikda bo'lishi kerak — `<pre>` monoshirina.
+    rendered = table([("a", "1"), ("bbb", "22")], align="lr").split("\n")
+    check("jadval ustunlari tekislanadi", len({len(r) for r in rendered}) == 1, str(rendered))
+
+    async with AsyncSessionLocal() as session:
+        data = await StatsService(session).collect()
+
+    check("foydalanuvchilar sanaldi", data.users_total > 0, num(data.users_total))
+    check("holatlar bo'yicha bo'lindi", bool(data.users_by_status), str(data.users_by_status))
+    check("interfeys tillari bor", bool(data.users_by_lang), str(data.users_by_lang))
+    check("tarjimalar sanaldi", data.translations_total > 0, num(data.translations_total))
+
+    out = render(data)
+    check("Telegram chegarasiga sig'adi", len(out) < 4096, f"{len(out)} belgi")
+    check("yig'iladigan blok bor", "<blockquote expandable>" in out)
+    check("monoshirina jadval bor", "<pre>" in out)
+    # Ochilgan teglar yopilgan bo'lishi shart, aks holda Telegram xabarni rad etadi.
+    for tag in ("b", "i", "pre", "blockquote"):
+        check(
+            f"<{tag}> teglari muvozanatda",
+            out.count(f"<{tag}>") + (out.count("<blockquote expandable>") if tag == "blockquote" else 0)
+            == out.count(f"</{tag}>"),
+        )
+
+
 async def cleanup() -> None:
     async with AsyncSessionLocal() as session:
         from sqlalchemy import delete
@@ -681,6 +719,7 @@ async def main() -> None:
     await test_support()
     await test_donate(user_id)
     await test_broadcast()
+    await test_stats()
 
     await cleanup()
     await engine.dispose()

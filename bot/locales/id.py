@@ -164,6 +164,15 @@ DONATE_CUSTOM_PROMPT = (
     "Kirim angkanya ({min}–{max})."
 )
 DONATE_CUSTOM_INVALID = "❌ Kirim angka saja, antara {min} dan {max}."
+DONATE_CARD_BUTTON = "💳 Lewat kartu"
+DONATE_CARDS = (
+    "💳 <b>Donasi lewat kartu</b>\n\n"
+    "Ketuk nomornya untuk menyalin.\n\n"
+    "🔵 <b>VISA</b>\n<code>{visa}</code>\n\n"
+    "🟢 <b>UzCard</b>\n<code>{uzcard}</code>\n\n"
+    "👤 {holder}\n\n"
+    "<i>Berapa pun membantu. Terima kasih!</i>"
+)
 
 # ── Pengumuman peluncuran ulang (scripts/broadcast_relaunch.py) ──
 RELAUNCH = (

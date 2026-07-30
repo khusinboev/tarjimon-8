@@ -151,9 +151,17 @@ def translation_actions(
 
 
 def donate_amounts(
-    t: ModuleType, presets: Sequence[int], *, per_row: int = 3
+    t: ModuleType,
+    presets: Sequence[int],
+    *,
+    per_row: int = 3,
+    with_cards: bool = False,
 ) -> InlineKeyboardMarkup:
-    """Homiylik miqdorlari. Har bir tugma — Telegram Stars soni."""
+    """Homiylik miqdorlari. Har bir tugma — Telegram Stars soni.
+
+    `with_cards` — karta rekvizitlari sozlangan bo'lsa qo'shimcha tugma.
+    Telegram Stars hamma mintaqada qulay emas, karta esa oddiyroq yo'l.
+    """
     rows: List[List[InlineKeyboardButton]] = []
     row: List[InlineKeyboardButton] = []
 
@@ -173,4 +181,12 @@ def donate_amounts(
     rows.append(
         [InlineKeyboardButton(text=t.DONATE_CUSTOM, callback_data="donate:custom")]
     )
+    if with_cards:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=t.DONATE_CARD_BUTTON, callback_data="donate:cards"
+                )
+            ]
+        )
     return InlineKeyboardMarkup(inline_keyboard=rows)

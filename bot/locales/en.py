@@ -165,6 +165,15 @@ DONATE_CUSTOM_PROMPT = (
     "Send the number ({min}–{max})."
 )
 DONATE_CUSTOM_INVALID = "❌ Send a number only, between {min} and {max}."
+DONATE_CARD_BUTTON = "💳 By card"
+DONATE_CARDS = (
+    "💳 <b>Donate by card</b>\n\n"
+    "Tap a number to copy it.\n\n"
+    "🔵 <b>VISA</b>\n<code>{visa}</code>\n\n"
+    "🟢 <b>UzCard</b>\n<code>{uzcard}</code>\n\n"
+    "👤 {holder}\n\n"
+    "<i>Any amount helps. Thank you!</i>"
+)
 
 # ── Relaunch announcement (scripts/broadcast_relaunch.py) ──
 RELAUNCH = (

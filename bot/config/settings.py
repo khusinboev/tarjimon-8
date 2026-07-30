@@ -98,6 +98,18 @@ class Settings(BaseSettings):
                 values.append(int(part))
         return values or [10, 25, 50, 100]
 
+    # ── Homiylik: karta rekvizitlari ──────────────────────────
+    # Telegram Stars hammaga qulay emas (mintaqaviy cheklovlar, Stars sotib
+    # olish kerak). Karta — O'zbekistondagi foydalanuvchilar uchun oddiyroq yo'l.
+    # Bo'sh qoldirilsa karta tugmasi umuman ko'rsatilmaydi.
+    DONATE_CARD_VISA: str = Field(default="4413 5976 0130 3496")
+    DONATE_CARD_UZCARD: str = Field(default="6262 7300 1554 9852")
+    DONATE_CARD_HOLDER: str = Field(default="Ho'sinboyev Adhambek")
+
+    @property
+    def HAS_DONATE_CARDS(self) -> bool:
+        return bool(self.DONATE_CARD_VISA or self.DONATE_CARD_UZCARD)
+
     # ── Adminga murojaat ──────────────────────────────────────
     # Yordam bo'limida ko'rsatiladigan profil — bot orqali emas, to'g'ridan-to'g'ri
     # yozmoqchi bo'lganlar uchun. @ belgisisiz yoziladi.

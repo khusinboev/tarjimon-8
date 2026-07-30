@@ -76,7 +76,9 @@ async def open_donate(
     )
     await message.answer(
         t.DONATE_INTRO,
-        reply_markup=donate_amounts(t, settings.DONATE_PRESETS),
+        reply_markup=donate_amounts(
+            t, settings.DONATE_PRESETS, with_cards=settings.HAS_DONATE_CARDS
+        ),
     )
 
 
@@ -88,6 +90,32 @@ async def ask_custom_amount(callback, state: FSMContext, t: ModuleType) -> None:
             min=settings.DONATE_MIN, max=settings.DONATE_MAX
         ),
         reply_markup=cancel_menu(t),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "donate:cards")
+async def show_cards(
+    callback,
+    user: User,
+    events: EventService,
+    session_id,
+    t: ModuleType,
+) -> None:
+    """Karta rekvizitlari. Raqamlar `<code>` ichida — bosib nusxa olinadi."""
+    await events.log(
+        EventType.DONATE_OPENED,
+        user_id=user.id,
+        chat_id=callback.message.chat.id if callback.message else None,
+        session_id=session_id,
+        method="card",
+    )
+    await callback.message.answer(
+        t.DONATE_CARDS.format(
+            visa=settings.DONATE_CARD_VISA,
+            uzcard=settings.DONATE_CARD_UZCARD,
+            holder=settings.DONATE_CARD_HOLDER,
+        )
     )
     await callback.answer()
 
