@@ -75,13 +75,21 @@ DEFAULT_CONCURRENCY = 10
 # Bu xatolar chatning umuman mavjud emasligini bildiradi. Qayta urinish ham,
 # keyingi tarqatishlarda qayta yuborish ham foydasiz — chat qaytmaydi.
 #
-# `forbidden` (403) bu ro'yxatda YO'Q va bo'lmasligi kerak: u "bloklagan"
-# degani, foydalanuvchi botni qayta ochsa holat tiklanadi.
+# Ma'nolari:
+#   chat not found            — akkaunt o'chirilgan yoki shaxsiy chat ochilmagan
+#   PEER_ID_INVALID           — id umuman yaroqsiz (eski migratsiyadan qolgan)
+#   USER_BOT_TO_BOT_DISABLED  — nishon o'zi bot, botlar bir-biriga yoza olmaydi
+#   user is deactivated       — Telegram akkauntni o'chirgan
+#
+# `forbidden` va "bot was blocked by the user" bu ro'yxatda ataylab YO'Q:
+# ular "bloklagan" degani, foydalanuvchi botni qayta ochsa holat tiklanadi.
+# Ularni `deleted` qilish qaytib keladigan foydalanuvchini yo'qotish bo'lardi.
 PERMANENT_ERROR_MARKERS = (
     "chat not found",
     "user_bot_to_bot_disabled",
     "peer_id_invalid",
     "user is deactivated",
+    "user_deactivated",
     "chat_id is empty",
     "bot can't initiate conversation",
 )
