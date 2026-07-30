@@ -315,10 +315,16 @@ async def test_events(user_id: int) -> None:
         ).scalar_one()
         check("voqealar yozildi", total == 2, f"{total} ta")
 
+        # `user_id` bo'yicha filtrlash shart: ishlab turgan bazada jonli
+        # foydalanuvchilarning `translate.succeeded` voqealari ham bor va
+        # ularsiz sinov begona qatorni tekshirib qolardi.
         row = (
             await session.execute(
                 select(Event)
-                .where(Event.event_type == EventType.TRANSLATE_SUCCEEDED)
+                .where(
+                    Event.user_id == user_id,
+                    Event.event_type == EventType.TRANSLATE_SUCCEEDED,
+                )
                 .limit(1)
             )
         ).scalar_one()
