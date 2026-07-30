@@ -123,7 +123,12 @@ async def test_languages() -> None:
         LanguageRepository.invalidate_cache()
 
         langs = await repo.all_active()
-        check("tillar yuklandi", len(langs) == 21, f"{len(langs)} ta")
+        codes = {lang.code for lang in langs}
+        # Aniq songa bog'lamaymiz — til qo'shilganda sinov behuda yiqilardi.
+        # Muhimi: asosiylari joyida va `auto` bor.
+        check("tillar yuklandi", len(langs) >= 22, f"{len(langs)} ta")
+        missing = {"auto", "uz", "ru", "en", "tr", "ar", "am", "id"} - codes
+        check("asosiy tillar joyida", not missing, f"yo'q: {missing}" if missing else "")
 
         source_opts = await repo.selectable(include_auto=True)
         target_opts = await repo.selectable(include_auto=False)

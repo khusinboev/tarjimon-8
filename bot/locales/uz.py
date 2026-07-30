@@ -183,7 +183,7 @@ RELAUNCH = (
     "📋 <b>Nusxa olish oson</b> — tarjima ustiga bosasiz, matn nusxalanadi\n"
     "🔄 <b>Almashtirish tugmasi</b> — yo'nalishni bir bosishda teskari qilasiz\n"
     "🔊 <b>Ovoz</b> — tarjimani tinglashingiz mumkin\n"
-    "🌐 <b>21 til</b> — o'zbek, rus, ingliz, turk, arab va boshqalar\n"
+    "🌐 <b>22 til</b> — o'zbek, rus, ingliz, turk, arab, amhar va boshqalar\n"
     "⚡️ <b>Tezlik</b> — takroriy tarjimalar bir zumda qaytadi\n"
     "🗣 <b>Interfeys tilingizda</b> — Telegram tilingizga qarab avtomatik\n\n"
     "Sinab ko'rish uchun shunchaki matn yuboring 👇"

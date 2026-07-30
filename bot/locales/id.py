@@ -183,7 +183,7 @@ RELAUNCH = (
     "📋 <b>Mudah disalin</b> — ketuk hasil terjemahan, teks langsung tersalin\n"
     "🔄 <b>Tombol tukar</b> — balik arah terjemahan dengan sekali ketuk\n"
     "🔊 <b>Suara</b> — dengarkan hasil terjemahan\n"
-    "🌐 <b>21 bahasa</b> — Indonesia, Inggris, Rusia, Turki, Arab, dan lainnya\n"
+    "🌐 <b>22 bahasa</b> — Indonesia, Inggris, Rusia, Turki, Arab, Amharik, dan lainnya\n"
     "⚡️ <b>Cepat</b> — terjemahan yang sama kembali seketika\n"
     "🗣 <b>Bahasa Anda</b> — antarmuka mengikuti bahasa Telegram Anda\n\n"
     "Kirim teks apa pun untuk mencoba 👇"
