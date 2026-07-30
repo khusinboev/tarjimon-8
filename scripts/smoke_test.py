@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sqlalchemy import func, select
 
 from bot import locales
+from bot.config.settings import settings
 from bot.database.models import Event, Translation, TranslationSignal
 from bot.database.repositories.language_repository import LanguageRepository
 from bot.database.repositories.translation_repository import TranslationRepository
@@ -93,7 +94,8 @@ async def test_locales() -> None:
         t = locales.get(code)
         try:
             t.WELCOME.format(name="X", source="A", target="B")
-            t.SETTINGS.format(tts=t.ON, interface=t.NAME, used=1, limit=50)
+            t.CONTACT_TOO_LONG.format(length=10, limit=5)
+            t.CONTACT_RATE_LIMITED.format(minutes=7)
             t.TOO_LONG.format(length=10, limit=5)
             t.QUOTA_EXCEEDED.format(limit=50)
             t.LANG_SWAPPED.format(source="A", target="B")
@@ -108,7 +110,7 @@ async def test_locales() -> None:
         t = locales.get(code)
         in_set = all(
             btn in locales.MENU_BUTTONS
-            for btn in (t.BTN_LANGUAGES, t.BTN_SETTINGS, t.BTN_HELP)
+            for btn in (t.BTN_LANGUAGES, t.BTN_CONTACT, t.BTN_HELP)
         )
         check(f"{code}: tugmalari filtrga kiradi", in_set)
 
@@ -369,9 +371,14 @@ async def test_keyboards() -> None:
         menu = main_menu(t)
         labels = [b.text for row in menu.keyboard for b in row]
         check(f"{code}: menyuda 3 tugma", len(labels) == 3, ", ".join(labels))
+        check(f"{code}: murojaat tugmasi bor", t.BTN_CONTACT in labels)
         check(
-            f"{code}: tarix tugmasi yo'q",
-            not any("Tarix" in x or "Histor" in x or "Riwayat" in x for x in labels),
+            f"{code}: tarix va sozlama tugmasi yo'q",
+            not any(
+                w in x
+                for x in labels
+                for w in ("Tarix", "Histor", "Riwayat", "Sozlama", "Setting", "Pengaturan")
+            ),
         )
 
         markup = translation_actions(t, 42, has_tts=True, source=auto, target=uz)
@@ -410,6 +417,57 @@ async def test_keyboards() -> None:
         direction_label(t_en, uz, en) == direction_label(t_uz, uz, en),
         direction_label(t_en, uz, en),
     )
+
+
+async def test_support() -> None:
+    """Adminga murojaat: matn tayyorlash va spam cheklovi."""
+    print("\n[12] Adminga murojaat")
+    from types import SimpleNamespace
+
+    from bot.handlers.user.support import _admin_view, _rate_limited
+
+    # Foydalanuvchi matnidagi HTML buzmasligi kerak: `<` bo'lsa Telegram
+    # xabarni butunlay rad etadi va murojaat adminga yetmasdi.
+    fake = SimpleNamespace(
+        username="tester", first_name="A <b>Bold</b>", telegram_id=123, telegram_lang="uz"
+    )
+    view = _admin_view(fake, "narx < 100 & shart")
+    check("murojaat matni escape qilinadi", "&lt; 100 &amp; shart" in view)
+    check("ism ham escape qilinadi", "A &lt;b&gt;Bold&lt;/b&gt;" in view)
+    check("telegram id ko'rinadi", "<code>123</code>" in view)
+    check("username ko'rinadi", "@tester" in view)
+
+    # Username yo'q bo'lsa yiqilmasligi kerak.
+    anon = SimpleNamespace(
+        username=None, first_name=None, telegram_id=9, telegram_lang=None
+    )
+    check("username/ism yo'q bo'lsa ham ishlaydi", "—" in _admin_view(anon, "salom"))
+
+    # Redis yo'q — cheklov fail-open (tarjima oqimidagi bilan bir xil qaror).
+    check("redis yo'q bo'lsa cheklov o'tkazadi", await _rate_limited(None, 1) == 0)
+
+    # Redis bilan: limitdan keyin qolgan daqiqa qaytadi.
+    try:
+        from bot.database.redis import get_redis
+
+        client = get_redis()
+        await client.ping()
+    except Exception:
+        print("  ⏭  Redis yo'q — cheklov sinovi o'tkazib yuborildi")
+        return
+
+    uid = 999_111_222
+    await client.delete(f"support:{uid}")
+    allowed = [await _rate_limited(client, uid) for _ in range(settings.SUPPORT_RATE_LIMIT)]
+    check(
+        f"birinchi {settings.SUPPORT_RATE_LIMIT} murojaat o'tadi",
+        all(x == 0 for x in allowed),
+        str(allowed),
+    )
+    blocked = await _rate_limited(client, uid)
+    check("keyingisi cheklanadi", blocked > 0, f"{blocked} daqiqa")
+    await client.delete(f"support:{uid}")
+    await client.aclose()
 
 
 async def cleanup() -> None:
@@ -452,6 +510,7 @@ async def main() -> None:
     await test_events(user_id)
     await test_tts()
     await test_keyboards()
+    await test_support()
 
     await cleanup()
     await engine.dispose()

@@ -46,10 +46,23 @@ def main_menu(t: ModuleType) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text=t.BTN_LANGUAGES)],
-            [KeyboardButton(text=t.BTN_SETTINGS), KeyboardButton(text=t.BTN_HELP)],
+            [KeyboardButton(text=t.BTN_CONTACT), KeyboardButton(text=t.BTN_HELP)],
         ],
         resize_keyboard=True,
         is_persistent=True,
+    )
+
+
+def cancel_menu(t: ModuleType) -> ReplyKeyboardMarkup:
+    """Murojaat yozish paytidagi klaviatura — faqat bekor qilish.
+
+    Reply-klaviatura ataylab: foydalanuvchi xabar yozayotganda asosiy menyu
+    tugmalari ko'rinib turmasligi kerak, aks holda ularni bosib qo'yadi va
+    matni yo'qoladi.
+    """
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text=t.BTN_CANCEL)]],
+        resize_keyboard=True,
     )
 
 
@@ -134,40 +147,3 @@ def translation_actions(
             ],
         ]
     )
-
-
-def settings_menu(
-    t: ModuleType, *, tts_enabled: bool
-) -> InlineKeyboardMarkup:
-    def mark(value: bool) -> str:
-        return "✅" if value else "❌"
-
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text=f"{mark(tts_enabled)} {t.BTN_TTS_ENABLED}",
-                    callback_data="set:toggle:tts_enabled",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text=t.BTN_INTERFACE_LANG, callback_data="set:interface"
-                )
-            ],
-        ]
-    )
-
-
-def interface_picker(t: ModuleType, names: dict[str, str], current: str) -> InlineKeyboardMarkup:
-    rows = [
-        [
-            InlineKeyboardButton(
-                text=f"{'✅ ' if code == current else ''}{name}",
-                callback_data=f"set:interface:{code}",
-            )
-        ]
-        for code, name in names.items()
-    ]
-    rows.append([InlineKeyboardButton(text=t.BTN_BACK, callback_data="set:menu")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)

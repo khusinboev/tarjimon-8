@@ -15,8 +15,8 @@ from bot.config.settings import settings
 from bot.database.redis import get_redis
 from bot.database.session import init_db
 from bot.handlers.admin import panel
-from bot.handlers.user import common, languages, settings as user_settings
-from bot.handlers.user import start, subscription, translate, tts
+from bot.handlers.user import common, languages, start, subscription
+from bot.handlers.user import support, translate, tts
 from bot.middlewares.context import ContextMiddleware
 from bot.middlewares.subscription import SubscriptionMiddleware
 
@@ -71,14 +71,18 @@ async def main() -> None:
     dp.message.middleware(subscription_guard)
     dp.callback_query.middleware(subscription_guard)
 
-    # Tartib muhim: `translate` keng `F.text` filtriga ega, shuning uchun oxirida.
+    # Tartib muhim:
+    #  - menyu routerlari (`languages`, `common`) `support` dan oldin: murojaat
+    #    yozish holatida menyu tugmasi bosilsa u tugma sifatida ishlashi kerak,
+    #    murojaat matni sifatida emas
+    #  - `translate` eng oxirida: uning `F.text` filtri juda keng
     dp.include_router(start.router)
     dp.include_router(subscription.router)
     dp.include_router(languages.router)
-    dp.include_router(user_settings.router)
+    dp.include_router(common.router)
+    dp.include_router(support.router)
     dp.include_router(tts.router)
     dp.include_router(panel.router)
-    dp.include_router(common.router)
     dp.include_router(translate.router)
 
     me = await bot.get_me()

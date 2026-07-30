@@ -10,16 +10,15 @@ NAME = "English"
 
 # ── Reply menu buttons ───────────────────────────────────────
 BTN_LANGUAGES = "🌐 Languages"
-BTN_SETTINGS = "⚙️ Settings"
+BTN_CONTACT = "✉️ Contact admin"
 BTN_HELP = "ℹ️ Help"
 
 # ── Inline buttons ───────────────────────────────────────────
 BTN_VOICE = "🔊 Voice"
 BTN_SWAP = "🔄 Swap"
 BTN_BACK = "⬅️ Back"
+BTN_CANCEL = "❌ Cancel"
 BTN_CHECK_SUBSCRIPTION = "✅ Check subscription"
-BTN_TTS_ENABLED = "Voice button"
-BTN_INTERFACE_LANG = "🗣 Interface language"
 
 # Name for the `auto` pseudo-language — `name_native` is empty in the database
 # because it is not a real language.
@@ -43,7 +42,7 @@ HELP = (
     "ℹ️ <b>How to use the bot</b>\n\n"
     "• Send any text — it is translated automatically\n"
     "• <b>🌐 Languages</b> — change the translation direction\n"
-    "• <b>⚙️ Settings</b> — voice and interface language\n\n"
+    "• <b>✉️ Contact admin</b> — send a question or suggestion\n\n"
     "Buttons under each translation:\n"
     "🔊 — listen to the text\n"
     "🔄 — reverse the direction\n"
@@ -61,27 +60,15 @@ LANGUAGE_MENU = (
 
 PICK_SOURCE = "🔤 Pick the <b>source language</b> (what you will send):"
 PICK_TARGET = "🎯 Pick the <b>target language</b> (what to translate into):"
-PICK_INTERFACE = "🗣 Pick the <b>interface language</b>:"
 
 LANG_SAVED = "✅ Direction: <b>{source} → {target}</b>"
 LANG_SWAPPED = "🔄 Swapped: <b>{source} → {target}</b>"
-INTERFACE_SAVED = "✅ Interface language: <b>{name}</b>"
 
 # Cannot swap while the source is `auto` and nothing has been detected yet.
 SWAP_NEEDS_SOURCE = (
     "Auto detect cannot be a target language. Pick a source language first."
 )
 
-# ── Settings ─────────────────────────────────────────────────
-SETTINGS = (
-    "⚙️ <b>Settings</b>\n\n"
-    "🔊 Voice button: <b>{tts}</b>\n"
-    "🗣 Interface language: <b>{interface}</b>\n\n"
-    "Used today: <b>{used}/{limit}</b> translations"
-)
-
-ON = "on ✅"
-OFF = "off ❌"
 
 # ── Subscription ─────────────────────────────────────────────
 SUBSCRIBE_REQUIRED = "❗️ Please join the channels below to use the bot:"
@@ -134,3 +121,20 @@ UNSUPPORTED_INPUT = (
 
 TRANSLATION_NOT_FOUND = "This translation was not found (outdated button)."
 LANGUAGE_NOT_AVAILABLE = "This language is not available"
+
+# ── Contact admin ────────────────────────────────────────────
+CONTACT_PROMPT = (
+    "✉️ <b>Contact admin</b>\n\n"
+    "Write your message — it goes straight to the admin.\n\n"
+    "<i>This is not a chat: you write, the admin reads. If you need a reply, "
+    "leave your contact details.</i>"
+)
+CONTACT_SENT = "✅ Your message was sent to the admin. Thank you!"
+CONTACT_CANCELLED = "Cancelled."
+CONTACT_TOO_LONG = "📏 The message is too long (<b>{length}</b> characters). Maximum: <b>{limit}</b>."
+CONTACT_ONLY_TEXT = "✍️ Please send your message as text."
+CONTACT_RATE_LIMITED = (
+    "⏳ You sent a message recently.\n\n"
+    "You can send the next one in <b>{minutes}</b> minutes."
+)
+CONTACT_FAILED = "⚠️ Could not send the message. Please try again later."

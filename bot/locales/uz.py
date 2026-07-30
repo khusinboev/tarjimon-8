@@ -10,16 +10,15 @@ NAME = "O‘zbekcha"
 
 # ── Reply-menyu tugmalari ────────────────────────────────────
 BTN_LANGUAGES = "🌐 Tillar"
-BTN_SETTINGS = "⚙️ Sozlamalar"
+BTN_CONTACT = "✉️ Adminga murojaat"
 BTN_HELP = "ℹ️ Yordam"
 
 # ── Inline tugmalar ──────────────────────────────────────────
 BTN_VOICE = "🔊 Ovoz"
 BTN_SWAP = "🔄 Almashtirish"
 BTN_BACK = "⬅️ Ortga"
+BTN_CANCEL = "❌ Bekor qilish"
 BTN_CHECK_SUBSCRIPTION = "✅ Obunani tekshirish"
-BTN_TTS_ENABLED = "Ovoz tugmasi"
-BTN_INTERFACE_LANG = "🗣 Interfeys tili"
 
 # `auto` tilining nomi — bazada `name_native` bo'sh, chunki bu til emas.
 AUTO_DETECT = "Avto aniqlash"
@@ -42,7 +41,7 @@ HELP = (
     "ℹ️ <b>Botdan foydalanish</b>\n\n"
     "• Istalgan matn yuboring — u avtomatik tarjima qilinadi\n"
     "• <b>🌐 Tillar</b> — tarjima yo'nalishini o'zgartirish\n"
-    "• <b>⚙️ Sozlamalar</b> — ovoz va interfeys tili\n\n"
+    "• <b>✉️ Adminga murojaat</b> — savol yoki taklif yuborish\n\n"
     "Tarjima ostidagi tugmalar:\n"
     "🔊 — matnni ovozda eshitish\n"
     "🔄 — yo'nalishni teskari almashtirish\n"
@@ -60,27 +59,15 @@ LANGUAGE_MENU = (
 
 PICK_SOURCE = "🔤 <b>Manba tilni</b> tanlang (matn qaysi tilda):"
 PICK_TARGET = "🎯 <b>Maqsad tilni</b> tanlang (qaysi tilga tarjima qilinsin):"
-PICK_INTERFACE = "🗣 <b>Interfeys tilini</b> tanlang:"
 
 LANG_SAVED = "✅ Yo'nalish: <b>{source} → {target}</b>"
 LANG_SWAPPED = "🔄 Almashtirildi: <b>{source} → {target}</b>"
-INTERFACE_SAVED = "✅ Interfeys tili: <b>{name}</b>"
 
 # Manba til `auto` bo'lsa va matn tarjima qilinmagan bo'lsa almashtirish mumkin emas.
 SWAP_NEEDS_SOURCE = (
     "Avto aniqlashni maqsad til qilib bo'lmaydi. Avval manba tilni tanlang."
 )
 
-# ── Sozlamalar ───────────────────────────────────────────────
-SETTINGS = (
-    "⚙️ <b>Sozlamalar</b>\n\n"
-    "🔊 Ovoz tugmasi: <b>{tts}</b>\n"
-    "🗣 Interfeys tili: <b>{interface}</b>\n\n"
-    "Bugun ishlatilgan: <b>{used}/{limit}</b> tarjima"
-)
-
-ON = "yoqilgan ✅"
-OFF = "o'chirilgan ❌"
 
 # ── Obuna ────────────────────────────────────────────────────
 SUBSCRIBE_REQUIRED = "❗️ Botdan foydalanish uchun quyidagi kanallarga obuna bo'ling:"
@@ -133,3 +120,20 @@ UNSUPPORTED_INPUT = (
 
 TRANSLATION_NOT_FOUND = "Bu tarjima topilmadi (eskirgan tugma)."
 LANGUAGE_NOT_AVAILABLE = "Bu til mavjud emas"
+
+# ── Adminga murojaat ─────────────────────────────────────────
+CONTACT_PROMPT = (
+    "✉️ <b>Adminga murojaat</b>\n\n"
+    "Xabaringizni yozib yuboring — u to'g'ridan-to'g'ri adminga yetadi.\n\n"
+    "<i>Bu yerda suhbat yo'q: siz yozasiz, admin o'qiydi. Javob kerak bo'lsa "
+    "aloqa uchun ma'lumot qoldiring.</i>"
+)
+CONTACT_SENT = "✅ Xabaringiz adminga yuborildi. Rahmat!"
+CONTACT_CANCELLED = "Bekor qilindi."
+CONTACT_TOO_LONG = "📏 Xabar juda uzun (<b>{length}</b> belgi). Eng ko'pi: <b>{limit}</b>."
+CONTACT_ONLY_TEXT = "✍️ Iltimos, xabarni matn ko'rinishida yuboring."
+CONTACT_RATE_LIMITED = (
+    "⏳ Siz yaqinda murojaat yubordingiz.\n\n"
+    "Keyingi xabarni <b>{minutes}</b> daqiqadan keyin yuborishingiz mumkin."
+)
+CONTACT_FAILED = "⚠️ Xabarni yuborib bo'lmadi. Keyinroq urinib ko'ring."

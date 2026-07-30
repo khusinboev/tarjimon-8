@@ -58,6 +58,10 @@ class EventType:
     BUTTON_CLICKED = "button.clicked"
     INLINE_QUERY = "inline.query"
 
+    # Adminga murojaat
+    SUPPORT_MESSAGE_SENT = "support.message_sent"
+    SUPPORT_RATE_LIMITED = "support.rate_limited"
+
     # Tizim
     BROADCAST_DELIVERED = "broadcast.delivered"
     ERROR_UNHANDLED = "error.unhandled"
@@ -82,6 +86,9 @@ IMPORTANT_EVENTS = frozenset(
         EventType.TTS_SUCCEEDED,
         EventType.TTS_FAILED,
         EventType.FEEDBACK_GIVEN,
+        # Murojaat matni faqat shu voqeada saqlanadi — admin Telegram'da
+        # o'tkazib yuborsa yagona nusxa bo'lib qoladi, shuning uchun "muhim".
+        EventType.SUPPORT_MESSAGE_SENT,
         EventType.ERROR_UNHANDLED,
     }
 )

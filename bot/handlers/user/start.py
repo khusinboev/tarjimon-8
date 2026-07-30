@@ -4,6 +4,7 @@ from types import ModuleType
 
 from aiogram import Router
 from aiogram.filters import Command, CommandObject, CommandStart
+from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,10 +24,12 @@ async def cmd_start(
     user: User,
     events: EventService,
     session_id,
+    state: FSMContext,
     t: ModuleType,
     is_new_user: bool = False,
     command: CommandObject | None = None,
 ) -> None:
+    await state.clear()
     # /start dagi parametr — referal manbai. Faqat birinchi marta yoziladi.
     payload = (command.args or "").strip() if command else ""
     if is_new_user and payload:
@@ -58,8 +61,14 @@ async def cmd_start(
 
 @router.message(Command("help"))
 async def cmd_help(
-    message: Message, events: EventService, user: User, session_id, t: ModuleType
+    message: Message,
+    events: EventService,
+    user: User,
+    session_id,
+    state: FSMContext,
+    t: ModuleType,
 ) -> None:
+    await state.clear()
     await events.log(
         EventType.MENU_OPENED,
         user_id=user.id,

@@ -9,16 +9,15 @@ NAME = "Indonesia"
 
 # ── Tombol menu utama ────────────────────────────────────────
 BTN_LANGUAGES = "🌐 Bahasa"
-BTN_SETTINGS = "⚙️ Pengaturan"
+BTN_CONTACT = "✉️ Hubungi admin"
 BTN_HELP = "ℹ️ Bantuan"
 
 # ── Tombol inline ────────────────────────────────────────────
 BTN_VOICE = "🔊 Suara"
 BTN_SWAP = "🔄 Tukar"
 BTN_BACK = "⬅️ Kembali"
+BTN_CANCEL = "❌ Batal"
 BTN_CHECK_SUBSCRIPTION = "✅ Periksa langganan"
-BTN_TTS_ENABLED = "Tombol suara"
-BTN_INTERFACE_LANG = "🗣 Bahasa antarmuka"
 
 # Nama untuk pseudo-bahasa `auto` — `name_native` kosong di basis data
 # karena ini bukan bahasa sungguhan.
@@ -42,7 +41,7 @@ HELP = (
     "ℹ️ <b>Cara memakai bot</b>\n\n"
     "• Kirim teks apa pun — akan diterjemahkan otomatis\n"
     "• <b>🌐 Bahasa</b> — ubah arah terjemahan\n"
-    "• <b>⚙️ Pengaturan</b> — suara dan bahasa antarmuka\n\n"
+    "• <b>✉️ Hubungi admin</b> — kirim pertanyaan atau saran\n\n"
     "Tombol di bawah setiap terjemahan:\n"
     "🔊 — dengarkan teksnya\n"
     "🔄 — balik arah terjemahan\n"
@@ -60,27 +59,15 @@ LANGUAGE_MENU = (
 
 PICK_SOURCE = "🔤 Pilih <b>bahasa sumber</b> (bahasa teks yang Anda kirim):"
 PICK_TARGET = "🎯 Pilih <b>bahasa tujuan</b> (akan diterjemahkan ke bahasa apa):"
-PICK_INTERFACE = "🗣 Pilih <b>bahasa antarmuka</b>:"
 
 LANG_SAVED = "✅ Arah: <b>{source} → {target}</b>"
 LANG_SWAPPED = "🔄 Ditukar: <b>{source} → {target}</b>"
-INTERFACE_SAVED = "✅ Bahasa antarmuka: <b>{name}</b>"
 
 # Tidak bisa menukar saat sumbernya `auto` dan belum ada bahasa terdeteksi.
 SWAP_NEEDS_SOURCE = (
     "Deteksi otomatis tidak bisa menjadi bahasa tujuan. Pilih bahasa sumber dulu."
 )
 
-# ── Pengaturan ───────────────────────────────────────────────
-SETTINGS = (
-    "⚙️ <b>Pengaturan</b>\n\n"
-    "🔊 Tombol suara: <b>{tts}</b>\n"
-    "🗣 Bahasa antarmuka: <b>{interface}</b>\n\n"
-    "Terpakai hari ini: <b>{used}/{limit}</b> terjemahan"
-)
-
-ON = "aktif ✅"
-OFF = "nonaktif ❌"
 
 # ── Langganan ────────────────────────────────────────────────
 SUBSCRIBE_REQUIRED = "❗️ Silakan gabung ke kanal di bawah untuk memakai bot:"
@@ -133,3 +120,20 @@ UNSUPPORTED_INPUT = (
 
 TRANSLATION_NOT_FOUND = "Terjemahan ini tidak ditemukan (tombol kedaluwarsa)."
 LANGUAGE_NOT_AVAILABLE = "Bahasa ini tidak tersedia"
+
+# ── Hubungi admin ────────────────────────────────────────────
+CONTACT_PROMPT = (
+    "✉️ <b>Hubungi admin</b>\n\n"
+    "Tulis pesan Anda — pesan akan langsung sampai ke admin.\n\n"
+    "<i>Ini bukan obrolan: Anda menulis, admin membaca. Jika perlu balasan, "
+    "cantumkan kontak Anda.</i>"
+)
+CONTACT_SENT = "✅ Pesan Anda sudah dikirim ke admin. Terima kasih!"
+CONTACT_CANCELLED = "Dibatalkan."
+CONTACT_TOO_LONG = "📏 Pesan terlalu panjang (<b>{length}</b> karakter). Maksimum: <b>{limit}</b>."
+CONTACT_ONLY_TEXT = "✍️ Mohon kirim pesan Anda dalam bentuk teks."
+CONTACT_RATE_LIMITED = (
+    "⏳ Anda baru saja mengirim pesan.\n\n"
+    "Anda bisa mengirim lagi dalam <b>{minutes}</b> menit."
+)
+CONTACT_FAILED = "⚠️ Pesan tidak bisa dikirim. Coba lagi nanti."

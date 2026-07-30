@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import ModuleType
 
 from aiogram import F, Router
+from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
 from bot.config.settings import settings
@@ -16,8 +17,14 @@ router = Router(name="common")
 
 @router.message(F.text.in_(HELP_BUTTONS))
 async def show_help(
-    message: Message, user: User, events: EventService, session_id, t: ModuleType
+    message: Message,
+    user: User,
+    events: EventService,
+    session_id,
+    state: FSMContext,
+    t: ModuleType,
 ) -> None:
+    await state.clear()
     await events.log(
         EventType.MENU_OPENED,
         user_id=user.id,

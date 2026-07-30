@@ -83,6 +83,13 @@ class Settings(BaseSettings):
     TTS_MAX_CHARS: int = Field(default=1000)
     TTS_TIMEOUT: int = Field(default=30)
 
+    # ── Adminga murojaat ──────────────────────────────────────
+    SUPPORT_MAX_CHARS: int = Field(default=2000)
+    # Spam himoyasi: SUPPORT_RATE_WINDOW soniyada SUPPORT_RATE_LIMIT ta murojaat.
+    # 37k foydalanuvchi bor — cheklovsiz admin chatini ko'mib tashlash mumkin.
+    SUPPORT_RATE_LIMIT: int = Field(default=3)
+    SUPPORT_RATE_WINDOW: int = Field(default=3600, description="soniya")
+
     # ── Limitlar ──────────────────────────────────────────────
     DAILY_TRANSLATION_LIMIT: int = Field(default=50)
     DAILY_TTS_LIMIT: int = Field(default=30)

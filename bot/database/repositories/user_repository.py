@@ -88,6 +88,19 @@ class UserRepository:
             if user.settings is None:
                 await self._ensure_settings(user.id, telegram_lang)
                 user = await self.get_by_id(user.id)
+            elif telegram_lang:
+                # Interfeys tili avtomatik — Telegram tili o'zgarsa ko'chirmani
+                # ham yangilaymiz. `interface_lang` xabar tarqatish va
+                # statistika uchun kerak; eskirgan qiymat noto'g'ri tildagi
+                # xabar yuborilishiga olib kelardi.
+                resolved = locales.resolve(telegram_lang)
+                if user.settings.interface_lang != resolved:
+                    await self.session.execute(
+                        update(UserSettings)
+                        .where(UserSettings.user_id == user.id)
+                        .values(interface_lang=resolved)
+                    )
+                    user.settings.interface_lang = resolved
 
             return user, False
 

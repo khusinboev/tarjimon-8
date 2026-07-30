@@ -7,6 +7,7 @@ from typing import Optional
 
 from aiogram import F, Router
 from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -47,8 +48,12 @@ async def show_menu(
     user: User,
     events: EventService,
     session_id,
+    state: FSMContext,
     t: ModuleType,
 ) -> None:
+    # Murojaat yozish holatida qolib ketmasin: aks holda keyingi matn
+    # tarjima o'rniga adminga ketardi.
+    await state.clear()
     await events.log(
         EventType.MENU_OPENED,
         user_id=user.id,
@@ -262,7 +267,7 @@ async def swap_from_translation(
     target = await langs.by_code(new_target)
 
     voice = await langs.tts_voice(translation.target_lang)
-    has_tts = bool(voice) and user.settings.tts_enabled
+    has_tts = bool(voice)
 
     try:
         await callback.message.edit_reply_markup(

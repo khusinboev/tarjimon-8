@@ -41,8 +41,10 @@ class ContextMiddleware(BaseMiddleware):
             data["session"] = session
             data["redis"] = self.redis
             data["events"] = EventService(session)
-            # Foydalanuvchi hali yuklanmagan bo'lsa ham handlerlar `t` ga
-            # tayanadi — Telegram tilidan boshlang'ich taxmin qo'yamiz.
+            # Interfeys tili to'liq avtomatik: Telegram tilidan aniqlanadi va
+            # foydalanuvchi uni o'zgartira olmaydi. Haqiqat manbai — Telegram,
+            # `user_settings.interface_lang` esa uning ko'chirmasi (xabar
+            # tarqatish va statistika uchun kerak).
             data["t"] = locales.get(
                 locales.resolve(tg_user.language_code if tg_user else None)
             )
@@ -62,10 +64,6 @@ class ContextMiddleware(BaseMiddleware):
                 data["session_id"] = (
                     await self.tracker.get(user.id) if self.tracker else None
                 )
-                # Saqlangan tanlov Telegram tilidan ustun: foydalanuvchi
-                # interfeys tilini qo'lda o'zgartirgan bo'lishi mumkin.
-                if user.settings is not None:
-                    data["t"] = locales.get(user.settings.interface_lang)
 
             try:
                 result = await handler(event, data)

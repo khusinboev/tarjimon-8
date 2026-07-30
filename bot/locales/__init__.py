@@ -114,20 +114,27 @@ def _variants(attr: str) -> FrozenSet[str]:
 
 
 LANGUAGES_BUTTONS = _variants("BTN_LANGUAGES")
-SETTINGS_BUTTONS = _variants("BTN_SETTINGS")
+CONTACT_BUTTONS = _variants("BTN_CONTACT")
 HELP_BUTTONS = _variants("BTN_HELP")
+CANCEL_BUTTONS = _variants("BTN_CANCEL")
 
 # Tarjima handleri shu to'plamdagi matnlarni tarjima qilinadigan matn deb
 # hisoblamaydi — aks holda menyu tugmasi bosilganda uni tarjima qilib yuborardi.
-MENU_BUTTONS: FrozenSet[str] = LANGUAGES_BUTTONS | SETTINGS_BUTTONS | HELP_BUTTONS
+MENU_BUTTONS: FrozenSet[str] = LANGUAGES_BUTTONS | CONTACT_BUTTONS | HELP_BUTTONS
+
+# Murojaat yozish holatida bekor qilish tugmasi ham matn deb qabul qilinmasligi
+# kerak, shuning uchun alohida to'plam.
+RESERVED_BUTTONS: FrozenSet[str] = MENU_BUTTONS | CANCEL_BUTTONS
 
 __all__ = [
+    "CANCEL_BUTTONS",
+    "CONTACT_BUTTONS",
     "DEFAULT",
     "HELP_BUTTONS",
     "LANGUAGES_BUTTONS",
     "LOCALES",
     "MENU_BUTTONS",
-    "SETTINGS_BUTTONS",
+    "RESERVED_BUTTONS",
     "SUPPORTED",
     "get",
     "names",

@@ -192,7 +192,8 @@ async def handle_text(
     )
 
     voice = await langs.tts_voice(target)
-    has_tts = bool(voice) and user_settings.tts_enabled
+    # Ovoz tugmasi sozlanmaydi — til qo'llab-quvvatlasa doim ko'rinadi.
+    has_tts = bool(voice)
 
     markup = translation_actions(
         t,
