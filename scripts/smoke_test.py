@@ -93,7 +93,7 @@ async def test_locales() -> None:
         t = locales.get(code)
         try:
             t.WELCOME.format(name="X", source="A", target="B")
-            t.SETTINGS.format(tts=t.ON, tts_auto=t.OFF, interface=t.NAME, used=1, limit=50)
+            t.SETTINGS.format(tts=t.ON, interface=t.NAME, used=1, limit=50)
             t.TOO_LONG.format(length=10, limit=5)
             t.QUOTA_EXCEEDED.format(limit=50)
             t.LANG_SWAPPED.format(source="A", target="B")

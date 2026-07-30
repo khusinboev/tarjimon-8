@@ -19,7 +19,6 @@ BTN_SWAP = "🔄 Almashtirish"
 BTN_BACK = "⬅️ Ortga"
 BTN_CHECK_SUBSCRIPTION = "✅ Obunani tekshirish"
 BTN_TTS_ENABLED = "Ovoz tugmasi"
-BTN_TTS_AUTO = "Avto-ovoz"
 BTN_INTERFACE_LANG = "🗣 Interfeys tili"
 
 # `auto` tilining nomi — bazada `name_native` bo'sh, chunki bu til emas.
@@ -76,7 +75,6 @@ SWAP_NEEDS_SOURCE = (
 SETTINGS = (
     "⚙️ <b>Sozlamalar</b>\n\n"
     "🔊 Ovoz tugmasi: <b>{tts}</b>\n"
-    "🎧 Avto-ovoz: <b>{tts_auto}</b>\n"
     "🗣 Interfeys tili: <b>{interface}</b>\n\n"
     "Bugun ishlatilgan: <b>{used}/{limit}</b> tarjima"
 )

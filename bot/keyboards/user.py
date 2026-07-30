@@ -137,7 +137,7 @@ def translation_actions(
 
 
 def settings_menu(
-    t: ModuleType, *, tts_enabled: bool, tts_auto: bool
+    t: ModuleType, *, tts_enabled: bool
 ) -> InlineKeyboardMarkup:
     def mark(value: bool) -> str:
         return "✅" if value else "❌"
@@ -148,12 +148,6 @@ def settings_menu(
                 InlineKeyboardButton(
                     text=f"{mark(tts_enabled)} {t.BTN_TTS_ENABLED}",
                     callback_data="set:toggle:tts_enabled",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text=f"{mark(tts_auto)} {t.BTN_TTS_AUTO}",
-                    callback_data="set:toggle:tts_auto",
                 )
             ],
             [

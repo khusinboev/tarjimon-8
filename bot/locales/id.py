@@ -18,7 +18,6 @@ BTN_SWAP = "🔄 Tukar"
 BTN_BACK = "⬅️ Kembali"
 BTN_CHECK_SUBSCRIPTION = "✅ Periksa langganan"
 BTN_TTS_ENABLED = "Tombol suara"
-BTN_TTS_AUTO = "Suara otomatis"
 BTN_INTERFACE_LANG = "🗣 Bahasa antarmuka"
 
 # Nama untuk pseudo-bahasa `auto` — `name_native` kosong di basis data
@@ -76,7 +75,6 @@ SWAP_NEEDS_SOURCE = (
 SETTINGS = (
     "⚙️ <b>Pengaturan</b>\n\n"
     "🔊 Tombol suara: <b>{tts}</b>\n"
-    "🎧 Suara otomatis: <b>{tts_auto}</b>\n"
     "🗣 Bahasa antarmuka: <b>{interface}</b>\n\n"
     "Terpakai hari ini: <b>{used}/{limit}</b> terjemahan"
 )

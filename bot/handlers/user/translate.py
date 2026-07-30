@@ -212,23 +212,6 @@ async def handle_text(
             reply_markup=markup if is_last else None,
         )
 
-    if user_settings.tts_auto and has_tts:
-        from bot.handlers.user.tts import send_voice
-
-        await send_voice(
-            message=message,
-            session=session,
-            user=user,
-            events=events,
-            session_id=session_id,
-            redis=redis,
-            t=t,
-            text=result.text,
-            lang=target,
-            voice=voice,
-            translation_id=translation.id,
-        )
-
 
 @router.message(F.voice | F.audio | F.video_note | F.photo | F.document | F.video)
 async def handle_unsupported(message: Message, t: ModuleType) -> None:

@@ -19,7 +19,7 @@ from bot.services.events import EventService, EventType
 
 router = Router(name="settings")
 
-TOGGLES = {"tts_enabled", "tts_auto"}
+TOGGLES = {"tts_enabled"}
 
 
 def _onoff(t: ModuleType, value: bool) -> str:
@@ -36,16 +36,11 @@ async def _render(session: AsyncSession, user: User, t: ModuleType) -> tuple[str
 
     text = t.SETTINGS.format(
         tts=_onoff(t, user.settings.tts_enabled),
-        tts_auto=_onoff(t, user.settings.tts_auto),
         interface=locales.get(user.settings.interface_lang).NAME,
         used=used,
         limit="∞" if limit <= 0 else limit,
     )
-    markup = settings_menu(
-        t,
-        tts_enabled=user.settings.tts_enabled,
-        tts_auto=user.settings.tts_auto,
-    )
+    markup = settings_menu(t, tts_enabled=user.settings.tts_enabled)
     return text, markup
 
 
@@ -129,11 +124,7 @@ async def set_interface(
 
     await callback.message.edit_text(
         t.INTERFACE_SAVED.format(name=t.NAME),
-        reply_markup=settings_menu(
-            t,
-            tts_enabled=user.settings.tts_enabled,
-            tts_auto=user.settings.tts_auto,
-        ),
+        reply_markup=settings_menu(t, tts_enabled=user.settings.tts_enabled),
     )
     # Reply-menyu tugmalari ham yangi tilda bo'lishi kerak; ularni faqat yangi
     # xabar bilan almashtirish mumkin.
@@ -162,13 +153,6 @@ async def toggle(
         update(UserSettings).where(UserSettings.user_id == user.id).values(**{field: new_value})
     )
     setattr(user.settings, field, new_value)
-
-    # Avto-ovoz ovoz tugmasisiz mantiqsiz — birgalikda o'chiriladi.
-    if field == "tts_enabled" and not new_value and user.settings.tts_auto:
-        await session.execute(
-            update(UserSettings).where(UserSettings.user_id == user.id).values(tts_auto=False)
-        )
-        user.settings.tts_auto = False
 
     await events.log(
         EventType.SETTINGS_CHANGED,

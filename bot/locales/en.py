@@ -19,7 +19,6 @@ BTN_SWAP = "🔄 Swap"
 BTN_BACK = "⬅️ Back"
 BTN_CHECK_SUBSCRIPTION = "✅ Check subscription"
 BTN_TTS_ENABLED = "Voice button"
-BTN_TTS_AUTO = "Auto voice"
 BTN_INTERFACE_LANG = "🗣 Interface language"
 
 # Name for the `auto` pseudo-language — `name_native` is empty in the database
@@ -77,7 +76,6 @@ SWAP_NEEDS_SOURCE = (
 SETTINGS = (
     "⚙️ <b>Settings</b>\n\n"
     "🔊 Voice button: <b>{tts}</b>\n"
-    "🎧 Auto voice: <b>{tts_auto}</b>\n"
     "🗣 Interface language: <b>{interface}</b>\n\n"
     "Used today: <b>{used}/{limit}</b> translations"
 )
