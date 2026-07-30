@@ -17,10 +17,13 @@ Xususiyatlar:
     tarqatishlarda behuda urinish bo'lmaydi.
   - **Telegram limitini hurmat qiladi.** `TelegramRetryAfter` da kutadi.
 
+  - **Tezligi cheklangan.** Semafor tarmoq kutishini yashiradi, `RateLimiter`
+    esa Telegram'ga ketadigan oqimni tekis ushlaydi (batafsil:
+    `bot/services/broadcast.py`). Ketma-ket yuborishda tezlik ~5/sek edi.
+
 Ishga tushirish:
     python scripts/broadcast_relaunch.py --dry-run          # faqat hisoblash
-    python scripts/broadcast_relaunch.py --limit 20         # sinov uchun 20 ta
-    python scripts/broadcast_relaunch.py --only-me          # faqat adminlarga
+    python scripts/broadcast_relaunch.py --limit 100        # birinchi 100 ta
     python scripts/broadcast_relaunch.py                    # hammaga
     python scripts/broadcast_relaunch.py --resume 12        # uzilgandan keyin
 """
@@ -53,21 +56,25 @@ from bot.database.models import BroadcastDelivery, User, UserSettings
 from bot.database.repositories.broadcast_repository import BroadcastRepository
 from bot.database.session import AsyncSessionLocal, engine
 from bot.keyboards.user import main_menu
+from bot.services.broadcast import (
+    DEFAULT_CONCURRENCY,
+    DEFAULT_RATE_PER_SEC,
+    RateLimiter,
+)
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stdout
 )
 log = logging.getLogger("relaunch")
 
-# Telegram bulk yuborishda ~30 xabar/soniyaga ruxsat beradi. 20 ni olamiz:
-# limitga tegib RetryAfter yeb, umumiy vaqtni uzaytirgandan ko'ra barqaror
-# tezlik afzal.
-BATCH = 20
-BATCH_PAUSE = 1.0
-COMMIT_EVERY = 100
+# Bir marta `gather` qilinadigan miqdor. Batch oxirida bazaga yozamiz va
+# jarayonni logga chiqaramiz, ya'ni uzilganda ko'pi bilan shu qadar yozuv
+# qayta yuboriladi.
+BATCH = 50
+COMMIT_EVERY = 500
 
 
-async def load_targets(session, *, limit: int | None, only_admins: bool):
+async def load_targets(session, *, limit: int | None):
     """`(user_id, telegram_id, interface_lang)` ro'yxati.
 
     Faqat `active` — botni bloklaganlarga yuborish Telegram limitini behuda
@@ -79,8 +86,6 @@ async def load_targets(session, *, limit: int | None, only_admins: bool):
         .where(User.status == "active")
         .order_by(User.id)
     )
-    if only_admins:
-        query = query.where(User.telegram_id.in_(settings.ADMIN_USER_IDS))
     if limit:
         query = query.limit(limit)
     return [(r[0], r[1], r[2]) for r in (await session.execute(query)).all()]
@@ -99,15 +104,12 @@ async def already_sent(session, broadcast_id: int) -> set[int]:
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Qayta ishga tushish xabarini tarqatish")
     parser.add_argument("--dry-run", action="store_true", help="yubormasdan hisoblash")
-    parser.add_argument("--limit", type=int, default=None, help="nechta userga (sinov)")
-    parser.add_argument("--only-me", action="store_true", help="faqat adminlarga")
+    parser.add_argument("--limit", type=int, default=None, help="birinchi N userga")
     parser.add_argument("--resume", type=int, default=None, help="mavjud broadcast id")
     args = parser.parse_args()
 
     async with AsyncSessionLocal() as session:
-        targets = await load_targets(
-            session, limit=args.limit, only_admins=args.only_me
-        )
+        targets = await load_targets(session, limit=args.limit)
 
         by_lang = Counter(lang for _, _, lang in targets)
         log.info("Nishon: %s user", f"{len(targets):,}".replace(",", " "))
@@ -123,7 +125,7 @@ async def main() -> None:
             log.info("Jami aktiv user: %s", f"{total_active:,}".replace(",", " "))
             log.info(
                 "Taxminiy vaqt: ~%.0f daqiqa",
-                len(targets) / BATCH * BATCH_PAUSE / 60,
+                len(targets) / DEFAULT_RATE_PER_SEC / 60,
             )
             log.info("--dry-run: hech narsa yuborilmadi.")
             await engine.dispose()
@@ -165,67 +167,92 @@ async def main() -> None:
             for code in locales.SUPPORTED
         }
 
+        limiter = RateLimiter(DEFAULT_RATE_PER_SEC)
+        semaphore = asyncio.Semaphore(DEFAULT_CONCURRENCY)
+
         success = 0
         failed = 0
         blocked = 0
+        failures: list[tuple[int, str]] = []
 
-        try:
-            for index, (user_id, telegram_id, lang) in enumerate(targets, start=1):
-                text, markup = prepared.get(lang, prepared[locales.DEFAULT])
+        async def deliver(telegram_id: int, lang: str) -> tuple[bool, str | None]:
+            """Telegram'ga yuboradi. Bazaga tegmaydi — chaqiruvchi yozadi.
 
-                delivered = False
+            `AsyncSession` parallel ishlatishga xavfsiz emas, shuning uchun
+            korutina faqat tarmoq ishini bajaradi.
+            """
+            text, markup = prepared.get(lang, prepared[locales.DEFAULT])
+
+            async with semaphore:
                 error_text: str | None = None
 
                 for attempt in range(3):
+                    await limiter.wait()
                     try:
-                        await bot.send_message(
-                            telegram_id, text, reply_markup=markup
-                        )
-                        delivered = True
-                        break
+                        await bot.send_message(telegram_id, text, reply_markup=markup)
+                        return True, None
                     except TelegramRetryAfter as exc:
                         wait = max(int(getattr(exc, "retry_after", 1)), 1)
                         log.warning("Limit: %s soniya kutamiz", wait)
+                        # Limitga bitta so'rov tegsa qolgani ham tegadi.
+                        limiter.pause(wait + 0.5)
                         await asyncio.sleep(wait)
                     except TelegramForbiddenError:
                         # Botni bloklagan yoki akkauntni o'chirgan.
-                        error_text = "forbidden"
+                        return False, "forbidden"
+                    except TelegramBadRequest as exc:
+                        # Chat topilmadi va shunga o'xshash qaytarib
+                        # bo'lmaydigan xatolar — qayta urinish foydasiz.
+                        return False, str(exc)[:200]
+                    except TelegramAPIError as exc:
+                        error_text = str(exc)[:200]
+                        await asyncio.sleep(1 + attempt)
+
+                return False, error_text or "noma'lum"
+
+        try:
+            for offset in range(0, len(targets), BATCH):
+                batch = targets[offset : offset + BATCH]
+                results = await asyncio.gather(
+                    *(deliver(tg_id, lang) for _, tg_id, lang in batch),
+                    return_exceptions=True,
+                )
+
+                for (user_id, telegram_id, _lang), result in zip(batch, results):
+                    if isinstance(result, BaseException):
+                        delivered, error_text = False, str(result)[:200]
+                    else:
+                        delivered, error_text = result
+
+                    if delivered:
+                        success += 1
+                        await repo.add_delivery(broadcast_id, user_id, "delivered")
+                        continue
+
+                    failed += 1
+                    failures.append((telegram_id, error_text or "noma'lum"))
+                    await repo.add_delivery(broadcast_id, user_id, "failed", error_text)
+
+                    if error_text == "forbidden":
                         await session.execute(
                             update(User)
                             .where(User.id == user_id)
                             .values(status="blocked_bot", blocked_at=func.now())
                         )
                         blocked += 1
-                        break
-                    except TelegramBadRequest as exc:
-                        # Chat topilmadi va shunga o'xshash qaytarib
-                        # bo'lmaydigan xatolar — qayta urinish foydasiz.
-                        error_text = str(exc)[:200]
-                        break
-                    except TelegramAPIError as exc:
-                        error_text = str(exc)[:200]
-                        await asyncio.sleep(1 + attempt)
 
-                if delivered:
-                    success += 1
-                    await repo.add_delivery(broadcast_id, user_id, "delivered")
-                else:
-                    failed += 1
-                    await repo.add_delivery(broadcast_id, user_id, "failed", error_text)
+                await session.commit()
 
-                if index % COMMIT_EVERY == 0:
-                    await session.commit()
+                processed = success + failed
+                if processed % COMMIT_EVERY < BATCH:
                     log.info(
                         "%s/%s — yuborildi %s, xato %s, bloklagan %s",
-                        index,
+                        processed,
                         len(targets),
                         success,
                         failed,
                         blocked,
                     )
-
-                if index % BATCH == 0:
-                    await asyncio.sleep(BATCH_PAUSE)
 
             await session.commit()
             await repo.finish_broadcast(broadcast_id, success, failed)
@@ -236,6 +263,18 @@ async def main() -> None:
                 failed,
                 blocked,
             )
+
+            # Yetmagan foydalanuvchilar ro'yxati — keyin tekshirish uchun.
+            if failures:
+                path = Path(f"/home/tarjimon8/xato_{broadcast_id}.txt")
+                try:
+                    path.write_text(
+                        "\n".join(f"{tg_id}\t{err}" for tg_id, err in failures),
+                        encoding="utf-8",
+                    )
+                    log.info("Xato ro'yxati: %s (%s yozuv)", path, len(failures))
+                except OSError as exc:
+                    log.warning("Xato ro'yxatini yozib bo'lmadi: %s", exc)
         except (KeyboardInterrupt, asyncio.CancelledError):
             await session.commit()
             log.warning(

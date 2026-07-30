@@ -95,12 +95,15 @@ class BroadcastRepository:
         )
         return list(result.scalars().all())
 
-    async def stats(self, limit: int = 5) -> list[dict]:
-        """Oxirgi tarqatishlar bo'yicha yetkazish hisobi.
+    async def live_stats(self) -> list[dict]:
+        """Faqat hozir ishlab turgan tarqatishlar.
 
-        `broadcasts.success_count` faqat tarqatish tugagach yoziladi, shuning
-        uchun ishlab turgan tarqatish uchun `broadcast_deliveries` dan
-        hisoblaymiz — admin jarayon davomida ham holatni ko'rishi kerak.
+        Tugagan tarqatishlar ko'rsatilmaydi — admin uchun muhim savol
+        "hozir nima bo'lyapti", tarix emas.
+
+        Hisob `broadcast_deliveries` dan olinadi, `broadcasts.success_count`
+        dan emas: u faqat tarqatish tugagach yoziladi, ya'ni jarayon davomida
+        nol bo'lib turardi.
         """
         rows = await self.session.execute(
             select(
@@ -126,8 +129,8 @@ class BroadcastRepository:
                 Broadcast.started_at,
                 Broadcast.finished_at,
             )
+            .where(Broadcast.status.in_(("running", "cancel_requested")))
             .order_by(Broadcast.id.desc())
-            .limit(limit)
         )
         return [
             {

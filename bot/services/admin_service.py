@@ -21,6 +21,11 @@ from bot.database.repositories.user_repository import UserRepository
 from bot.database.repositories.channel_repository import ChannelRepository
 from bot.database.repositories.broadcast_repository import BroadcastRepository
 from bot.database.repositories.translation_repository import TranslationRepository
+from bot.services.broadcast import (
+    DEFAULT_CONCURRENCY,
+    DEFAULT_RATE_PER_SEC,
+    RateLimiter,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -275,9 +280,15 @@ class AdminService:
         mode: str,
         progress_callback: Optional[Callable[[int, int, int, int], Awaitable[None]]] = None,
     ) -> dict:
-        """Run robust broadcast with retries and delivery journaling."""
+        """Xabarni barcha aktiv foydalanuvchilarga tarqatadi.
+
+        Tezlik ikki mexanizm bilan boshqariladi (batafsil: services/broadcast.py):
+        semafor tarmoq kutishini yashiradi, `RateLimiter` esa Telegram'ga
+        ketadigan chaqiruvlar oqimini tekis ushlab turadi. Ketma-ket yuborishda
+        tezlik ~5/sek bilan cheklangan edi; bu yerda ~15/sek.
+        """
         if mode not in {"copy", "forward"}:
-            raise ValueError("mode must be 'copy' or 'forward'")
+            raise ValueError("mode 'copy' yoki 'forward' bo'lishi kerak")
 
         # `(user_id, telegram_id)` juftliklari: birinchisi FK uchun, ikkinchisi
         # Telegram API uchun. Sxemada FK'lar `users.id` ga qaraydi.
@@ -290,85 +301,112 @@ class AdminService:
             total_targets=len(targets),
         )
 
+        total = len(targets)
+        limiter = RateLimiter(DEFAULT_RATE_PER_SEC)
+        semaphore = asyncio.Semaphore(DEFAULT_CONCURRENCY)
+
         success = 0
         failed = 0
+        blocked = 0
+        failures: list[tuple[int, str]] = []
         cancelled = False
-        total = len(targets)
 
-        for i, (user_id, telegram_id) in enumerate(targets, start=1):
+        async def deliver(telegram_id: int) -> tuple[bool, Optional[str]]:
+            """Telegram'ga yuboradi. `(yetdimi, xato_matni)` qaytaradi.
+
+            Bazaga ataylab tegmaydi. `AsyncSession` parallel ishlatishga
+            xavfsiz emas: bir nechta korutina bitta sessiyada `execute()`
+            chaqirsa sessiya holati buziladi. Shuning uchun yozishni
+            chaqiruvchi batch tugagach ketma-ket bajaradi.
+            """
+            async with semaphore:
+                error_text: Optional[str] = None
+
+                for attempt in range(3):
+                    await limiter.wait()
+                    try:
+                        if mode == "forward":
+                            await self.bot.forward_message(
+                                chat_id=telegram_id,
+                                from_chat_id=source_message.chat.id,
+                                message_id=source_message.message_id,
+                            )
+                        else:
+                            await self.bot.copy_message(
+                                chat_id=telegram_id,
+                                from_chat_id=source_message.chat.id,
+                                message_id=source_message.message_id,
+                            )
+                        return True, None
+                    except TelegramRetryAfter as exc:
+                        wait = max(int(getattr(exc, "retry_after", 1)), 1)
+                        # Limitga bitta so'rov tegsa qolgani ham tegadi —
+                        # barcha yuboruvchilarni birga kechiktiramiz, aks holda
+                        # flood-wait cho'zilib ketardi.
+                        limiter.pause(wait + 0.5)
+                        await asyncio.sleep(wait)
+                    except TelegramForbiddenError:
+                        # Botni bloklagan yoki akkauntni o'chirgan.
+                        return False, "forbidden"
+                    except TelegramBadRequest as exc:
+                        # Chat topilmadi va shunga o'xshash qaytarib bo'lmaydigan
+                        # xatolar — qayta urinish foydasiz.
+                        return False, str(exc)[:200]
+                    except TelegramAPIError as exc:
+                        error_text = str(exc)[:200]
+                        await asyncio.sleep(1 + attempt)
+
+                return False, error_text or "noma'lum"
+
+        # Batch'lar: Telegram chaqiruvlari parallel, bazaga yozish va bekor
+        # qilish tekshiruvi batch oxirida ketma-ket.
+        batch_size = 50
+        for offset in range(0, total, batch_size):
             status = await self.broadcast_repo.get_status(broadcast.id)
             if status == "cancel_requested":
                 cancelled = True
                 break
 
-            delivered = False
-            error_text: Optional[str] = None
+            batch = targets[offset : offset + batch_size]
+            results = await asyncio.gather(
+                *(deliver(tg_id) for _, tg_id in batch),
+                return_exceptions=True,
+            )
 
-            for attempt in range(3):
-                try:
-                    if mode == "forward":
-                        await self.bot.forward_message(
-                            chat_id=telegram_id,
-                            from_chat_id=source_message.chat.id,
-                            message_id=source_message.message_id,
-                        )
-                    else:
-                        await self.bot.copy_message(
-                            chat_id=telegram_id,
-                            from_chat_id=source_message.chat.id,
-                            message_id=source_message.message_id,
-                        )
-                    delivered = True
-                    break
-                except TelegramRetryAfter as e:
-                    wait_time = max(int(getattr(e, "retry_after", 1)), 1)
-                    await asyncio.sleep(wait_time)
-                except TelegramForbiddenError:
-                    error_text = "forbidden"
-                    await self.user_repo.mark_blocked(user_id)
-                    break
-                except TelegramBadRequest as e:
-                    error_text = str(e)
-                    break
-                except TelegramAPIError as e:
-                    error_text = str(e)
-                    await asyncio.sleep(1 + attempt)
+            for (user_id, telegram_id), result in zip(batch, results):
+                if isinstance(result, BaseException):
+                    delivered, error_text = False, str(result)[:200]
+                else:
+                    delivered, error_text = result
 
-            if delivered:
-                success += 1
-                await self.broadcast_repo.add_delivery(broadcast.id, user_id, "delivered")
-            else:
+                if delivered:
+                    success += 1
+                    await self.broadcast_repo.add_delivery(
+                        broadcast.id, user_id, "delivered"
+                    )
+                    continue
+
                 failed += 1
-                await self.broadcast_repo.add_delivery(broadcast.id, user_id, "failed", error_text)
+                failures.append((telegram_id, error_text or "noma'lum"))
+                await self.broadcast_repo.add_delivery(
+                    broadcast.id, user_id, "failed", error_text
+                )
+                if error_text == "forbidden":
+                    await self.user_repo.mark_blocked(user_id)
+                    blocked += 1
 
-            # Batch commit every 100 deliveries instead of per-user
-            if i % 100 == 0:
-                await self.session.commit()
+            await self.session.commit()
 
-            if progress_callback and (i % 10 == 0 or i == total):
-                await progress_callback(i, total, success, failed)
-
-            # Soft rate-limit to avoid flood and keep bot stable on large sends.
-            if i % 20 == 0:
-                await asyncio.sleep(1)
+            if progress_callback:
+                await progress_callback(success + failed, total, success, failed)
 
         processed = success + failed
-
-        # Flush any remaining uncommitted deliveries
         await self.session.commit()
 
         if cancelled:
             await self.broadcast_repo.mark_cancelled(broadcast.id, success, failed)
-            return {
-                "broadcast_id": broadcast.id,
-                "status": "cancelled",
-                "total": total,
-                "processed": processed,
-                "success": success,
-                "failed": failed,
-            }
-
-        if failed == total and total > 0:
+            status_label = "cancelled"
+        elif failed == total and total > 0:
             await self.broadcast_repo.fail_broadcast(broadcast.id, failed)
             status_label = "failed"
         else:
@@ -382,6 +420,8 @@ class AdminService:
             "processed": processed,
             "success": success,
             "failed": failed,
+            "blocked": blocked,
+            "failures": failures,
         }
 
     async def get_running_broadcasts_text(self) -> str:

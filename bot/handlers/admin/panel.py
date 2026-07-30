@@ -3,7 +3,7 @@ import logging
 import re
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import Message
+from aiogram.types import BufferedInputFile, CallbackQuery, Message
 from aiogram.exceptions import TelegramBadRequest
 
 from bot.config.settings import settings
@@ -13,6 +13,7 @@ from bot.keyboards.admin import (
     admin_main_keyboard,
     admin_channels_keyboard,
     admin_broadcast_keyboard,
+    broadcast_confirm_keyboard,
     back_keyboard,
 )
 from bot.services.admin_service import AdminService
@@ -22,6 +23,9 @@ from bot.states.admin import AdminStates
 
 router = Router()
 logger = logging.getLogger(__name__)
+
+# Cho'qqi soatda tasdiq kutayotgan tarqatishlar: admin_id -> (mode, chat_id, message_id)
+_pending_broadcasts: dict[int, tuple[str, int, int]] = {}
 
 
 def is_admin(user_id: int) -> bool:
@@ -193,52 +197,54 @@ async def broadcast_menu(message: Message):
     await message.answer("Reklama bo'limi", reply_markup=admin_broadcast_keyboard())
 
 
-@router.message(F.text == "📊 Broadcast holati", F.from_user.func(lambda u: u and is_admin(u.id)))
+@router.message(F.text == "📊 Holat", F.from_user.func(lambda u: u and is_admin(u.id)))
 async def broadcast_stats(message: Message, session):
-    """Oxirgi tarqatishlar hisoboti.
+    """Hozir ishlab turgan tarqatishlar holati.
 
-    Skript orqali ishga tushirilgan tarqatishlar ham shu jadvallarga yozadi,
-    shuning uchun ular ham shu yerda ko'rinadi.
+    Tugaganlari ko'rsatilmaydi — muhim savol "hozir nima bo'lyapti".
+    Skript orqali ishga tushirilgan tarqatishlar ham shu jadvallarga
+    yozgani uchun ular ham ko'rinadi.
     """
     repo = BroadcastRepository(session)
-    rows = await repo.stats(limit=5)
+    rows = await repo.live_stats()
 
     if not rows:
-        await message.answer("Hozircha tarqatish bo'lmagan.", reply_markup=admin_broadcast_keyboard())
+        await message.answer(
+            "💤 Hozir ishlab turgan tarqatish yo'q.",
+            reply_markup=admin_broadcast_keyboard(),
+        )
         return
 
-    icons = {
-        "running": "🔄",
-        "completed": "✅",
-        "cancelled": "⛔",
-        "failed": "❌",
-        "cancel_requested": "⏸",
-        "created": "🆕",
-    }
-
-    lines = ["📊 <b>Tarqatishlar</b>", ""]
+    lines = []
     for row in rows:
         processed = row["delivered"] + row["failed"]
         total = row["total"] or 0
         percent = (processed / total * 100) if total else 0.0
+        icon = "⏸" if row["status"] == "cancel_requested" else "🔄"
 
-        lines.append(f"{icons.get(row['status'], '•')} <b>#{row['id']}</b> — {row['status']}")
-        lines.append(f"   Yuborildi: <b>{row['delivered']:,}</b>".replace(",", " "))
-        lines.append(f"   Yetmadi: <b>{row['failed']:,}</b>".replace(",", " "))
-        lines.append(f"   Jarayon: {processed:,}/{total:,} ({percent:.1f}%)".replace(",", " "))
+        lines.append(f"{icon} <b>Tarqatish #{row['id']}</b>")
+        if row["status"] == "cancel_requested":
+            lines.append("   <i>to'xtatish so'ralgan — joriy batch tugaydi</i>")
+        lines.append("")
+        lines.append(f"   📊 {processed:,} / {total:,}  ({percent:.1f}%)".replace(",", " "))
+        lines.append(f"   ✅ Yetdi: <b>{row['delivered']:,}</b>".replace(",", " "))
+        lines.append(f"   ❌ Yetmadi: <b>{row['failed']:,}</b>".replace(",", " "))
 
-        if row["status"] == "running" and row["started_at"] and processed:
+        if row["started_at"] and processed:
             elapsed = (utcnow() - row["started_at"]).total_seconds()
             speed = processed / elapsed if elapsed > 0 else 0
-            remaining = total - processed
             if speed > 0:
-                eta_min = remaining / speed / 60
-                lines.append(f"   Tezlik: {speed:.1f}/sek · qoldi ~{eta_min:.0f} daqiqa")
+                remaining = (total - processed) / speed
+                lines.append(
+                    f"   ⚡️ {speed:.1f}/sek · qoldi ~{remaining / 60:.0f} daqiqa"
+                )
 
         if row["failed"]:
             reasons = await repo.failure_reasons(row["id"], limit=3)
-            pretty = ", ".join(f"{reason} ({count})" for reason, count in reasons)
-            lines.append(f"   Sabab: {pretty}")
+            lines.append("")
+            lines.append("   <i>Xato sabablari:</i>")
+            for reason, count in reasons:
+                lines.append(f"   • {reason} — {count:,}".replace(",", " "))
 
         lines.append("")
 
@@ -259,6 +265,70 @@ async def broadcast_copy_start(message: Message, state: FSMContext):
     await message.answer("Yuboriladigan xabarni yuboring.", reply_markup=back_keyboard())
 
 
+# Foydalanuvchi oqimi eng yuqori soatlar (Asia/Tashkent = UTC+5).
+# Shu payt tarqatish boshlansa jonli so'rovlarga xalaqit beradi, shuning
+# uchun admindan qo'shimcha tasdiq so'raladi.
+PEAK_HOURS_TASHKENT = range(18, 23)
+
+
+def _is_peak_hour() -> bool:
+    tashkent_hour = (utcnow().hour + 5) % 24
+    return tashkent_hour in PEAK_HOURS_TASHKENT
+
+
+async def _do_broadcast(message: Message, mode: str, admin_user) -> None:
+    """Tarqatishni bajaradi va hisobot beradi."""
+    progress_message = await message.answer("📤 Yuborish boshlandi...")
+
+    async def progress_callback(processed: int, total: int, success: int, failed: int):
+        percent = (processed / total * 100) if total else 0.0
+        try:
+            await progress_message.edit_text(
+                "📤 <b>Tarqatilmoqda...</b>\n\n"
+                f"📊 {processed:,} / {total:,}  ({percent:.1f}%)\n"
+                f"✅ Yetdi: {success:,}\n"
+                f"❌ Yetmadi: {failed:,}".replace(",", " ")
+            )
+        except TelegramBadRequest:
+            # Xabar o'zgarmagan yoki tahrirlab bo'lmaydi — zararsiz.
+            pass
+
+    async with AsyncSessionLocal() as session:
+        service = AdminService(session, message.bot)
+        result = await service.run_broadcast(
+            admin_id=admin_user.id,
+            source_message=message,
+            mode=mode,
+            progress_callback=progress_callback,
+        )
+
+    icon = {"completed": "✅", "cancelled": "⛔", "failed": "🚨"}.get(result["status"], "•")
+    await message.answer(
+        (
+            f"{icon} <b>Tarqatish yakunlandi</b>\n\n"
+            f"🆔 #{result['broadcast_id']} · {result['status']}\n"
+            f"📊 {result['processed']:,} / {result['total']:,}\n"
+            f"✅ Yetdi: <b>{result['success']:,}</b>\n"
+            f"❌ Yetmadi: <b>{result['failed']:,}</b>\n"
+            f"🚫 Bloklagan: {result.get('blocked', 0):,}"
+        ).replace(",", " "),
+        reply_markup=admin_broadcast_keyboard(),
+    )
+
+    # Xato bo'lgan foydalanuvchilar ro'yxati fayl bo'lib keladi — keyin
+    # tekshirish yoki qayta urinish uchun.
+    failures = result.get("failures") or []
+    if failures:
+        body = "\n".join(f"{tg_id}\t{err}" for tg_id, err in failures)
+        await message.answer_document(
+            BufferedInputFile(
+                body.encode("utf-8"),
+                filename=f"xato_{result['broadcast_id']}.txt",
+            ),
+            caption=f"❌ Yetmagan {len(failures):,} foydalanuvchi".replace(",", " "),
+        )
+
+
 @router.message(AdminStates.waiting_broadcast_message, F.from_user.func(lambda u: u and is_admin(u.id)))
 async def broadcast_send(message: Message, state: FSMContext, user):
     data = await state.get_data()
@@ -266,48 +336,53 @@ async def broadcast_send(message: Message, state: FSMContext, user):
 
     if mode not in {"copy", "forward"}:
         await state.clear()
-        await message.answer("Broadcast rejimi topilmadi. Qayta urinib ko'ring.", reply_markup=admin_broadcast_keyboard())
+        await message.answer(
+            "Tarqatish rejimi topilmadi. Qayta urinib ko'ring.",
+            reply_markup=admin_broadcast_keyboard(),
+        )
         return
 
-    progress_message = await message.answer("Yuborish boshlandi, iltimos kuting...")
-
-    async def progress_callback(processed: int, total: int, success: int, failed: int):
-        try:
-            await progress_message.edit_text(
-                "Reklama yuborilmoqda...\n"
-                f"Progress: {processed}/{total}\n"
-                f"Muvaffaqiyatli: {success}\n"
-                f"Xatolik: {failed}"
-            )
-        except TelegramBadRequest:
-            # Message can be unchanged or no longer editable, safe to ignore.
-            pass
-
-    async with AsyncSessionLocal() as session:
-        service = AdminService(session, message.bot)
-        result = await service.run_broadcast(
-            admin_id=user.id,
-            source_message=message,
-            mode=mode,
-            progress_callback=progress_callback,
-        )
-
     await state.clear()
-    await message.answer(
-        (
-            "Reklama yakunlandi.\n"
-            f"Broadcast ID: {result['broadcast_id']}\n"
-            f"Status: {result['status']}\n"
-            f"Jami: {result['total']}\n"
-            f"Qayta ishlangan: {result['processed']}\n"
-            f"Muvaffaqiyatli: {result['success']}\n"
-            f"Xatolik: {result['failed']}"
-        ),
-        reply_markup=admin_broadcast_keyboard(),
+
+    if _is_peak_hour():
+        # Xabarni keyin ham topish uchun id'sini saqlaymiz.
+        _pending_broadcasts[message.from_user.id] = (mode, message.chat.id, message.message_id)
+        await message.answer(
+            "🕗 <b>Hozir eng band vaqt</b> (18:00–23:00).\n\n"
+            "Tarqatish jonli so'rovlarga xalaqit berishi mumkin. Davom etamizmi?",
+            reply_markup=broadcast_confirm_keyboard(),
+        )
+        return
+
+    await _do_broadcast(message, mode, user)
+
+
+@router.callback_query(F.data == "bc:confirm", F.from_user.func(lambda u: u and is_admin(u.id)))
+async def broadcast_confirm(call: CallbackQuery, user):
+    pending = _pending_broadcasts.pop(call.from_user.id, None)
+    await call.answer()
+    if not pending:
+        await call.message.edit_text("Tasdiq muddati o'tgan. Xabarni qaytadan yuboring.")
+        return
+
+    mode, chat_id, message_id = pending
+    await call.message.edit_text("✅ Tasdiqlandi.")
+
+    # Asl xabarni qayta yuklab olamiz — `copy_message` uchun manba kerak.
+    source = await call.bot.forward_message(
+        chat_id=chat_id, from_chat_id=chat_id, message_id=message_id
     )
+    await _do_broadcast(source, mode, user)
 
 
-@router.message(F.text == "⛔ Broadcastni to'xtatish", F.from_user.func(lambda u: u and is_admin(u.id)))
+@router.callback_query(F.data == "bc:cancel", F.from_user.func(lambda u: u and is_admin(u.id)))
+async def broadcast_confirm_cancel(call: CallbackQuery):
+    _pending_broadcasts.pop(call.from_user.id, None)
+    await call.answer()
+    await call.message.edit_text("⛔ Bekor qilindi.")
+
+
+@router.message(F.text == "⛔ To'xtatish", F.from_user.func(lambda u: u and is_admin(u.id)))
 async def broadcast_cancel_start(message: Message, state: FSMContext):
     async with AsyncSessionLocal() as session:
         service = AdminService(session, message.bot)
