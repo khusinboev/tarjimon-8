@@ -20,7 +20,7 @@ from sqlalchemy import (
     String,
     Text,
     func,
-    text,
+    text as sql_text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, relationship
@@ -32,7 +32,7 @@ class Base(DeclarativeBase):
 
 def _meta():
     """Har bir jadvalning kengaytirish nuqtasi."""
-    return Column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    return Column(JSONB, nullable=False, server_default=sql_text("'{}'::jsonb"))
 
 
 def _created_at(index: bool = False):
@@ -62,10 +62,10 @@ class User(Base):
     first_name = Column(String(255))
     last_name = Column(String(255))
     telegram_lang = Column(String(10))
-    is_premium = Column(Boolean, default=False, server_default=text("false"), nullable=False)
+    is_premium = Column(Boolean, default=False, server_default=sql_text("false"), nullable=False)
 
-    status = Column(String(20), default="active", server_default=text("'active'"), nullable=False, index=True)
-    role = Column(String(20), default="user", server_default=text("'user'"), nullable=False)
+    status = Column(String(20), default="active", server_default=sql_text("'active'"), nullable=False, index=True)
+    role = Column(String(20), default="user", server_default=sql_text("'user'"), nullable=False)
 
     # /start dagi deep-link parametri — referal manbaini kuzatish uchun.
     source = Column(String(64))
@@ -101,18 +101,18 @@ class UserSettings(Base):
         BigInteger, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
     )
 
-    source_lang = Column(String(10), default="auto", server_default=text("'auto'"), nullable=False)
-    target_lang = Column(String(10), default="uz", server_default=text("'uz'"), nullable=False)
-    interface_lang = Column(String(10), default="uz", server_default=text("'uz'"), nullable=False)
+    source_lang = Column(String(10), default="auto", server_default=sql_text("'auto'"), nullable=False)
+    target_lang = Column(String(10), default="uz", server_default=sql_text("'uz'"), nullable=False)
+    interface_lang = Column(String(10), default="uz", server_default=sql_text("'uz'"), nullable=False)
 
-    tts_enabled = Column(Boolean, default=True, server_default=text("true"), nullable=False)
-    tts_auto = Column(Boolean, default=False, server_default=text("false"), nullable=False)
+    tts_enabled = Column(Boolean, default=True, server_default=sql_text("true"), nullable=False)
+    tts_auto = Column(Boolean, default=False, server_default=sql_text("false"), nullable=False)
     tts_voice = Column(String(64))
 
     # Ikki alohida flag: birinchisi userga tarixni ko'rsatish/ko'rsatmaslik,
     # ikkinchisi ML eksportiga tushish/tushmaslik. Ular bir narsa emas.
-    save_history = Column(Boolean, default=True, server_default=text("true"), nullable=False)
-    allow_training = Column(Boolean, default=True, server_default=text("true"), nullable=False, index=True)
+    save_history = Column(Boolean, default=True, server_default=sql_text("true"), nullable=False)
+    allow_training = Column(Boolean, default=True, server_default=sql_text("true"), nullable=False, index=True)
 
     daily_limit_override = Column(Integer)
 
@@ -133,12 +133,12 @@ class Language(Base):
     name_native = Column(String(64))
     flag = Column(String(16))
 
-    supports_tts = Column(Boolean, default=False, server_default=text("false"), nullable=False)
-    supports_detection = Column(Boolean, default=True, server_default=text("true"), nullable=False)
+    supports_tts = Column(Boolean, default=False, server_default=sql_text("false"), nullable=False)
+    supports_detection = Column(Boolean, default=True, server_default=sql_text("true"), nullable=False)
     tts_voice = Column(String(64))
 
-    is_active = Column(Boolean, default=True, server_default=text("true"), nullable=False, index=True)
-    sort_order = Column(Integer, default=100, server_default=text("100"), nullable=False)
+    is_active = Column(Boolean, default=True, server_default=sql_text("true"), nullable=False, index=True)
+    sort_order = Column(Integer, default=100, server_default=sql_text("100"), nullable=False)
     meta = _meta()
 
 
@@ -165,10 +165,10 @@ class Translation(Base):
     user_id = Column(BigInteger, ForeignKey("users.id", ondelete="SET NULL"), index=True)
 
     chat_id = Column(BigInteger)
-    chat_type = Column(String(20), default="private", server_default=text("'private'"), nullable=False)
-    input_kind = Column(String(20), default="text", server_default=text("'text'"), nullable=False)
+    chat_type = Column(String(20), default="private", server_default=sql_text("'private'"), nullable=False)
+    input_kind = Column(String(20), default="text", server_default=sql_text("'text'"), nullable=False)
 
-    source_lang_requested = Column(String(10), default="auto", server_default=text("'auto'"), nullable=False)
+    source_lang_requested = Column(String(10), default="auto", server_default=sql_text("'auto'"), nullable=False)
     source_lang_detected = Column(String(10))
     target_lang = Column(String(10), nullable=False)
 
@@ -177,13 +177,13 @@ class Translation(Base):
 
     # SHA-256(normallashtirilgan matn + til juftligi) — kesh qidiruvi va dedup.
     source_hash = Column(String(64), index=True)
-    source_chars = Column(Integer, default=0, server_default=text("0"), nullable=False)
-    target_chars = Column(Integer, default=0, server_default=text("0"), nullable=False)
+    source_chars = Column(Integer, default=0, server_default=sql_text("0"), nullable=False)
+    target_chars = Column(Integer, default=0, server_default=sql_text("0"), nullable=False)
 
     provider = Column(String(32), nullable=False)
     provider_model = Column(String(64))
 
-    status = Column(String(20), default="success", server_default=text("'success'"), nullable=False)
+    status = Column(String(20), default="success", server_default=sql_text("'success'"), nullable=False)
     error_code = Column(String(64))
     error_message = Column(Text)
 
@@ -208,7 +208,7 @@ class Translation(Base):
             "idx_translations_failures",
             "status",
             "created_at",
-            postgresql_where=text("status <> 'success'"),
+            postgresql_where=sql_text("status <> 'success'"),
         ),
         CheckConstraint("chat_type IN " + str(CHAT_TYPES), name="ck_translations_chat_type"),
         CheckConstraint("input_kind IN " + str(INPUT_KINDS), name="ck_translations_input_kind"),
@@ -280,7 +280,7 @@ class TtsRequest(Base):
     # Telegram fayl ID — bir xil matn qayta so'ralsa qayta generatsiya qilinmaydi.
     telegram_file_id = Column(String(255))
 
-    status = Column(String(20), default="success", server_default=text("'success'"), nullable=False)
+    status = Column(String(20), default="success", server_default=sql_text("'success'"), nullable=False)
     error_code = Column(String(64))
     latency_ms = Column(Integer)
 
@@ -319,8 +319,8 @@ class Event(Base):
     session_id = Column(UUID(as_uuid=True))
 
     event_type = Column(String(64), nullable=False)
-    source = Column(String(20), default="bot", server_default=text("'bot'"), nullable=False)
-    payload = Column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    source = Column(String(20), default="bot", server_default=sql_text("'bot'"), nullable=False)
+    payload = Column(JSONB, nullable=False, server_default=sql_text("'{}'::jsonb"))
 
     created_at = _created_at()
 
@@ -346,9 +346,9 @@ class DailyUsage(Base):
     )
     date = Column(Date, primary_key=True)
 
-    translations_count = Column(Integer, default=0, server_default=text("0"), nullable=False)
-    tts_count = Column(Integer, default=0, server_default=text("0"), nullable=False)
-    chars_count = Column(Integer, default=0, server_default=text("0"), nullable=False)
+    translations_count = Column(Integer, default=0, server_default=sql_text("0"), nullable=False)
+    tts_count = Column(Integer, default=0, server_default=sql_text("0"), nullable=False)
+    chars_count = Column(Integer, default=0, server_default=sql_text("0"), nullable=False)
 
     updated_at = Column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
@@ -374,8 +374,8 @@ class Channel(Base):
     button_text = Column(String(255), nullable=False)
     button_url = Column(String(512), nullable=False)
 
-    is_active = Column(Boolean, default=True, server_default=text("true"), nullable=False, index=True)
-    priority = Column(Integer, default=0, server_default=text("0"), nullable=False)
+    is_active = Column(Boolean, default=True, server_default=sql_text("true"), nullable=False, index=True)
+    priority = Column(Integer, default=0, server_default=sql_text("0"), nullable=False)
     added_by = Column(BigInteger, ForeignKey("users.id", ondelete="SET NULL"))
 
     created_at = _created_at()
@@ -406,11 +406,11 @@ class Broadcast(Base):
 
     mode = Column(String(20), nullable=False)
     content_preview = Column(Text)
-    status = Column(String(20), default="created", server_default=text("'created'"), nullable=False, index=True)
+    status = Column(String(20), default="created", server_default=sql_text("'created'"), nullable=False, index=True)
 
-    total_targets = Column(Integer, default=0, server_default=text("0"), nullable=False)
-    success_count = Column(Integer, default=0, server_default=text("0"), nullable=False)
-    failed_count = Column(Integer, default=0, server_default=text("0"), nullable=False)
+    total_targets = Column(Integer, default=0, server_default=sql_text("0"), nullable=False)
+    success_count = Column(Integer, default=0, server_default=sql_text("0"), nullable=False)
+    failed_count = Column(Integer, default=0, server_default=sql_text("0"), nullable=False)
 
     created_at = _created_at()
     started_at = Column(DateTime(timezone=True))
@@ -462,12 +462,12 @@ class Chat(Base):
     type = Column(String(20), nullable=False)
 
     member_count = Column(Integer)
-    is_active = Column(Boolean, default=True, server_default=text("true"), nullable=False, index=True)
+    is_active = Column(Boolean, default=True, server_default=sql_text("true"), nullable=False, index=True)
     added_by = Column(BigInteger, ForeignKey("users.id", ondelete="SET NULL"))
 
     # Guruhga xos sozlamalar — auto-tarjima yoqilganmi, qaysi tilga va h.k.
-    source_lang = Column(String(10), default="auto", server_default=text("'auto'"), nullable=False)
-    target_lang = Column(String(10), default="uz", server_default=text("'uz'"), nullable=False)
+    source_lang = Column(String(10), default="auto", server_default=sql_text("'auto'"), nullable=False)
+    target_lang = Column(String(10), default="uz", server_default=sql_text("'uz'"), nullable=False)
 
     created_at = _created_at()
     last_seen_at = _created_at()
@@ -485,6 +485,6 @@ class AdminAction(Base):
     action = Column(String(64), nullable=False)
     target_type = Column(String(32))
     target_id = Column(String(64))
-    payload = Column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    payload = Column(JSONB, nullable=False, server_default=sql_text("'{}'::jsonb"))
 
     created_at = _created_at(index=True)
