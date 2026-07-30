@@ -42,13 +42,15 @@ HELP = (
     "ℹ️ <b>Cara memakai bot</b>\n\n"
     "• Kirim teks apa pun — akan diterjemahkan otomatis\n"
     "• <b>🌐 Bahasa</b> — ubah arah terjemahan\n"
+    "• <b>⭐ Donasi</b> — dukung proyek ini dengan Telegram Stars\n"
     "• <b>✉️ Hubungi admin</b> — kirim pertanyaan atau saran\n\n"
     "Tombol di bawah setiap terjemahan:\n"
     "🔊 — dengarkan teksnya\n"
     "🔄 — balik arah terjemahan\n"
     "🌐 — pilih bahasa\n\n"
     "Terjemahan dikirim <code>seperti ini</code> — ketuk untuk menyalin.\n\n"
-    "Batas harian: <b>{limit}</b> terjemahan."
+    "Batas harian: <b>{limit}</b> terjemahan.\n\n"
+    "👤 Untuk hal lainnya: @{admin}"
 )
 
 # ── Bahasa ───────────────────────────────────────────────────

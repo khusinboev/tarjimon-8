@@ -43,13 +43,15 @@ HELP = (
     "ℹ️ <b>How to use the bot</b>\n\n"
     "• Send any text — it is translated automatically\n"
     "• <b>🌐 Languages</b> — change the translation direction\n"
+    "• <b>⭐ Donate</b> — support the project with Telegram Stars\n"
     "• <b>✉️ Contact admin</b> — send a question or suggestion\n\n"
     "Buttons under each translation:\n"
     "🔊 — listen to the text\n"
     "🔄 — reverse the direction\n"
     "🌐 — pick languages\n\n"
     "Translations are sent <code>like this</code> — tap to copy.\n\n"
-    "Daily limit: <b>{limit}</b> translations."
+    "Daily limit: <b>{limit}</b> translations.\n\n"
+    "👤 For any other matters: @{admin}"
 )
 
 # ── Languages ────────────────────────────────────────────────

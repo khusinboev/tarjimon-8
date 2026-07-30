@@ -77,6 +77,9 @@ async def cmd_help(
         menu="help",
     )
     await message.answer(
-        t.HELP.format(limit=settings.DAILY_TRANSLATION_LIMIT),
+        t.HELP.format(
+            limit=settings.DAILY_TRANSLATION_LIMIT,
+            admin=settings.ADMIN_USERNAME,
+        ),
         reply_markup=main_menu(t),
     )

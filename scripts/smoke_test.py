@@ -94,6 +94,7 @@ async def test_locales() -> None:
         t = locales.get(code)
         try:
             t.WELCOME.format(name="X", source="A", target="B")
+            t.HELP.format(limit=50, admin="someone")
             t.CONTACT_TOO_LONG.format(length=10, limit=5)
             t.CONTACT_RATE_LIMITED.format(minutes=7)
             t.TOO_LONG.format(length=10, limit=5)

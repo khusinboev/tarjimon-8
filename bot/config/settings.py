@@ -99,6 +99,9 @@ class Settings(BaseSettings):
         return values or [10, 25, 50, 100]
 
     # ── Adminga murojaat ──────────────────────────────────────
+    # Yordam bo'limida ko'rsatiladigan profil — bot orqali emas, to'g'ridan-to'g'ri
+    # yozmoqchi bo'lganlar uchun. @ belgisisiz yoziladi.
+    ADMIN_USERNAME: str = Field(default="adkhambek_4")
     SUPPORT_MAX_CHARS: int = Field(default=2000)
     # Spam himoyasi: SUPPORT_RATE_WINDOW soniyada SUPPORT_RATE_LIMIT ta murojaat.
     # 37k foydalanuvchi bor — cheklovsiz admin chatini ko'mib tashlash mumkin.

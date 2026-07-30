@@ -42,13 +42,15 @@ HELP = (
     "ℹ️ <b>Botdan foydalanish</b>\n\n"
     "• Istalgan matn yuboring — u avtomatik tarjima qilinadi\n"
     "• <b>🌐 Tillar</b> — tarjima yo'nalishini o'zgartirish\n"
+    "• <b>⭐ Homiylik</b> — loyihani Telegram Stars bilan qo'llab-quvvatlash\n"
     "• <b>✉️ Adminga murojaat</b> — savol yoki taklif yuborish\n\n"
     "Tarjima ostidagi tugmalar:\n"
     "🔊 — matnni ovozda eshitish\n"
     "🔄 — yo'nalishni teskari almashtirish\n"
     "🌐 — tillarni tanlash\n\n"
     "Tarjima <code>shu ko'rinishda</code> yuboriladi — ustiga bosib nusxa olishingiz mumkin.\n\n"
-    "Kunlik limit: <b>{limit}</b> ta tarjima."
+    "Kunlik limit: <b>{limit}</b> ta tarjima.\n\n"
+    "👤 Turli murojaatlar uchun: @{admin}"
 )
 
 # ── Tillar ───────────────────────────────────────────────────
