@@ -158,6 +158,18 @@ class UserRepository:
             .values(status="blocked_bot", blocked_at=utcnow())
         )
 
+    async def mark_unreachable(self, user_id: int) -> None:
+        """Chat umuman mavjud emas — `deleted` holatiga o'tkazadi.
+
+        `blocked_bot` dan farqi: bloklagan odam botni qayta ochsa holat
+        tiklanadi, bu esa qaytmaydi (akkaunt o'chirilgan, id buzuq yoki
+        nishon o'zi bot). `iter_broadcast_targets` faqat `active` ni oladi,
+        ya'ni bunday yozuvlar keyingi tarqatishlarga umuman tushmaydi.
+        """
+        await self.session.execute(
+            update(User).where(User.id == user_id).values(status="deleted")
+        )
+
     async def mark_unblocked(self, user_id: int) -> None:
         await self.session.execute(
             update(User)

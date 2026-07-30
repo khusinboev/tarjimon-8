@@ -25,6 +25,7 @@ from bot.services.broadcast import (
     DEFAULT_CONCURRENCY,
     DEFAULT_RATE_PER_SEC,
     RateLimiter,
+    is_permanently_unreachable,
 )
 
 
@@ -308,6 +309,7 @@ class AdminService:
         success = 0
         failed = 0
         blocked = 0
+        unreachable = 0
         failures: list[tuple[int, str]] = []
         cancelled = False
 
@@ -391,9 +393,15 @@ class AdminService:
                 await self.broadcast_repo.add_delivery(
                     broadcast.id, user_id, "failed", error_text
                 )
+
                 if error_text == "forbidden":
+                    # Bloklagan — qaytishi mumkin, `/start` da tiklanadi.
                     await self.user_repo.mark_blocked(user_id)
                     blocked += 1
+                elif is_permanently_unreachable(error_text):
+                    # Chat umuman yo'q — keyingi tarqatishlarga tushmasin.
+                    await self.user_repo.mark_unreachable(user_id)
+                    unreachable += 1
 
             await self.session.commit()
 
@@ -421,6 +429,7 @@ class AdminService:
             "success": success,
             "failed": failed,
             "blocked": blocked,
+            "unreachable": unreachable,
             "failures": failures,
         }
 

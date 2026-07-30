@@ -67,3 +67,34 @@ DEFAULT_RATE_PER_SEC = 15.0
 # Bir vaqtda ochiq so'rovlar. 10 ta tarmoq kutishini yashirish uchun yetarli;
 # ko'paytirish tezlikni oshirmaydi, chunki chegara RateLimiter'da.
 DEFAULT_CONCURRENCY = 10
+
+
+# ─────────────────────────────────────────────────────────────
+#  Xatolarni tasniflash
+# ─────────────────────────────────────────────────────────────
+# Bu xatolar chatning umuman mavjud emasligini bildiradi. Qayta urinish ham,
+# keyingi tarqatishlarda qayta yuborish ham foydasiz — chat qaytmaydi.
+#
+# `forbidden` (403) bu ro'yxatda YO'Q va bo'lmasligi kerak: u "bloklagan"
+# degani, foydalanuvchi botni qayta ochsa holat tiklanadi.
+PERMANENT_ERROR_MARKERS = (
+    "chat not found",
+    "user_bot_to_bot_disabled",
+    "peer_id_invalid",
+    "user is deactivated",
+    "chat_id is empty",
+    "bot can't initiate conversation",
+)
+
+
+def is_permanently_unreachable(error_text: str | None) -> bool:
+    """Xato "bu chatga hech qachon yetib bo'lmaydi" degani bo'lsa — True.
+
+    Shunday foydalanuvchilar `deleted` holatiga o'tkaziladi va keyingi
+    tarqatishlar ro'yxatiga umuman tushmaydi. Aks holda ular har safar
+    qayta urinilib, vaqt sarflab, xato statistikasini shishirardi.
+    """
+    if not error_text:
+        return False
+    lowered = error_text.lower()
+    return any(marker in lowered for marker in PERMANENT_ERROR_MARKERS)

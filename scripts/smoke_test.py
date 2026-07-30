@@ -591,6 +591,51 @@ async def test_donate(user_id: int) -> None:
         await session.commit()
 
 
+async def test_broadcast() -> None:
+    """Tarqatish: tezlik cheklovi va xatolarni tasniflash."""
+    print("\n[14] Tarqatish")
+    import time
+
+    from bot.services.broadcast import (
+        DEFAULT_CONCURRENCY,
+        DEFAULT_RATE_PER_SEC,
+        RateLimiter,
+        is_permanently_unreachable,
+    )
+
+    # Tezlik: 40 slot / 20 per sek ≈ 2 soniya.
+    limiter = RateLimiter(20)
+    started = time.monotonic()
+    await asyncio.gather(*(limiter.wait() for _ in range(40)))
+    elapsed = time.monotonic() - started
+    check("rate limiter tezlikni ushlaydi", 1.7 < elapsed < 2.6, f"{elapsed:.2f}s")
+
+    # `pause()` — flood-wait kelganda hamma yuboruvchi birga kutadi.
+    paused = RateLimiter(100)
+    paused.pause(0.4)
+    started = time.monotonic()
+    await paused.wait()
+    check("pause hammani kechiktiradi", time.monotonic() - started > 0.3)
+
+    check("tezlik Telegram limitidan past", DEFAULT_RATE_PER_SEC <= 20)
+    check("parallellik oqilona", 1 < DEFAULT_CONCURRENCY <= 20)
+
+    # Qaytarib bo'lmaydigan xatolar — bunday userlar `deleted` ga o'tadi.
+    permanent = [
+        "Telegram server says - Bad Request: chat not found",
+        "Bad Request: USER_BOT_TO_BOT_DISABLED",
+        "Bad Request: PEER_ID_INVALID",
+        "Forbidden: user is deactivated",
+    ]
+    for text in permanent:
+        check(f"doimiy xato: {text[:38]}", is_permanently_unreachable(text))
+
+    # `forbidden` bu ro'yxatda BO'LMASLIGI kerak: bloklagan odam botni qayta
+    # ochsa holati tiklanadi, uni `deleted` qilish ma'lumot yo'qotish bo'lardi.
+    for text in ["forbidden", "Too Many Requests: retry after 5", "Bad Gateway", None, ""]:
+        check(f"vaqtinchalik: {text!r:34}", not is_permanently_unreachable(text))
+
+
 async def cleanup() -> None:
     async with AsyncSessionLocal() as session:
         from sqlalchemy import delete
@@ -634,6 +679,7 @@ async def main() -> None:
     await test_keyboards()
     await test_support()
     await test_donate(user_id)
+    await test_broadcast()
 
     await cleanup()
     await engine.dispose()

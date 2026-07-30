@@ -60,6 +60,7 @@ from bot.services.broadcast import (
     DEFAULT_CONCURRENCY,
     DEFAULT_RATE_PER_SEC,
     RateLimiter,
+    is_permanently_unreachable,
 )
 
 logging.basicConfig(
@@ -173,6 +174,7 @@ async def main() -> None:
         success = 0
         failed = 0
         blocked = 0
+        unreachable = 0
         failures: list[tuple[int, str]] = []
 
         async def deliver(telegram_id: int, lang: str) -> tuple[bool, str | None]:
@@ -234,12 +236,19 @@ async def main() -> None:
                     await repo.add_delivery(broadcast_id, user_id, "failed", error_text)
 
                     if error_text == "forbidden":
+                        # Bloklagan — qaytishi mumkin, `/start` da tiklanadi.
                         await session.execute(
                             update(User)
                             .where(User.id == user_id)
                             .values(status="blocked_bot", blocked_at=func.now())
                         )
                         blocked += 1
+                    elif is_permanently_unreachable(error_text):
+                        # Chat umuman yo'q — keyingi tarqatishlarga tushmasin.
+                        await session.execute(
+                            update(User).where(User.id == user_id).values(status="deleted")
+                        )
+                        unreachable += 1
 
                 await session.commit()
 
@@ -258,10 +267,11 @@ async def main() -> None:
             await repo.finish_broadcast(broadcast_id, success, failed)
             await session.commit()
             log.info(
-                "✅ Tugadi: yuborildi %s, xato %s, bloklagan %s",
+                "✅ Tugadi: yuborildi %s, xato %s, bloklagan %s, yetib bo'lmaydi %s",
                 f"{success:,}".replace(",", " "),
                 failed,
                 blocked,
+                unreachable,
             )
 
             # Yetmagan foydalanuvchilar ro'yxati — keyin tekshirish uchun.
