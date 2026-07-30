@@ -2,6 +2,11 @@
 Description=Tarjimon-8 Telegram bot
 After=network-online.target postgresql.service redis-server.service
 Wants=network-online.target
+# Botni qayta ishga tushirish sikliga tushib qolishdan saqlaydi:
+# 5 daqiqada 5 martadan ko'p yiqilsa, xizmat to'xtaydi va diqqat talab qiladi.
+# Diqqat: bu direktivalar [Unit] da bo'lishi shart, [Service] da e'tiborsiz qoladi.
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -13,10 +18,6 @@ ExecStart=/home/tarjimon8/venv/bin/python -m bot.main
 
 Restart=always
 RestartSec=5s
-# Botni qayta ishga tushirish sikliga tushib qolishdan saqlaydi:
-# 5 daqiqada 5 martadan ko'p yiqilsa, xizmat to'xtaydi va diqqat talab qiladi.
-StartLimitIntervalSec=300
-StartLimitBurst=5
 
 MemoryMax=1G
 # Loglar journald ga tushadi: journalctl -u tarjimon8 -f
