@@ -1,16 +1,21 @@
-"""Adminga murojaat.
+"""Adminga murojaat va yozishma.
 
-Bir tomonlama: foydalanuvchi yozadi, admin o'qiydi. Suhbat yo'q — admin
-javob bermaydi va foydalanuvchi bilan yozishma boshlanmaydi.
+Suhbat Telegram'ning **reply** mexanizmi orqali boradi:
+  foydalanuvchi murojaat yozadi  → admin chatiga tushadi
+  admin o'sha xabarga reply qiladi → foydalanuvchiga yetadi
+  foydalanuvchi javobga reply qiladi → adminga qaytadi
 
-Xabar ikki joyga tushadi:
+FSM holati saqlanmaydi — javob berilayotgan xabarning o'zi suhbatni
+aniqlaydi. Har bir yetkazilgan xabar uchun ikki uchdagi `message_id`
+`support_messages` ga yoziladi va ip shundan topiladi.
+
+Ip topilmasa `SkipHandler` bilan keyingi handlerlarga o'tkaziladi: oddiy
+reply bo'lsa matn odatdagidek tarjima qilinishi kerak.
+
+Murojaat matni ikki joyga tushadi:
   1. Adminlarning Telegram chatiga — darhol ko'rish uchun
   2. `events` jadvaliga (`support.message_sent`) — admin o'tkazib yuborsa
      yoki Telegram yuborishda xato bo'lsa matn yo'qolmasligi uchun
-
-Ikkinchisi muhim: Telegram yuborish har xil sababdan yiqilishi mumkin
-(admin botni bloklagan, chat topilmadi), lekin foydalanuvchi xabari
-yo'qolmasligi kerak.
 """
 
 from __future__ import annotations
@@ -19,13 +24,17 @@ import logging
 from types import ModuleType
 
 from aiogram import F, Router
+from aiogram.dispatcher.event.bases import SkipHandler
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config.settings import settings
 from bot.database.models import User
+from bot.database.repositories.support_repository import SupportRepository
 from bot.keyboards.user import cancel_menu, main_menu
+from bot import locales
 from bot.locales import CANCEL_BUTTONS, CONTACT_BUTTONS, RESERVED_BUTTONS
 from bot.services.events import EventService, EventType
 from bot.states.support import SupportStates
@@ -35,21 +44,31 @@ logger = logging.getLogger(__name__)
 router = Router(name="support")
 
 
-async def _rate_limited(redis, user_id: int) -> int:
+async def _rate_limited(
+    redis,
+    user_id: int,
+    *,
+    limit: int | None = None,
+    key: str = "support",
+) -> int:
     """Limit oshgan bo'lsa qolgan daqiqalarni qaytaradi, aks holda 0.
+
+    `key` alohida hisoblagichlar uchun: yangi murojaat va suhbat ichidagi
+    javob har xil chegaraga ega bo'lishi kerak.
 
     Redis yo'q bo'lsa cheklov ishlamaydi (fail-open) — tarjima oqimidagi
     bilan bir xil qaror: Redis tushganda bot ishlashda davom etsin.
     """
     if not redis:
         return 0
-    key = f"support:{user_id}"
+    cap = limit if limit is not None else settings.SUPPORT_RATE_LIMIT
+    redis_key = f"{key}:{user_id}"
     try:
-        count = await redis.incr(key)
+        count = await redis.incr(redis_key)
         if count == 1:
-            await redis.expire(key, settings.SUPPORT_RATE_WINDOW)
-        if count > settings.SUPPORT_RATE_LIMIT:
-            ttl = await redis.ttl(key)
+            await redis.expire(redis_key, settings.SUPPORT_RATE_WINDOW)
+        if count > cap:
+            ttl = await redis.ttl(redis_key)
             return max(1, (ttl + 59) // 60) if ttl and ttl > 0 else 1
         return 0
     except Exception:
@@ -57,7 +76,7 @@ async def _rate_limited(redis, user_id: int) -> int:
         return 0
 
 
-def _admin_view(user: User, text: str) -> str:
+def _admin_view(user: User, text: str, *, is_reply: bool = False) -> str:
     """Adminga ko'rinadigan ko'rinish.
 
     Admin — bitta odam (egasi), shuning uchun bu matn tarjima qilinmaydi.
@@ -65,8 +84,9 @@ def _admin_view(user: User, text: str) -> str:
     """
     username = f"@{user.username}" if user.username else "—"
     name = html_escape(user.first_name or "—")
+    title = "💬 <b>Suhbat davomi</b>" if is_reply else "✉️ <b>Yangi murojaat</b>"
     return (
-        "✉️ <b>Yangi murojaat</b>\n\n"
+        f"{title}\n\n"
         f"👤 {name} · {username}\n"
         f"🆔 <code>{user.telegram_id}</code>\n"
         f"🌐 {user.telegram_lang or '—'}\n"
@@ -108,6 +128,7 @@ async def cancel_contact(message: Message, state: FSMContext, t: ModuleType) -> 
 )
 async def receive_message(
     message: Message,
+    session: AsyncSession,
     user: User,
     events: EventService,
     session_id,
@@ -154,11 +175,23 @@ async def receive_message(
     )
 
     body = _admin_view(user, text)
+    support = SupportRepository(session)
     delivered = 0
     for admin_id in settings.ADMIN_USER_IDS:
         try:
-            await message.bot.send_message(admin_id, body)
+            sent = await message.bot.send_message(admin_id, body)
             delivered += 1
+            # Ipni yozamiz: admin shu xabarga reply qilsa kimga javob
+            # berayotganini shundan topamiz.
+            await support.record(
+                user_id=user.id,
+                direction="in",
+                text=text,
+                admin_chat_id=admin_id,
+                admin_message_id=sent.message_id,
+                user_chat_id=message.chat.id,
+                user_message_id=message.message_id,
+            )
         except Exception:
             # Bitta admin yetib olmasa qolganlariga yuborishda davom etamiz.
             logger.warning("Murojaatni %s ga yuborib bo'lmadi", admin_id, exc_info=True)
@@ -181,3 +214,150 @@ async def reject_non_text(message: Message, t: ModuleType) -> None:
     Holat saqlanadi: foydalanuvchi matn ko'rinishida qayta yuborishi mumkin.
     """
     await message.answer(t.CONTACT_ONLY_TEXT)
+
+
+def _is_admin(telegram_id: int) -> bool:
+    return telegram_id in settings.ADMIN_USER_IDS
+
+
+# `StateFilter(None)` shart: admin xabar tarqatish rejimida turib eski
+# murojaatga reply qilsa, matn tarqatish o'rniga bitta userga ketib qolardi.
+@router.message(
+    StateFilter(None),
+    F.reply_to_message,
+    F.text,
+    F.from_user.func(lambda u: u and _is_admin(u.id)),
+)
+async def admin_reply(
+    message: Message,
+    session: AsyncSession,
+    events: EventService,
+    session_id,
+) -> None:
+    """Admin murojaat xabariga reply qilsa — javob foydalanuvchiga boradi.
+
+    Ip `support_messages` dan topiladi: admin qaysi xabarga javob berayotgan
+    bo'lsa, o'sha yozuvdagi foydalanuvchi nishon bo'ladi. Boshqa xabarga
+    reply bo'lsa `SkipHandler` bilan keyingi handlerlarga o'tkazamiz —
+    admin ham botdan tarjima uchun foydalanishi mumkin.
+    """
+    support = SupportRepository(session)
+    thread = await support.by_admin_message(
+        message.chat.id, message.reply_to_message.message_id
+    )
+    if thread is None or thread.user is None:
+        raise SkipHandler
+
+    text = (message.text or "").strip()
+    if not text:
+        raise SkipHandler
+
+    target = thread.user
+    # Javob foydalanuvchining o'z tilida sarlavhalanadi.
+    reply_locale = locales.get(target.settings.interface_lang if target.settings else None)
+
+    try:
+        sent = await message.bot.send_message(
+            target.telegram_id,
+            reply_locale.CONTACT_REPLY_HEADER.format(text=html_escape(text)),
+        )
+    except Exception:
+        logger.warning("Admin javobi yetmadi (user_id=%s)", target.id, exc_info=True)
+        await message.reply("⚠️ Javob yetkazilmadi — foydalanuvchi botni bloklagan bo'lishi mumkin.")
+        return
+
+    await support.record(
+        user_id=target.id,
+        direction="out",
+        text=text,
+        admin_chat_id=message.chat.id,
+        admin_message_id=message.message_id,
+        user_chat_id=target.telegram_id,
+        user_message_id=sent.message_id,
+    )
+    await events.log(
+        EventType.SUPPORT_REPLY_SENT,
+        user_id=target.id,
+        chat_id=message.chat.id,
+        session_id=session_id,
+        chars=len(text),
+    )
+    await message.reply("✅ Yuborildi.")
+
+
+@router.message(StateFilter(None), F.reply_to_message, F.text)
+async def user_reply(
+    message: Message,
+    session: AsyncSession,
+    user: User,
+    events: EventService,
+    session_id,
+    t: ModuleType,
+    redis=None,
+) -> None:
+    """Foydalanuvchi admin javobiga reply qilsa — adminga qaytadi.
+
+    Bu handler tarjima handleridan oldin turadi, aks holda javob matni
+    tarjima qilinib yuborilardi. Ip topilmasa `SkipHandler` — oddiy reply
+    bo'lsa matn odatdagidek tarjima qilinishi kerak.
+    """
+    support = SupportRepository(session)
+    thread = await support.by_user_message(
+        message.chat.id, message.reply_to_message.message_id
+    )
+    if thread is None:
+        raise SkipHandler
+
+    text = (message.text or "").strip()
+    if not text:
+        raise SkipHandler
+
+    if len(text) > settings.SUPPORT_MAX_CHARS:
+        await message.answer(
+            t.CONTACT_TOO_LONG.format(length=len(text), limit=settings.SUPPORT_MAX_CHARS)
+        )
+        return
+
+    # Suhbat ichidagi javoblar uchun yumshoqroq cheklov: admin allaqachon
+    # yozishmani boshlagan, uni soatiga 3 ta bilan cheklash mantiqsiz.
+    minutes = await _rate_limited(
+        redis, user.id, limit=settings.SUPPORT_REPLY_RATE_LIMIT, key="supportreply"
+    )
+    if minutes:
+        await message.answer(t.CONTACT_RATE_LIMITED.format(minutes=minutes))
+        return
+
+    body = _admin_view(user, text, is_reply=True)
+    delivered = 0
+    for admin_id in settings.ADMIN_USER_IDS:
+        try:
+            sent = await message.bot.send_message(admin_id, body)
+            delivered += 1
+            await support.record(
+                user_id=user.id,
+                direction="in",
+                text=text,
+                admin_chat_id=admin_id,
+                admin_message_id=sent.message_id,
+                user_chat_id=message.chat.id,
+                user_message_id=message.message_id,
+            )
+        except Exception:
+            logger.warning("Javobni %s ga yuborib bo'lmadi", admin_id, exc_info=True)
+
+    await events.log(
+        EventType.SUPPORT_MESSAGE_SENT,
+        user_id=user.id,
+        chat_id=message.chat.id,
+        session_id=session_id,
+        text=truncate(text, settings.SUPPORT_MAX_CHARS),
+        chars=len(text),
+        is_reply=True,
+        username=user.username,
+        telegram_id=user.telegram_id,
+    )
+
+    if delivered:
+        await message.answer(t.CONTACT_REPLY_SENT)
+    else:
+        await message.answer(t.CONTACT_FAILED)

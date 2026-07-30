@@ -476,6 +476,51 @@ class Chat(Base):
     meta = _meta()
 
 
+class SupportMessage(Base):
+    """Adminga murojaat yozishmasi.
+
+    Suhbat Telegram'ning "reply" mexanizmi orqali boradi: admin murojaat
+    xabariga javob yozsa u foydalanuvchiga yetadi, foydalanuvchi javobga
+    javob yozsa adminga qaytadi. Holat (FSM) saqlanmaydi — javob berilayotgan
+    xabarning o'zi suhbatni aniqlaydi.
+
+    Shuning uchun har bir yetkazilgan xabar uchun ikki uchning `message_id`
+    si yoziladi: keyinchalik `reply_to_message.message_id` bo'yicha qaysi
+    foydalanuvchi haqida gap ketayotganini topamiz.
+
+    Bir murojaat bir necha adminga yuborilsa, har biriga alohida qator
+    yoziladi — har bir admin chatida `message_id` boshqacha bo'ladi.
+    """
+
+    __tablename__ = "support_messages"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    user_id = Column(
+        BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+
+    # `in` — foydalanuvchidan adminga, `out` — admindan foydalanuvchiga.
+    direction = Column(String(3), nullable=False)
+    text = Column(Text, nullable=False)
+
+    admin_chat_id = Column(BigInteger, nullable=False)
+    admin_message_id = Column(BigInteger, nullable=False)
+    user_chat_id = Column(BigInteger, nullable=False)
+    user_message_id = Column(BigInteger)
+
+    created_at = _created_at(index=True)
+    meta = _meta()
+
+    user = relationship("User")
+
+    __table_args__ = (
+        CheckConstraint("direction IN ('in', 'out')", name="ck_support_direction"),
+        # Javobni topish uchun ikki yo'nalishdagi qidiruv.
+        Index("idx_support_admin_msg", "admin_chat_id", "admin_message_id"),
+        Index("idx_support_user_msg", "user_chat_id", "user_message_id"),
+    )
+
+
 class Donation(Base):
     """Telegram Stars orqali homiylik.
 

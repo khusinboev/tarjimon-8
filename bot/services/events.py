@@ -60,6 +60,7 @@ class EventType:
 
     # Adminga murojaat
     SUPPORT_MESSAGE_SENT = "support.message_sent"
+    SUPPORT_REPLY_SENT = "support.reply_sent"
     SUPPORT_RATE_LIMITED = "support.rate_limited"
 
     # Homiylik
@@ -94,6 +95,7 @@ IMPORTANT_EVENTS = frozenset(
         # Murojaat matni faqat shu voqeada saqlanadi — admin Telegram'da
         # o'tkazib yuborsa yagona nusxa bo'lib qoladi, shuning uchun "muhim".
         EventType.SUPPORT_MESSAGE_SENT,
+        EventType.SUPPORT_REPLY_SENT,
         # To'lov voqeasi har doim yoziladi — pul harakati hisobga olinishi kerak.
         EventType.DONATE_PAID,
         EventType.ERROR_UNHANDLED,

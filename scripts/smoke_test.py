@@ -680,6 +680,59 @@ async def test_stats() -> None:
         )
 
 
+async def test_support_thread() -> None:
+    """Ikki tomonlama murojaat: reply orqali ip topiladi."""
+    print("\n[16] Murojaat yozishmasi")
+    from sqlalchemy import delete
+
+    from bot.database.models import SupportMessage
+    from bot.database.repositories.support_repository import SupportRepository
+
+    async with AsyncSessionLocal() as session:
+        repo = UserRepository(session)
+        user, _ = await repo.get_or_create(TEST_TELEGRAM_ID + 50, first_name="Ip")
+        await session.commit()
+
+        support = SupportRepository(session)
+
+        # 1. Foydalanuvchi murojaat yozdi, admin chatiga tushdi.
+        await support.record(
+            user_id=user.id, direction="in", text="savol",
+            admin_chat_id=111, admin_message_id=900,
+            user_chat_id=user.telegram_id, user_message_id=500,
+        )
+        await session.commit()
+
+        # 2. Admin o'sha xabarga reply qildi — ip topilishi kerak.
+        found = await support.by_admin_message(111, 900)
+        check("admin javobi ipni topadi", found is not None and found.user_id == user.id)
+        check("ip foydalanuvchini biladi", found.user is not None and found.user.telegram_id == user.telegram_id)
+
+        # Boshqa xabarga reply — ip yo'q, tarjimaga o'tishi kerak.
+        check("begona xabar ipsiz", await support.by_admin_message(111, 999) is None)
+
+        # 3. Admin javobi yozildi, foydalanuvchi chatidagi id bilan.
+        await support.record(
+            user_id=user.id, direction="out", text="javob",
+            admin_chat_id=111, admin_message_id=901,
+            user_chat_id=user.telegram_id, user_message_id=501,
+        )
+        await session.commit()
+
+        # 4. Foydalanuvchi javobga reply qildi — ip yana topiladi.
+        back = await support.by_user_message(user.telegram_id, 501)
+        check("foydalanuvchi javobi ipni topadi", back is not None and back.direction == "out")
+        check("begona reply ipsiz", await support.by_user_message(user.telegram_id, 777) is None)
+
+        check("yozishma sanaladi", await support.thread_size(user.id) == 2)
+
+        await session.execute(delete(SupportMessage).where(SupportMessage.user_id == user.id))
+        from bot.database.models import User as U, UserSettings as US
+        await session.execute(delete(US).where(US.user_id == user.id))
+        await session.execute(delete(U).where(U.id == user.id))
+        await session.commit()
+
+
 async def cleanup() -> None:
     async with AsyncSessionLocal() as session:
         from sqlalchemy import delete
@@ -725,6 +778,7 @@ async def main() -> None:
     await test_donate(user_id)
     await test_broadcast()
     await test_stats()
+    await test_support_thread()
 
     await cleanup()
     await engine.dispose()

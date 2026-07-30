@@ -141,6 +141,12 @@ CONTACT_RATE_LIMITED = (
     "You can send the next one in <b>{minutes}</b> minutes."
 )
 CONTACT_FAILED = "⚠️ Could not send the message. Please try again later."
+CONTACT_REPLY_HEADER = (
+    "✉️ <b>Reply from the admin</b>\n\n"
+    "{text}\n\n"
+    "<i>Reply to this message to answer.</i>"
+)
+CONTACT_REPLY_SENT = "✅ Your reply was sent to the admin."
 
 # ── Donations (Telegram Stars) ───────────────────────────────
 DONATE_INTRO = (

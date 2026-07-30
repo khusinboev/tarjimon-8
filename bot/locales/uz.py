@@ -140,6 +140,12 @@ CONTACT_RATE_LIMITED = (
     "Keyingi xabarni <b>{minutes}</b> daqiqadan keyin yuborishingiz mumkin."
 )
 CONTACT_FAILED = "⚠️ Xabarni yuborib bo'lmadi. Keyinroq urinib ko'ring."
+CONTACT_REPLY_HEADER = (
+    "✉️ <b>Admin javobi</b>\n\n"
+    "{text}\n\n"
+    "<i>Javob yozish uchun shu xabarga reply qiling.</i>"
+)
+CONTACT_REPLY_SENT = "✅ Javobingiz adminga yuborildi."
 
 # ── Homiylik (Telegram Stars) ────────────────────────────────
 DONATE_INTRO = (

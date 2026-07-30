@@ -140,6 +140,12 @@ CONTACT_RATE_LIMITED = (
     "Anda bisa mengirim lagi dalam <b>{minutes}</b> menit."
 )
 CONTACT_FAILED = "⚠️ Pesan tidak bisa dikirim. Coba lagi nanti."
+CONTACT_REPLY_HEADER = (
+    "✉️ <b>Balasan dari admin</b>\n\n"
+    "{text}\n\n"
+    "<i>Balas pesan ini untuk menjawab.</i>"
+)
+CONTACT_REPLY_SENT = "✅ Balasan Anda sudah dikirim ke admin."
 
 # ── Donasi (Telegram Stars) ──────────────────────────────────
 DONATE_INTRO = (

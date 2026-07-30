@@ -118,6 +118,9 @@ class Settings(BaseSettings):
     # Spam himoyasi: SUPPORT_RATE_WINDOW soniyada SUPPORT_RATE_LIMIT ta murojaat.
     # 37k foydalanuvchi bor — cheklovsiz admin chatini ko'mib tashlash mumkin.
     SUPPORT_RATE_LIMIT: int = Field(default=3)
+    # Suhbat ichidagi javoblar uchun yumshoqroq: admin allaqachon
+    # yozishmani boshlagan, uni soatiga 3 ta bilan cheklash mantiqsiz.
+    SUPPORT_REPLY_RATE_LIMIT: int = Field(default=30)
     SUPPORT_RATE_WINDOW: int = Field(default=3600, description="soniya")
 
     # ── Limitlar ──────────────────────────────────────────────
