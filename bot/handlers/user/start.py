@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import ModuleType
+
 from aiogram import Router
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import Message
@@ -8,9 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from bot.config.settings import settings
 from bot.database.models import User
 from bot.database.repositories.language_repository import LanguageRepository
-from bot.keyboards.user import main_menu
+from bot.keyboards.user import lang_label, main_menu
 from bot.services.events import EventService, EventType
-from bot.utils import texts
 
 router = Router(name="start")
 
@@ -22,6 +23,7 @@ async def cmd_start(
     user: User,
     events: EventService,
     session_id,
+    t: ModuleType,
     is_new_user: bool = False,
     command: CommandObject | None = None,
 ) -> None:
@@ -43,19 +45,21 @@ async def cmd_start(
         source=payload or None,
     )
 
-    template = texts.WELCOME if is_new_user else texts.WELCOME_BACK
+    template = t.WELCOME if is_new_user else t.WELCOME_BACK
     await message.answer(
         template.format(
-            name=message.from_user.first_name or "do'stim",
-            source=f"{source.flag} {source.name_uz}" if source else user.settings.source_lang,
-            target=f"{target.flag} {target.name_uz}" if target else user.settings.target_lang,
+            name=message.from_user.first_name or "friend",
+            source=lang_label(t, source),
+            target=lang_label(t, target),
         ),
-        reply_markup=main_menu(),
+        reply_markup=main_menu(t),
     )
 
 
 @router.message(Command("help"))
-async def cmd_help(message: Message, events: EventService, user: User, session_id) -> None:
+async def cmd_help(
+    message: Message, events: EventService, user: User, session_id, t: ModuleType
+) -> None:
     await events.log(
         EventType.MENU_OPENED,
         user_id=user.id,
@@ -64,6 +68,6 @@ async def cmd_help(message: Message, events: EventService, user: User, session_i
         menu="help",
     )
     await message.answer(
-        texts.HELP.format(limit=settings.DAILY_TRANSLATION_LIMIT),
-        reply_markup=main_menu(),
+        t.HELP.format(limit=settings.DAILY_TRANSLATION_LIMIT),
+        reply_markup=main_menu(t),
     )

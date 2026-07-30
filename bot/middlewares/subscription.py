@@ -16,7 +16,6 @@ from bot.config.settings import settings
 from bot.keyboards.inline import get_subscription_keyboard
 from bot.services.events import EventType
 from bot.services.subscription_service import SubscriptionService
-from bot.utils import texts
 
 logger = logging.getLogger(__name__)
 
@@ -74,10 +73,11 @@ class SubscriptionMiddleware(BaseMiddleware):
                 missing=[channel.channel_username or str(channel.channel_id) for channel in missing],
             )
 
-        markup = get_subscription_keyboard(missing)
+        t = data["t"]
+        markup = get_subscription_keyboard(t, missing)
         if isinstance(event, CallbackQuery):
             await event.answer()
-            await event.message.answer(texts.SUBSCRIBE_REQUIRED, reply_markup=markup)
+            await event.message.answer(t.SUBSCRIBE_REQUIRED, reply_markup=markup)
         else:
-            await event.answer(texts.SUBSCRIBE_REQUIRED, reply_markup=markup)
+            await event.answer(t.SUBSCRIBE_REQUIRED, reply_markup=markup)
         return None

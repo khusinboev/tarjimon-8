@@ -4,8 +4,20 @@ from __future__ import annotations
 
 import hashlib
 import re
+from html import escape as _escape
 
 _WHITESPACE = re.compile(r"\s+")
+
+
+def html_escape(text: str) -> str:
+    """HTML parse_mode uchun xavfsiz qiladi.
+
+    Bot global `ParseMode.HTML` bilan ishlaydi, ya'ni tarjima matnidagi `<`
+    yoki `&` belgisi xabarni buzadi (Telegram teg deb o'qiydi va butun
+    xabarni rad etadi). `quote=False` — qo'shtirnoq atribut ichida emas,
+    matn ichida, uni almashtirish shart emas.
+    """
+    return _escape(text, quote=False)
 
 
 def normalize(text: str) -> str:
@@ -55,6 +67,25 @@ def chunk(text: str, size: int) -> list[str]:
     if remaining:
         parts.append(remaining)
     return parts
+
+
+def chunk_html_safe(text: str, limit: int) -> list[str]:
+    """`chunk` kabi, lekin HTML-escape qilingandan keyingi uzunlikni hisoblaydi.
+
+    Tarjima `<code>` ichida yuboriladi, ya'ni `&`, `<`, `>` belgilar
+    `&amp;`, `&lt;`, `&gt;` ga aylanadi va matn uzayadi. Xom uzunlik bo'yicha
+    bo'lash Telegram chegarasidan oshib ketishi mumkin — masalan matn ko'p
+    `&` belgisidan iborat bo'lsa uzunlik 5 barobar oshadi.
+
+    Bo'lak o'lchamini escape natijasi sig'guncha kamaytirib boradi.
+    """
+    size = limit
+    while size > 64:
+        parts = chunk(text, size)
+        if all(len(html_escape(part)) <= limit for part in parts):
+            return parts
+        size = size * 3 // 4
+    return chunk(text, size)
 
 
 def truncate(text: str, limit: int, suffix: str = "…") -> str:

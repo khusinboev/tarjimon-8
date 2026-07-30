@@ -1,7 +1,16 @@
-"""Foydalanuvchi klaviaturalari."""
+"""Foydalanuvchi klaviaturalari.
+
+Barcha funksiyalar birinchi argument sifatida `t` — lokal modulini oladi
+(`bot/locales/`). Tugma matnlari shu yerdan olinadi, kodda qattiq yozilmaydi.
+
+Til nomlari uchun `Language.name_native` ishlatiladi ("Русский", "Türkçe",
+"O‘zbekcha"). Bu interfeys tilidan qat'i nazar to'g'ri ko'rinadi va har bir
+lokal uchun 21 ta til nomini tarjima qilish kerak emas.
+"""
 
 from __future__ import annotations
 
+from types import ModuleType
 from typing import List, Optional, Sequence
 
 from aiogram.types import (
@@ -13,45 +22,57 @@ from aiogram.types import (
 
 from bot.database.models import Language
 
-# Reply-menyu tugmalari. Handlerlar shu konstantalar bo'yicha filtrlaydi —
-# matnni ikki joyda takrorlamaslik uchun.
-BTN_LANGUAGES = "🌐 Tillar"
-BTN_HISTORY = "📜 Tarix"
-BTN_SETTINGS = "⚙️ Sozlamalar"
-BTN_HELP = "ℹ️ Yordam"
 
-MENU_BUTTONS = frozenset({BTN_LANGUAGES, BTN_HISTORY, BTN_SETTINGS, BTN_HELP})
+def lang_label(t: ModuleType, lang: Optional[Language]) -> str:
+    """Til nomi: bayroq + o'z tilidagi nomi.
+
+    `auto` — til emas, shuning uchun `name_native` bo'sh va nomi interfeys
+    tilidan olinadi.
+    """
+    if lang is None:
+        return "—"
+    if lang.code == "auto":
+        return f"{lang.flag} {t.AUTO_DETECT}"
+    return f"{lang.flag} {lang.name_native or lang.name_en or lang.code}"
 
 
-def main_menu() -> ReplyKeyboardMarkup:
+def direction_label(
+    t: ModuleType, source: Optional[Language], target: Optional[Language]
+) -> str:
+    return f"{lang_label(t, source)} → {lang_label(t, target)}"
+
+
+def main_menu(t: ModuleType) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text=BTN_LANGUAGES), KeyboardButton(text=BTN_HISTORY)],
-            [KeyboardButton(text=BTN_SETTINGS), KeyboardButton(text=BTN_HELP)],
+            [KeyboardButton(text=t.BTN_LANGUAGES)],
+            [KeyboardButton(text=t.BTN_SETTINGS), KeyboardButton(text=t.BTN_HELP)],
         ],
         resize_keyboard=True,
         is_persistent=True,
     )
 
 
-def language_menu(source: Language, target: Language) -> InlineKeyboardMarkup:
+def language_menu(
+    t: ModuleType, source: Optional[Language], target: Optional[Language]
+) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text=f"🔤 {source.flag} {source.name_uz}", callback_data="lang:pick:source"
+                    text=f"🔤 {lang_label(t, source)}", callback_data="lang:pick:source"
                 ),
                 InlineKeyboardButton(
-                    text=f"🎯 {target.flag} {target.name_uz}", callback_data="lang:pick:target"
+                    text=f"🎯 {lang_label(t, target)}", callback_data="lang:pick:target"
                 ),
             ],
-            [InlineKeyboardButton(text="🔄 Almashtirish", callback_data="lang:swap")],
+            [InlineKeyboardButton(text=t.BTN_SWAP, callback_data="lang:swap")],
         ]
     )
 
 
 def language_picker(
-    languages: Sequence[Language], slot: str, *, per_row: int = 3
+    t: ModuleType, languages: Sequence[Language], slot: str, *, per_row: int = 2
 ) -> InlineKeyboardMarkup:
     """Tillar ro'yxati. `slot` — `source` yoki `target`."""
     rows: List[List[InlineKeyboardButton]] = []
@@ -60,7 +81,7 @@ def language_picker(
     for lang in languages:
         row.append(
             InlineKeyboardButton(
-                text=f"{lang.flag} {lang.name_uz}",
+                text=lang_label(t, lang),
                 callback_data=f"lang:set:{slot}:{lang.code}",
             )
         )
@@ -71,39 +92,52 @@ def language_picker(
     if row:
         rows.append(row)
 
-    rows.append([InlineKeyboardButton(text="⬅️ Ortga", callback_data="lang:menu")])
+    rows.append([InlineKeyboardButton(text=t.BTN_BACK, callback_data="lang:menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def translation_actions(
-    translation_id: int, *, has_tts: bool, is_favorite: bool = False
-) -> Optional[InlineKeyboardMarkup]:
+    t: ModuleType,
+    translation_id: int,
+    *,
+    has_tts: bool,
+    source: Optional[Language],
+    target: Optional[Language],
+) -> InlineKeyboardMarkup:
     """Tarjima ostidagi tugmalar.
 
-    Har bir bosish `translation_signals` ga yoziladi — bu tarjima sifatini
-    o'lchashning yagona manbai.
+    Ikkinchi qatordagi tugma hozirgi yo'nalishni **ko'rsatib turadi** va bosilsa
+    tillarni tanlash menyusini ochadi. Almashtirishdan keyin shu tugma
+    yangilanadi — natija ekranda qoladi, bir zumda o'chib ketadigan bildirishnoma
+    emas.
     """
-    buttons: List[InlineKeyboardButton] = []
+    top: List[InlineKeyboardButton] = []
 
     if has_tts:
-        buttons.append(
-            InlineKeyboardButton(text="🔊 Ovoz", callback_data=f"tr:tts:{translation_id}")
+        top.append(
+            InlineKeyboardButton(
+                text=t.BTN_VOICE, callback_data=f"tr:tts:{translation_id}"
+            )
         )
-
-    buttons.append(
-        InlineKeyboardButton(
-            text="⭐" if is_favorite else "☆",
-            callback_data=f"tr:fav:{translation_id}",
-        )
+    top.append(
+        InlineKeyboardButton(text=t.BTN_SWAP, callback_data=f"tr:swap:{translation_id}")
     )
 
-    if not buttons:
-        return None
-    return InlineKeyboardMarkup(inline_keyboard=[buttons])
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            top,
+            [
+                InlineKeyboardButton(
+                    text=direction_label(t, source, target),
+                    callback_data=f"tr:langs:{translation_id}",
+                )
+            ],
+        ]
+    )
 
 
 def settings_menu(
-    *, tts_enabled: bool, tts_auto: bool, save_history: bool
+    t: ModuleType, *, tts_enabled: bool, tts_auto: bool
 ) -> InlineKeyboardMarkup:
     def mark(value: bool) -> str:
         return "✅" if value else "❌"
@@ -112,45 +146,34 @@ def settings_menu(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text=f"{mark(tts_enabled)} Ovoz tugmasi",
+                    text=f"{mark(tts_enabled)} {t.BTN_TTS_ENABLED}",
                     callback_data="set:toggle:tts_enabled",
                 )
             ],
             [
                 InlineKeyboardButton(
-                    text=f"{mark(tts_auto)} Avto-ovoz",
+                    text=f"{mark(tts_auto)} {t.BTN_TTS_AUTO}",
                     callback_data="set:toggle:tts_auto",
                 )
             ],
             [
                 InlineKeyboardButton(
-                    text=f"{mark(save_history)} Tarixni saqlash",
-                    callback_data="set:toggle:save_history",
+                    text=t.BTN_INTERFACE_LANG, callback_data="set:interface"
                 )
             ],
         ]
     )
 
 
-def history_nav(page: int, pages: int, *, mode: str = "history") -> InlineKeyboardMarkup:
-    """`mode` — `history` yoki `favorites`."""
-    nav: List[InlineKeyboardButton] = []
-
-    if page > 1:
-        nav.append(
-            InlineKeyboardButton(text="⬅️", callback_data=f"hist:{mode}:{page - 1}")
-        )
-    nav.append(
-        InlineKeyboardButton(text=f"{page}/{pages}", callback_data="noop")
-    )
-    if page < pages:
-        nav.append(
-            InlineKeyboardButton(text="➡️", callback_data=f"hist:{mode}:{page + 1}")
-        )
-
-    other = "favorites" if mode == "history" else "history"
-    other_label = "⭐ Sevimlilar" if mode == "history" else "📜 Tarix"
-
-    return InlineKeyboardMarkup(
-        inline_keyboard=[nav, [InlineKeyboardButton(text=other_label, callback_data=f"hist:{other}:1")]]
-    )
+def interface_picker(t: ModuleType, names: dict[str, str], current: str) -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=f"{'✅ ' if code == current else ''}{name}",
+                callback_data=f"set:interface:{code}",
+            )
+        ]
+        for code, name in names.items()
+    ]
+    rows.append([InlineKeyboardButton(text=t.BTN_BACK, callback_data="set:menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)

@@ -6,6 +6,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from bot import locales
 from bot.config.settings import settings
 from bot.database.models import User, UserSettings
 from bot.services.events import utcnow
@@ -118,13 +119,16 @@ class UserRepository:
         return await self.get_by_id(inserted_id), True
 
     async def _ensure_settings(self, user_id: int, telegram_lang: Optional[str]) -> None:
+        # Interfeys tili Telegram tilidan aniqlanadi: `uz` → o'zbekcha,
+        # `id` → indonez, qolgani → ingliz. Xom `telegram_lang[:2]` yozib
+        # bo'lmaydi — u qo'llab-quvvatlanmaydigan kod berardi (`ru`, `fr`).
         await self.session.execute(
             pg_insert(UserSettings)
             .values(
                 user_id=user_id,
                 source_lang=settings.DEFAULT_SOURCE_LANG,
                 target_lang=settings.DEFAULT_TARGET_LANG,
-                interface_lang=(telegram_lang or "uz")[:2],
+                interface_lang=locales.resolve(telegram_lang),
             )
             .on_conflict_do_nothing(index_elements=[UserSettings.user_id])
         )

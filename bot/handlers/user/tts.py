@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from types import ModuleType
 from typing import Optional
 
 from aiogram import F, Router
@@ -16,7 +17,6 @@ from bot.database.repositories.translation_repository import TranslationReposito
 from bot.services.events import EventService, EventType
 from bot.services.quota import QuotaService
 from bot.services.tts import TtsError, TtsService
-from bot.utils import texts
 from bot.utils.text import text_hash, truncate
 
 logger = logging.getLogger(__name__)
@@ -31,6 +31,7 @@ async def send_voice(
     events: EventService,
     session_id,
     redis,
+    t: ModuleType,
     text: str,
     lang: str,
     voice: str,
@@ -52,11 +53,11 @@ async def send_voice(
             session_id=session_id,
             limit=status.limit,
         )
-        await message.answer(texts.TTS_QUOTA_EXCEEDED.format(limit=status.limit))
+        await message.answer(t.TTS_QUOTA_EXCEEDED.format(limit=status.limit))
         return False
 
     if len(text) > settings.TTS_MAX_CHARS:
-        await message.answer(texts.TTS_TOO_LONG.format(limit=settings.TTS_MAX_CHARS))
+        await message.answer(t.TTS_TOO_LONG.format(limit=settings.TTS_MAX_CHARS))
         return False
 
     service = TtsService(redis)
@@ -114,7 +115,7 @@ async def send_voice(
             translation_id=translation_id,
             error_code=exc.code,
         )
-        await message.answer(texts.TTS_ERRORS.get(exc.code, texts.TTS_ERROR_DEFAULT))
+        await message.answer(t.TTS_ERRORS.get(exc.code, t.TTS_ERROR_DEFAULT))
         return False
 
     sent = await message.answer_voice(
@@ -168,24 +169,25 @@ async def on_tts(
     user: User,
     events: EventService,
     session_id,
+    t: ModuleType,
     redis=None,
 ) -> None:
     try:
         translation_id = int(callback.data.split(":")[2])
     except (IndexError, ValueError):
-        await callback.answer(texts.TRANSLATION_NOT_FOUND, show_alert=True)
+        await callback.answer(t.TRANSLATION_NOT_FOUND, show_alert=True)
         return
 
     repo = TranslationRepository(session)
     translation = await repo.get(translation_id)
 
     if translation is None or translation.user_id != user.id or not translation.target_text:
-        await callback.answer(texts.TRANSLATION_NOT_FOUND, show_alert=True)
+        await callback.answer(t.TRANSLATION_NOT_FOUND, show_alert=True)
         return
 
     voice = await LanguageRepository(session).tts_voice(translation.target_lang)
     if not voice:
-        await callback.answer(texts.TTS_ERRORS["no_voice"], show_alert=True)
+        await callback.answer(t.TTS_ERRORS["no_voice"], show_alert=True)
         return
 
     await callback.answer()
@@ -196,64 +198,9 @@ async def on_tts(
         events=events,
         session_id=session_id,
         redis=redis,
+        t=t,
         text=translation.target_text,
         lang=translation.target_lang,
         voice=voice,
         translation_id=translation.id,
-    )
-
-
-@router.callback_query(F.data.startswith("tr:tmp:"))
-async def on_tts_ephemeral(
-    callback: CallbackQuery,
-    session: AsyncSession,
-    user: User,
-    events: EventService,
-    session_id,
-    redis=None,
-) -> None:
-    """Tarix o'chirilgan foydalanuvchi uchun ovoz — matn Redis'da vaqtincha yotadi."""
-    token = callback.data.split(":", 2)[2] if callback.data.count(":") >= 2 else ""
-    if not token or not redis:
-        await callback.answer(texts.TRANSLATION_NOT_FOUND, show_alert=True)
-        return
-
-    try:
-        stored = await redis.hgetall(f"tmp:tts:{token}")
-    except Exception:
-        stored = None
-
-    if not stored:
-        await callback.answer(texts.TRANSLATION_NOT_FOUND, show_alert=True)
-        return
-
-    def value(key: str) -> str:
-        raw = stored.get(key) or stored.get(key.encode())
-        if isinstance(raw, bytes):
-            return raw.decode()
-        return raw or ""
-
-    text = value("text")
-    lang = value("lang")
-    if not text or not lang:
-        await callback.answer(texts.TRANSLATION_NOT_FOUND, show_alert=True)
-        return
-
-    voice = await LanguageRepository(session).tts_voice(lang)
-    if not voice:
-        await callback.answer(texts.TTS_ERRORS["no_voice"], show_alert=True)
-        return
-
-    await callback.answer()
-    await send_voice(
-        message=callback.message,
-        session=session,
-        user=user,
-        events=events,
-        session_id=session_id,
-        redis=redis,
-        text=text,
-        lang=lang,
-        voice=voice,
-        translation_id=None,
     )

@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import logging
-import secrets
-from typing import Optional
+from types import ModuleType
 
 from aiogram import F, Router
 from aiogram.types import Message
@@ -14,38 +13,18 @@ from bot.config.settings import settings
 from bot.database.models import User
 from bot.database.repositories.language_repository import LanguageRepository
 from bot.database.repositories.translation_repository import TranslationRepository
-from bot.keyboards.user import MENU_BUTTONS, translation_actions
+from bot.keyboards.user import translation_actions
+from bot.locales import MENU_BUTTONS
 from bot.services.events import EventService, EventType
 from bot.services.quota import QuotaService
 from bot.services.translation import TranslationError, TranslationService
-from bot.utils import texts
-from bot.utils.text import chunk, content_hash
+from bot.utils.text import chunk_html_safe, content_hash, html_escape
 
 logger = logging.getLogger(__name__)
 router = Router(name="translate")
 
-# Telegram xabar chegarasi 4096; HTML teglar uchun zaxira qoldiramiz.
+# Telegram xabar chegarasi 4096; `<code>` teglari va zaxira uchun kamaytiramiz.
 MESSAGE_LIMIT = 3800
-# Tarix o'chirilganda ovoz uchun matnni vaqtincha saqlash muddati.
-EPHEMERAL_TTL = 3600
-
-
-async def store_ephemeral(redis, text: str, lang: str) -> Optional[str]:
-    """Saqlanmaydigan tarjima uchun bir martalik token.
-
-    Tarix o'chirilgan bo'lsa tarjima bazaga yozilmaydi, lekin foydalanuvchi
-    baribir ovoz eshitishi kerak. Matnni Redis'da qisqa muddat saqlaymiz —
-    bu "tarixni saqlama" va'dasini buzmaydi.
-    """
-    if not redis:
-        return None
-    token = secrets.token_urlsafe(12)
-    try:
-        await redis.hset(f"tmp:tts:{token}", mapping={"text": text, "lang": lang})
-        await redis.expire(f"tmp:tts:{token}", EPHEMERAL_TTL)
-        return token
-    except Exception:
-        return None
 
 
 @router.message(F.text & ~F.text.startswith("/") & ~F.text.in_(MENU_BUTTONS))
@@ -55,6 +34,7 @@ async def handle_text(
     user: User,
     events: EventService,
     session_id,
+    t: ModuleType,
     redis=None,
 ) -> None:
     text = (message.text or "").strip()
@@ -76,7 +56,7 @@ async def handle_text(
             chat_id=message.chat.id,
             session_id=session_id,
         )
-        await message.answer(texts.RATE_LIMITED)
+        await message.answer(t.RATE_LIMITED)
         return
 
     # 2. Uzunlik.
@@ -89,7 +69,7 @@ async def handle_text(
             chars=len(text),
         )
         await message.answer(
-            texts.TOO_LONG.format(length=len(text), limit=settings.TRANSLATION_MAX_CHARS)
+            t.TOO_LONG.format(length=len(text), limit=settings.TRANSLATION_MAX_CHARS)
         )
         return
 
@@ -97,7 +77,7 @@ async def handle_text(
     if source == target:
         lang = await langs.by_code(target)
         await message.answer(
-            texts.SAME_LANGUAGE.format(lang=lang.name_uz if lang else target)
+            t.SAME_LANGUAGE.format(lang=lang.name_native if lang else target)
         )
         return
 
@@ -115,7 +95,7 @@ async def handle_text(
             limit=status.limit,
             used=status.used,
         )
-        await message.answer(texts.QUOTA_EXCEEDED.format(limit=status.limit))
+        await message.answer(t.QUOTA_EXCEEDED.format(limit=status.limit))
         return
 
     await events.log(
@@ -170,33 +150,32 @@ async def handle_text(
             error_code=exc.code,
             provider=settings.TRANSLATION_PROVIDER,
         )
-        await message.answer(texts.ERRORS.get(exc.code, texts.ERROR_DEFAULT))
+        await message.answer(t.ERRORS.get(exc.code, t.ERROR_DEFAULT))
         return
 
     detected = result.source_lang_detected or (source if source != "auto" else None)
 
-    translation_id: Optional[int] = None
-    if user_settings.save_history:
-        translation = await repo.create(
-            user_id=user.id,
-            chat_id=message.chat.id,
-            chat_type=message.chat.type,
-            input_kind="text",
-            source_lang_requested=source,
-            source_lang_detected=detected,
-            target_lang=target,
-            source_text=text,
-            target_text=result.text,
-            source_hash=source_hash,
-            source_chars=len(text),
-            target_chars=len(result.text),
-            provider=result.provider,
-            provider_model=result.provider_model,
-            status="success",
-            latency_ms=result.latency_ms,
-            cache_hit=result.cache_hit,
-        )
-        translation_id = translation.id
+    # Har bir tarjima yoziladi: tugmalar (ovoz, almashtirish) shu yozuvga
+    # tayanadi va bu jadval ML uchun asosiy manba.
+    translation = await repo.create(
+        user_id=user.id,
+        chat_id=message.chat.id,
+        chat_type=message.chat.type,
+        input_kind="text",
+        source_lang_requested=source,
+        source_lang_detected=detected,
+        target_lang=target,
+        source_text=text,
+        target_text=result.text,
+        source_hash=source_hash,
+        source_chars=len(text),
+        target_chars=len(result.text),
+        provider=result.provider,
+        provider_model=result.provider_model,
+        status="success",
+        latency_ms=result.latency_ms,
+        cache_hit=result.cache_hit,
+    )
 
     await quota.consume_translation(user.id, chars=len(text))
 
@@ -205,7 +184,7 @@ async def handle_text(
         user_id=user.id,
         chat_id=message.chat.id,
         session_id=session_id,
-        translation_id=translation_id,
+        translation_id=translation.id,
         latency_ms=result.latency_ms,
         provider=result.provider,
         detected=detected,
@@ -215,26 +194,23 @@ async def handle_text(
     voice = await langs.tts_voice(target)
     has_tts = bool(voice) and user_settings.tts_enabled
 
-    # Uzun tarjima bo'laklab yuboriladi, tugmalar oxirgi bo'lakka biriktiriladi.
-    parts = chunk(result.text, MESSAGE_LIMIT)
-    markup = None
+    markup = translation_actions(
+        t,
+        translation.id,
+        has_tts=has_tts,
+        source=await langs.by_code(source),
+        target=await langs.by_code(target),
+    )
 
-    if translation_id is not None:
-        markup = translation_actions(translation_id, has_tts=has_tts, is_favorite=False)
-    elif has_tts:
-        token = await store_ephemeral(redis, result.text, target)
-        if token:
-            from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-
-            markup = InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [InlineKeyboardButton(text="🔊 Ovoz", callback_data=f"tr:tmp:{token}")]
-                ]
-            )
-
+    # Tarjima `<code>` ichida yuboriladi — Telegram'da ustiga bosib nusxa olinadi.
+    # Uzun tarjima bo'laklanadi, tugmalar oxirgi bo'lakka biriktiriladi.
+    parts = chunk_html_safe(result.text, MESSAGE_LIMIT)
     for index, part in enumerate(parts):
         is_last = index == len(parts) - 1
-        await message.answer(part, reply_markup=markup if is_last else None)
+        await message.answer(
+            f"<code>{html_escape(part)}</code>",
+            reply_markup=markup if is_last else None,
+        )
 
     if user_settings.tts_auto and has_tts:
         from bot.handlers.user.tts import send_voice
@@ -246,14 +222,15 @@ async def handle_text(
             events=events,
             session_id=session_id,
             redis=redis,
+            t=t,
             text=result.text,
             lang=target,
             voice=voice,
-            translation_id=translation_id,
+            translation_id=translation.id,
         )
 
 
 @router.message(F.voice | F.audio | F.video_note | F.photo | F.document | F.video)
-async def handle_unsupported(message: Message) -> None:
+async def handle_unsupported(message: Message, t: ModuleType) -> None:
     """Hozircha faqat matn. Stub emas — aniq va halol javob."""
-    await message.answer(texts.UNSUPPORTED_INPUT)
+    await message.answer(t.UNSUPPORTED_INPUT)

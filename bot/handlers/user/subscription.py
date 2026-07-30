@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import ModuleType
+
 from aiogram import F, Router
 from aiogram.types import CallbackQuery
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,7 +11,6 @@ from bot.keyboards.inline import get_subscription_keyboard
 from bot.keyboards.user import main_menu
 from bot.services.events import EventService, EventType
 from bot.services.subscription_service import SubscriptionService
-from bot.utils import texts
 
 router = Router(name="subscription")
 
@@ -21,6 +22,7 @@ async def check_subscription(
     user: User,
     events: EventService,
     session_id,
+    t: ModuleType,
 ) -> None:
     service = SubscriptionService(session, callback.bot)
     missing = await service.check_user_subscriptions(callback.from_user.id)
@@ -41,16 +43,16 @@ async def check_subscription(
             session_id=session_id,
         )
         await callback.answer("✅", show_alert=False)
-        await callback.message.edit_text(texts.SUBSCRIBE_OK)
+        await callback.message.edit_text(t.SUBSCRIBE_OK)
         await callback.message.answer(
-            "Tarjima qilish uchun matn yuboring.", reply_markup=main_menu()
+            t.SEND_TEXT_PROMPT, reply_markup=main_menu(t)
         )
         return
 
-    await callback.answer(texts.SUBSCRIBE_STILL_MISSING, show_alert=True)
+    await callback.answer(t.SUBSCRIBE_STILL_MISSING, show_alert=True)
     try:
         await callback.message.edit_reply_markup(
-            reply_markup=get_subscription_keyboard(missing)
+            reply_markup=get_subscription_keyboard(t, missing)
         )
     except Exception:
         pass

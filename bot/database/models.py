@@ -103,7 +103,9 @@ class UserSettings(Base):
 
     source_lang = Column(String(10), default="auto", server_default=sql_text("'auto'"), nullable=False)
     target_lang = Column(String(10), default="uz", server_default=sql_text("'uz'"), nullable=False)
-    interface_lang = Column(String(10), default="uz", server_default=sql_text("'uz'"), nullable=False)
+    # Standart `en` — `bot/locales.DEFAULT` bilan bir xil. Haqiqiy qiymat
+    # user yaratilganda `locales.resolve(telegram_lang)` dan keladi.
+    interface_lang = Column(String(10), default="en", server_default=sql_text("'en'"), nullable=False)
 
     tts_enabled = Column(Boolean, default=True, server_default=sql_text("true"), nullable=False)
     tts_auto = Column(Boolean, default=False, server_default=sql_text("false"), nullable=False)

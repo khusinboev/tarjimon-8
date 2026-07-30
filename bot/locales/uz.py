@@ -1,9 +1,31 @@
-"""Foydalanuvchiga ko'rinadigan matnlar.
+"""O'zbekcha interfeys. Barcha lokal fayllar shu faylning kalitlarini takrorlaydi.
 
-Hozircha faqat o'zbekcha. `user_settings.interface_lang` sxemada bor —
-ko'p tilli interfeys qo'shilganda bu modul til bo'yicha lug'atga aylanadi.
+Yangi satr qo'shsangiz — uni `en.py` va `id.py` ga ham qo'shing.
+`bot/locales/__init__.py` import paytida mosligini tekshiradi va farq bo'lsa
+xato beradi, ya'ni yarim tarjima qilingan holat sezilmay qolmaydi.
 """
 
+CODE = "uz"
+NAME = "O‘zbekcha"
+
+# ── Reply-menyu tugmalari ────────────────────────────────────
+BTN_LANGUAGES = "🌐 Tillar"
+BTN_SETTINGS = "⚙️ Sozlamalar"
+BTN_HELP = "ℹ️ Yordam"
+
+# ── Inline tugmalar ──────────────────────────────────────────
+BTN_VOICE = "🔊 Ovoz"
+BTN_SWAP = "🔄 Almashtirish"
+BTN_BACK = "⬅️ Ortga"
+BTN_CHECK_SUBSCRIPTION = "✅ Obunani tekshirish"
+BTN_TTS_ENABLED = "Ovoz tugmasi"
+BTN_TTS_AUTO = "Avto-ovoz"
+BTN_INTERFACE_LANG = "🗣 Interfeys tili"
+
+# `auto` tilining nomi — bazada `name_native` bo'sh, chunki bu til emas.
+AUTO_DETECT = "Avto aniqlash"
+
+# ── Salomlashish ─────────────────────────────────────────────
 WELCOME = (
     "👋 Assalomu alaykum, {name}!\n\n"
     "Men <b>tarjimon bot</b>man. Menga istalgan matn yuboring — men uni tarjima qilaman.\n\n"
@@ -21,14 +43,16 @@ HELP = (
     "ℹ️ <b>Botdan foydalanish</b>\n\n"
     "• Istalgan matn yuboring — u avtomatik tarjima qilinadi\n"
     "• <b>🌐 Tillar</b> — tarjima yo'nalishini o'zgartirish\n"
-    "• <b>📜 Tarix</b> — oxirgi tarjimalaringiz\n"
-    "• <b>⚙️ Sozlamalar</b> — ovoz va maxfiylik\n\n"
+    "• <b>⚙️ Sozlamalar</b> — ovoz va interfeys tili\n\n"
     "Tarjima ostidagi tugmalar:\n"
     "🔊 — matnni ovozda eshitish\n"
-    "⭐ — sevimlilarga qo'shish\n\n"
+    "🔄 — yo'nalishni teskari almashtirish\n"
+    "🌐 — tillarni tanlash\n\n"
+    "Tarjima <code>shu ko'rinishda</code> yuboriladi — ustiga bosib nusxa olishingiz mumkin.\n\n"
     "Kunlik limit: <b>{limit}</b> ta tarjima."
 )
 
+# ── Tillar ───────────────────────────────────────────────────
 LANGUAGE_MENU = (
     "🌐 <b>Tarjima yo'nalishi</b>\n\n"
     "Hozirgi: <b>{source} → {target}</b>\n\n"
@@ -37,32 +61,36 @@ LANGUAGE_MENU = (
 
 PICK_SOURCE = "🔤 <b>Manba tilni</b> tanlang (matn qaysi tilda):"
 PICK_TARGET = "🎯 <b>Maqsad tilni</b> tanlang (qaysi tilga tarjima qilinsin):"
+PICK_INTERFACE = "🗣 <b>Interfeys tilini</b> tanlang:"
 
 LANG_SAVED = "✅ Yo'nalish: <b>{source} → {target}</b>"
 LANG_SWAPPED = "🔄 Almashtirildi: <b>{source} → {target}</b>"
+INTERFACE_SAVED = "✅ Interfeys tili: <b>{name}</b>"
 
+# Manba til `auto` bo'lsa va matn tarjima qilinmagan bo'lsa almashtirish mumkin emas.
+SWAP_NEEDS_SOURCE = (
+    "Avto aniqlashni maqsad til qilib bo'lmaydi. Avval manba tilni tanlang."
+)
+
+# ── Sozlamalar ───────────────────────────────────────────────
 SETTINGS = (
     "⚙️ <b>Sozlamalar</b>\n\n"
     "🔊 Ovoz tugmasi: <b>{tts}</b>\n"
     "🎧 Avto-ovoz: <b>{tts_auto}</b>\n"
-    "📜 Tarixni saqlash: <b>{history}</b>\n\n"
+    "🗣 Interfeys tili: <b>{interface}</b>\n\n"
     "Bugun ishlatilgan: <b>{used}/{limit}</b> tarjima"
 )
 
-HISTORY_EMPTY = "📜 Tarixingiz hozircha bo'sh.\n\nBirorta matn yuboring — u shu yerda saqlanadi."
-HISTORY_DISABLED = (
-    "📜 Tarixni saqlash o'chirilgan.\n\n"
-    "Uni <b>⚙️ Sozlamalar</b> bo'limidan yoqishingiz mumkin."
-)
-HISTORY_HEADER = "📜 <b>Oxirgi tarjimalar</b> ({page}/{pages})"
+ON = "yoqilgan ✅"
+OFF = "o'chirilgan ❌"
 
-FAVORITES_EMPTY = "⭐ Sevimlilar ro'yxati bo'sh.\n\nTarjima ostidagi ⭐ tugmasi orqali qo'shing."
-FAVORITES_HEADER = "⭐ <b>Sevimlilar</b> ({page}/{pages})"
-
+# ── Obuna ────────────────────────────────────────────────────
 SUBSCRIBE_REQUIRED = "❗️ Botdan foydalanish uchun quyidagi kanallarga obuna bo'ling:"
 SUBSCRIBE_OK = "✅ Rahmat! Endi botdan foydalanishingiz mumkin."
 SUBSCRIBE_STILL_MISSING = "❌ Siz hali barcha kanallarga obuna bo'lmadingiz."
+SEND_TEXT_PROMPT = "Tarjima qilish uchun matn yuboring."
 
+# ── Limitlar va xatolar ──────────────────────────────────────
 QUOTA_EXCEEDED = (
     "🚫 <b>Kunlik limit tugadi</b>\n\n"
     "Bugun {limit} ta tarjima ishlatdingiz.\n"
@@ -105,11 +133,5 @@ UNSUPPORTED_INPUT = (
     "Ovozli xabar va rasm tarjimasi keyingi yangilanishda qo'shiladi."
 )
 
-FAVORITE_ADDED = "⭐ Sevimlilarga qo'shildi"
-FAVORITE_REMOVED = "☆ Sevimlilardan olib tashlandi"
-
 TRANSLATION_NOT_FOUND = "Bu tarjima topilmadi (eskirgan tugma)."
-
-
-def onoff(value: bool) -> str:
-    return "yoqilgan ✅" if value else "o'chirilgan ❌"
+LANGUAGE_NOT_AVAILABLE = "Bu til mavjud emas"

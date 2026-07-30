@@ -56,7 +56,6 @@ class EventType:
     # Interfeys
     MENU_OPENED = "menu.opened"
     BUTTON_CLICKED = "button.clicked"
-    HISTORY_VIEWED = "history.viewed"
     INLINE_QUERY = "inline.query"
 
     # Tizim

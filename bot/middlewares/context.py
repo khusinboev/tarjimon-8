@@ -16,6 +16,7 @@ from typing import Any, Awaitable, Callable, Dict
 from aiogram import BaseMiddleware
 from aiogram.types import TelegramObject
 
+from bot import locales
 from bot.database.repositories.user_repository import UserRepository
 from bot.database.session import AsyncSessionLocal
 from bot.services.events import EventService, SessionTracker
@@ -40,6 +41,11 @@ class ContextMiddleware(BaseMiddleware):
             data["session"] = session
             data["redis"] = self.redis
             data["events"] = EventService(session)
+            # Foydalanuvchi hali yuklanmagan bo'lsa ham handlerlar `t` ga
+            # tayanadi — Telegram tilidan boshlang'ich taxmin qo'yamiz.
+            data["t"] = locales.get(
+                locales.resolve(tg_user.language_code if tg_user else None)
+            )
 
             if tg_user is not None and not tg_user.is_bot:
                 repo = UserRepository(session)
@@ -56,6 +62,10 @@ class ContextMiddleware(BaseMiddleware):
                 data["session_id"] = (
                     await self.tracker.get(user.id) if self.tracker else None
                 )
+                # Saqlangan tanlov Telegram tilidan ustun: foydalanuvchi
+                # interfeys tilini qo'lda o'zgartirgan bo'lishi mumkin.
+                if user.settings is not None:
+                    data["t"] = locales.get(user.settings.interface_lang)
 
             try:
                 result = await handler(event, data)
