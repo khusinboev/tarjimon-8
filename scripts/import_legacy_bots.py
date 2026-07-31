@@ -77,18 +77,47 @@ def _read(db: str, query: str) -> list[tuple]:
         return cur.fetchall()
 
 
+# Eski botlar bo'sh qiymatni matn sifatida yozgan: `None`, `null`, `-`.
+# Ularni haqiqiy `NULL` deb qabul qilmasak, bazaga `@None` degan username
+# yoki `None` degan til kodi tushib qolardi.
+_EMPTY_STRINGS = frozenset({"", "none", "null", "nan", "-", "—"})
+
+
+def _clean(value: str | None) -> str | None:
+    if value is None:
+        return None
+    stripped = value.strip()
+    return None if stripped.lower() in _EMPTY_STRINGS else stripped
+
+
 def _normalize(code: str | None, known: set[str], fallback: str) -> str:
     """Manba til kodini bizdagi kodga keltiradi.
 
     `zh-CN` -> `zh`; noma'lum yoki bo'sh -> standart qiymat.
     """
+    code = _clean(code)
     if not code:
         return fallback
-    code = code.strip().lower()
+    code = code.lower()
     if code in known:
         return code
     base = code.split("-")[0]
     return base if base in known else fallback
+
+
+def _direction(in_lang: str | None, out_lang: str | None, known: set[str]) -> tuple[str, str]:
+    """Yo'nalishni tayyorlaydi va bir xil bo'lsa tuzatadi.
+
+    Eski bazalarda `de → de`, `en → en` kabi juftliklar bor. Bot bunday
+    yo'nalishni rad etadi ("manba va maqsad til bir xil"), ya'ni foydalanuvchi
+    birinchi xabaridayoq xatoga uchrardi. Manba tilni `auto` ga o'tkazamiz —
+    tarjima ishlaydi va til o'zi aniqlanadi.
+    """
+    source = _normalize(in_lang, known, settings.DEFAULT_SOURCE_LANG)
+    target = _normalize(out_lang, known, settings.DEFAULT_TARGET_LANG)
+    if source == target:
+        source = "auto"
+    return source, target
 
 
 async def main() -> None:
@@ -137,13 +166,14 @@ async def main() -> None:
             for tid, (_, username, lang_code, in_lang, out_lang) in sorted(
                 candidates.items()
             ):
+                source, target = _direction(in_lang, out_lang, known_langs)
                 log.info(
                     "  %s @%s  %s → %s (interfeys: %s)",
                     tid,
-                    username or "—",
-                    _normalize(in_lang, known_langs, settings.DEFAULT_SOURCE_LANG),
-                    _normalize(out_lang, known_langs, settings.DEFAULT_TARGET_LANG),
-                    locales.resolve(lang_code),
+                    _clean(username) or "—",
+                    source,
+                    target,
+                    locales.resolve(_clean(lang_code)),
                 )
             log.info("--dry-run: hech narsa yozilmadi.")
             await engine.dispose()
@@ -153,10 +183,11 @@ async def main() -> None:
         for telegram_id, (_, username, lang_code, in_lang, out_lang) in sorted(
             candidates.items()
         ):
+            source, target = _direction(in_lang, out_lang, known_langs)
             user = User(
                 telegram_id=telegram_id,
-                username=username or None,
-                telegram_lang=lang_code or None,
+                username=_clean(username),
+                telegram_lang=_clean(lang_code),
                 # Manba bazada ro'yxatdan o'tish sanasi ishonchli emas —
                 # `created_at` standart (hozir) bo'lib qoladi.
                 source="legacy_import",
@@ -167,15 +198,9 @@ async def main() -> None:
             session.add(
                 UserSettings(
                     user_id=user.id,
-                    # `auto` manba til sifatida mantiqiy: eski bazalarda
-                    # yo'nalish ko'pincha noto'g'ri yoki bir xil (de→de).
-                    source_lang=_normalize(
-                        in_lang, known_langs, settings.DEFAULT_SOURCE_LANG
-                    ),
-                    target_lang=_normalize(
-                        out_lang, known_langs, settings.DEFAULT_TARGET_LANG
-                    ),
-                    interface_lang=locales.resolve(lang_code),
+                    source_lang=source,
+                    target_lang=target,
+                    interface_lang=locales.resolve(_clean(lang_code)),
                 )
             )
             added += 1
