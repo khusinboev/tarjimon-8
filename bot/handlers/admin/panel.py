@@ -282,7 +282,9 @@ async def _do_broadcast(message: Message, mode: str, admin_user) -> None:
             f"📊 {result['processed']:,} / {result['total']:,}\n"
             f"✅ Yetdi: <b>{result['success']:,}</b>\n"
             f"❌ Yetmadi: <b>{result['failed']:,}</b>\n"
-            f"🚫 Bloklagan: {result.get('blocked', 0):,}"
+            f"🚫 Bloklagan: {result.get('blocked', 0):,}\n"
+            f"♻️ Qaytgan: {result.get('recovered', 0):,}\n"
+            f"⚫️ Yetib bo'lmas: {result.get('unreachable', 0):,}"
         ).replace(",", " "),
         reply_markup=admin_broadcast_keyboard(),
     )

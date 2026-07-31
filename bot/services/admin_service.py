@@ -310,6 +310,7 @@ class AdminService:
         failed = 0
         blocked = 0
         unreachable = 0
+        recovered = 0
         failures: list[tuple[int, str]] = []
         cancelled = False
 
@@ -375,6 +376,8 @@ class AdminService:
                 return_exceptions=True,
             )
 
+            reached: list[int] = []
+
             for (user_id, telegram_id), result in zip(batch, results):
                 if isinstance(result, BaseException):
                     delivered, error_text = False, str(result)[:200]
@@ -383,6 +386,7 @@ class AdminService:
 
                 if delivered:
                     success += 1
+                    reached.append(user_id)
                     await self.broadcast_repo.add_delivery(
                         broadcast.id, user_id, "delivered"
                     )
@@ -402,6 +406,12 @@ class AdminService:
                     # Chat umuman yo'q — keyingi tarqatishlarga tushmasin.
                     await self.user_repo.mark_unreachable(user_id)
                     unreachable += 1
+
+            # Bloklagan deb belgilangan odamga xabar yetib borgan bo'lsa —
+            # u blokdan chiqargan. Telegram bu haqda xabar bermaydi, bilishning
+            # yagona yo'li shu. Bitta so'rov: allaqachon `active` bo'lganlarga
+            # ta'sir qilmaydi.
+            recovered += await self.user_repo.mark_many_unblocked(reached)
 
             await self.session.commit()
 
@@ -430,6 +440,7 @@ class AdminService:
             "failed": failed,
             "blocked": blocked,
             "unreachable": unreachable,
+            "recovered": recovered,
             "failures": failures,
         }
 

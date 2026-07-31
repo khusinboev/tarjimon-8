@@ -170,6 +170,26 @@ class UserRepository:
             update(User).where(User.id == user_id).values(status="deleted")
         )
 
+    async def mark_many_unblocked(self, user_ids: List[int]) -> int:
+        """Xabar yetib borgan `blocked_bot` userlarni `active` ga qaytaradi.
+
+        Tarqatish paytida chaqiriladi: yuborish muvaffaqiyatli bo'lsa, odam
+        botni blokdan chiqargan degani. Telegram bu haqda xabar bermaydi,
+        shuning uchun buni bilishning yagona yo'li — yuborib ko'rish.
+
+        `status = 'blocked_bot'` sharti muhim: allaqachon `active` bo'lganlar
+        uchun bu hech narsa qilmaydi, ya'ni har bir muvaffaqiyat uchun
+        chaqirish xavfsiz.
+        """
+        if not user_ids:
+            return 0
+        result = await self.session.execute(
+            update(User)
+            .where(User.id.in_(user_ids), User.status == "blocked_bot")
+            .values(status="active", blocked_at=None)
+        )
+        return result.rowcount or 0
+
     async def mark_unblocked(self, user_id: int) -> None:
         await self.session.execute(
             update(User)
@@ -207,14 +227,26 @@ class UserRepository:
             )
         ).scalar_one()
 
+    # Xabar tarqatishga kiradigan holatlar.
+    #
+    # `blocked_bot` ataylab KIRADI. Bloklash qaytariladigan holat: odam botni
+    # blokdan chiqarishi mumkin va Telegram bu haqda xabar bermaydi — buni
+    # bilishning yagona yo'li yuborib ko'rish. Yuborish muvaffaqiyatli
+    # bo'lsa, o'sha yerda `active` ga qaytariladi.
+    #
+    # Kirmaydiganlar:
+    #   `deleted` — chat umuman mavjud emas (o'chirilgan akkaunt, buzuq id,
+    #               nishon o'zi bot). Hech qachon yetmaydi, urinish behuda.
+    #   `banned`  — biz o'zimiz taqiqlaganmiz.
+    BROADCAST_STATUSES = ("active", "blocked_bot")
+
     async def iter_broadcast_targets(
         self, exclude_user_id: Optional[int] = None
     ) -> List[Tuple[int, int]]:
-        """Xabar tarqatish uchun `(user_id, telegram_id)` ro'yxati.
-
-        Faqat `active` — botni bloklaganlarga yuborish Telegram limitini behuda sarflaydi.
-        """
-        query = select(User.id, User.telegram_id).where(User.status == "active")
+        """Xabar tarqatish uchun `(user_id, telegram_id)` ro'yxati."""
+        query = select(User.id, User.telegram_id).where(
+            User.status.in_(self.BROADCAST_STATUSES)
+        )
         if exclude_user_id is not None:
             query = query.where(User.id != exclude_user_id)
         result = await self.session.execute(query.order_by(User.id))

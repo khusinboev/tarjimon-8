@@ -54,6 +54,7 @@ from bot import locales
 from bot.config.settings import settings
 from bot.database.models import BroadcastDelivery, User, UserSettings
 from bot.database.repositories.broadcast_repository import BroadcastRepository
+from bot.database.repositories.user_repository import UserRepository
 from bot.database.session import AsyncSessionLocal, engine
 from bot.keyboards.user import main_menu
 from bot.services.broadcast import (
@@ -78,13 +79,17 @@ COMMIT_EVERY = 500
 async def load_targets(session, *, limit: int | None):
     """`(user_id, telegram_id, interface_lang)` ro'yxati.
 
-    Faqat `active` — botni bloklaganlarga yuborish Telegram limitini behuda
-    sarflaydi va baribir yetib bormaydi.
+    `blocked_bot` ham kiradi: bloklash qaytariladigan holat va odam botni
+    blokdan chiqargan bo'lishi mumkin. Telegram bu haqda xabar bermaydi —
+    bilishning yagona yo'li yuborib ko'rish. Yetib borsa `active` ga
+    qaytariladi.
+
+    `deleted` kirmaydi: chat umuman mavjud emas, urinish behuda.
     """
     query = (
         select(User.id, User.telegram_id, UserSettings.interface_lang)
         .join(UserSettings, UserSettings.user_id == User.id)
-        .where(User.status == "active")
+        .where(User.status.in_(UserRepository.BROADCAST_STATUSES))
         .order_by(User.id)
     )
     if limit:
@@ -175,6 +180,7 @@ async def main() -> None:
         failed = 0
         blocked = 0
         unreachable = 0
+        recovered = 0
         failures: list[tuple[int, str]] = []
 
         async def deliver(telegram_id: int, lang: str) -> tuple[bool, str | None]:
@@ -219,6 +225,7 @@ async def main() -> None:
                     *(deliver(tg_id, lang) for _, tg_id, lang in batch),
                     return_exceptions=True,
                 )
+                reached: list[int] = []
 
                 for (user_id, telegram_id, _lang), result in zip(batch, results):
                     if isinstance(result, BaseException):
@@ -228,6 +235,7 @@ async def main() -> None:
 
                     if delivered:
                         success += 1
+                        reached.append(user_id)
                         await repo.add_delivery(broadcast_id, user_id, "delivered")
                         continue
 
@@ -250,6 +258,10 @@ async def main() -> None:
                         )
                         unreachable += 1
 
+                # Bloklagan deb belgilangan odamga xabar yetib borgan bo'lsa —
+                # u blokdan chiqargan. Bilishning yagona yo'li shu.
+                recovered += await UserRepository(session).mark_many_unblocked(reached)
+
                 await session.commit()
 
                 processed = success + failed
@@ -267,11 +279,13 @@ async def main() -> None:
             await repo.finish_broadcast(broadcast_id, success, failed)
             await session.commit()
             log.info(
-                "✅ Tugadi: yuborildi %s, xato %s, bloklagan %s, yetib bo'lmaydi %s",
+                "✅ Tugadi: yuborildi %s, xato %s, bloklagan %s, "
+                "yetib bo'lmaydi %s, qaytgan %s",
                 f"{success:,}".replace(",", " "),
                 failed,
                 blocked,
                 unreachable,
+                recovered,
             )
 
             # Yetmagan foydalanuvchilar ro'yxati — keyin tekshirish uchun.
