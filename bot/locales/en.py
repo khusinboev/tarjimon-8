@@ -118,9 +118,11 @@ TTS_ERRORS = {
 TTS_ERROR_DEFAULT = "⚠️ Could not generate the voice."
 
 UNSUPPORTED_INPUT = (
-    "📄 Only <b>text</b> translation is available for now.\n\n"
-    "Voice messages and images will come in a later update."
+    "🔍 There is no text to translate in this message.\n\n"
+    "Send text, or add a <b>caption</b> to a photo, video or document — "
+    "I translate captions too."
 )
+NO_TEXT_FOUND = "🔍 No translatable text found in this message."
 
 TRANSLATION_NOT_FOUND = "This translation was not found (outdated button)."
 LANGUAGE_NOT_AVAILABLE = "This language is not available"

@@ -117,9 +117,11 @@ TTS_ERRORS = {
 TTS_ERROR_DEFAULT = "⚠️ Ovozni tayyorlab bo'lmadi."
 
 UNSUPPORTED_INPUT = (
-    "📄 Hozircha faqat <b>matn</b> tarjimasi mavjud.\n\n"
-    "Ovozli xabar va rasm tarjimasi keyingi yangilanishda qo'shiladi."
+    "🔍 Bu xabarda tarjima qilinadigan matn yo'q.\n\n"
+    "Matn yuboring yoki rasm/video/hujjatga <b>izoh</b> yozib yuboring — "
+    "izohni ham tarjima qilaman."
 )
+NO_TEXT_FOUND = "🔍 Bu xabarda tarjima qilinadigan matn topilmadi."
 
 TRANSLATION_NOT_FOUND = "Bu tarjima topilmadi (eskirgan tugma)."
 LANGUAGE_NOT_AVAILABLE = "Bu til mavjud emas"

@@ -117,9 +117,11 @@ TTS_ERRORS = {
 TTS_ERROR_DEFAULT = "⚠️ Tidak bisa membuat suara."
 
 UNSUPPORTED_INPUT = (
-    "📄 Untuk saat ini hanya terjemahan <b>teks</b> yang tersedia.\n\n"
-    "Pesan suara dan gambar akan ditambahkan di pembaruan berikutnya."
+    "🔍 Tidak ada teks yang bisa diterjemahkan di pesan ini.\n\n"
+    "Kirim teks, atau beri <b>keterangan</b> pada foto, video atau dokumen — "
+    "keterangan juga saya terjemahkan."
 )
+NO_TEXT_FOUND = "🔍 Tidak ada teks yang bisa diterjemahkan di pesan ini."
 
 TRANSLATION_NOT_FOUND = "Terjemahan ini tidak ditemukan (tombol kedaluwarsa)."
 LANGUAGE_NOT_AVAILABLE = "Bahasa ini tidak tersedia"

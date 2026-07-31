@@ -149,7 +149,13 @@ class Language(Base):
 # ─────────────────────────────────────────────────────────────
 
 CHAT_TYPES = ("private", "group", "supergroup", "channel", "inline")
-INPUT_KINDS = ("text", "voice", "photo", "document", "forward", "inline")
+# Matn qayerdan kelgani. Media izohi uchun umumiy "caption" emas, aniq media
+# turi yoziladi — qaysi kontent ostidagi izoh ekani ML tahlili uchun muhim.
+INPUT_KINDS = (
+    "text", "voice", "photo", "document", "forward", "inline",
+    "caption", "video", "audio", "animation", "video_note", "paid_media",
+    "post", "poll", "checklist",
+)
 TRANSLATION_STATUSES = ("success", "error", "timeout")
 
 

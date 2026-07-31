@@ -824,6 +824,108 @@ async def test_support_thread() -> None:
         await session.commit()
 
 
+async def test_content_extraction() -> None:
+    """Har xil kontentdan matn ajratish: izoh, post, so'rovnoma, checklist."""
+    print("\n[17] Kontentdan matn ajratish")
+    from types import SimpleNamespace
+
+    from aiogram.types import (
+        Checklist, ChecklistTask, PhotoSize, Poll, PollOption,
+        RichBlockBlockQuotation, RichBlockCaption, RichBlockList,
+        RichBlockListItem, RichBlockMathematicalExpression, RichBlockParagraph,
+        RichBlockPhoto, RichBlockPreformatted, RichBlockSectionHeading,
+        RichMessage, RichTextBold, RichTextCode, RichTextItalic,
+    )
+
+    from bot.database.models import INPUT_KINDS
+    from bot.utils.content import extract, rich_message_text
+
+    post = RichMessage(blocks=[
+        RichBlockSectionHeading(type="heading", text="Sarlavha", size=1),
+        RichBlockParagraph(type="paragraph", text="Oddiy paragraf."),
+        # Ichma-ich formatlash: rekursiya va takrorni tashlash sinovi.
+        RichBlockParagraph(type="paragraph", text=RichTextBold(
+            type="bold", text=RichTextItalic(type="italic", text="Qalin kursiv"))),
+        RichBlockParagraph(type="paragraph", text=RichTextCode(
+            type="code", text="inline_kod()")),
+        RichBlockBlockQuotation(type="blockquote", credit="Muallif",
+            blocks=[RichBlockParagraph(type="paragraph", text="Iqtibos")]),
+        RichBlockList(type="list", items=[
+            RichBlockListItem(label="1", blocks=[
+                RichBlockParagraph(type="paragraph", text="Band bir")])]),
+        RichBlockPhoto(type="photo", caption=RichBlockCaption(text="Rasm izohi"),
+            photo=[PhotoSize(file_id="a", file_unique_id="b", width=1, height=1)]),
+        RichBlockPreformatted(type="pre", text="def kod(): pass", language="python"),
+        RichBlockMathematicalExpression(type="mathematical_expression", expression="E=mc^2"),
+    ])
+    text = rich_message_text(post)
+
+    for want in ("Sarlavha", "Oddiy paragraf.", "Qalin kursiv", "Iqtibos",
+                 "Muallif", "Band bir", "Rasm izohi"):
+        check(f"postdan olinadi: {want}", want in text)
+
+    # Kod va formula tarjima qilinmasligi kerak — tarjima ularni buzadi.
+    for avoid, label in (("def kod", "kod bloki"), ("inline_kod", "inline kod"),
+                         ("E=mc^2", "formula"), ("python", "kod tili")):
+        check(f"olinmaydi: {label}", avoid not in text)
+    check("ro'yxat belgisi olinmaydi", "\n1\n" not in text)
+
+    # Ichma-ich formatlash bitta matn beradi, uch marta emas.
+    check("takror yo'q", text.count("Qalin kursiv") == 1)
+
+    # `extract` — kirish turini ham aniqlaydi.
+    photo = SimpleNamespace(
+        rich_message=None, text=None, caption="Rasm ostidagi izoh",
+        photo=[1], video=None, document=None, audio=None, animation=None,
+        voice=None, video_note=None, paid_media=None, poll=None, checklist=None,
+    )
+    got = extract(photo)
+    check("rasm izohi olinadi", got == ("Rasm ostidagi izoh", "photo"), str(got))
+
+    doc = SimpleNamespace(
+        rich_message=None, text=None, caption="Hujjat izohi",
+        photo=None, video=None, document=object(), audio=None, animation=None,
+        voice=None, video_note=None, paid_media=None, poll=None, checklist=None,
+    )
+    check("hujjat izohi olinadi", extract(doc) == ("Hujjat izohi", "document"))
+
+    poll = SimpleNamespace(
+        rich_message=None, text=None, caption=None, poll=Poll(
+            id="1", question="Savol?", options=[
+                PollOption(text="Ha", voter_count=0),
+                PollOption(text="Yo'q", voter_count=0)],
+            total_voter_count=0, is_closed=False, is_anonymous=True,
+            type="regular", allows_multiple_answers=False),
+        checklist=None,
+    )
+    got = extract(poll)
+    check("so'rovnoma savol va variantlari", got is not None and "Savol?" in got[0] and "Ha" in got[0])
+    check("so'rovnoma turi", got is not None and got[1] == "poll")
+
+    checklist = SimpleNamespace(
+        rich_message=None, text=None, caption=None, poll=None,
+        checklist=Checklist(title="Ro'yxat", tasks=[
+            ChecklistTask(id=1, text="Birinchi ish"),
+            ChecklistTask(id=2, text="Ikkinchi ish")]),
+    )
+    got = extract(checklist)
+    check("checklist sarlavha va vazifalari",
+          got is not None and "Ro'yxat" in got[0] and "Ikkinchi ish" in got[0])
+
+    empty = SimpleNamespace(
+        rich_message=None, text=None, caption=None, poll=None, checklist=None,
+    )
+    check("matnsiz kontent None qaytaradi", extract(empty) is None)
+
+    # Ajratgich qaytaradigan har bir tur bazadagi cheklovga sig'ishi shart,
+    # aks holda tarjima yozuvi CheckViolation bilan yiqilardi.
+    produced = {"text", "post", "poll", "checklist", "caption",
+                "photo", "video", "document", "audio", "animation",
+                "voice", "video_note", "paid_media"}
+    check("barcha turlar bazada ruxsat etilgan",
+          produced <= set(INPUT_KINDS), str(produced - set(INPUT_KINDS)))
+
+
 async def cleanup() -> None:
     async with AsyncSessionLocal() as session:
         from sqlalchemy import delete
@@ -870,6 +972,7 @@ async def main() -> None:
     await test_broadcast()
     await test_stats()
     await test_support_thread()
+    await test_content_extraction()
 
     await cleanup()
     await engine.dispose()
