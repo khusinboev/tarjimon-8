@@ -757,6 +757,63 @@ async def test_support_thread() -> None:
         await session.commit()
 
 
+async def test_support_thread() -> None:
+    """Murojaat ipi: admin javobi foydalanuvchi tilida yuborilishi kerak.
+
+    Diqqat — qidiruv **yangi sessiyada** bajariladi. Aynan shu shart bo'lmasa
+    sinov muammoni ko'rsatmaydi: bir sessiyada yaratilgan `User` identity
+    map'da sozlamalari bilan yotadi va lazy yuklanish umuman bo'lmaydi.
+    Ishlab turgan botda esa admin javob berayotgan foydalanuvchi boshqa
+    obyekt bo'ladi va `user.settings` ga murojaat `MissingGreenlet` beradi.
+    """
+    print("\n[16] Murojaat ipi")
+    from sqlalchemy import delete
+
+    from bot.database.models import SupportMessage, User, UserSettings
+    from bot.database.repositories.support_repository import SupportRepository
+
+    tg_id = TEST_TELEGRAM_ID + 50
+    async with AsyncSessionLocal() as session:
+        user, _ = await UserRepository(session).get_or_create(tg_id, telegram_lang="id")
+        await session.commit()
+        user_id = user.id
+
+        await SupportRepository(session).record(
+            user_id=user_id,
+            direction="in",
+            text="sinov",
+            admin_chat_id=777001,
+            admin_message_id=888001,
+            user_chat_id=tg_id,
+            user_message_id=888000,
+        )
+        await session.commit()
+
+    # Yangi sessiya = bo'sh identity map, ya'ni ishlab turgan botdagi holat.
+    async with AsyncSessionLocal() as fresh:
+        thread = await SupportRepository(fresh).by_admin_message(777001, 888001)
+        check("ip admin xabari bo'yicha topildi", thread is not None)
+        check("foydalanuvchi yuklandi", thread is not None and thread.user is not None)
+        try:
+            lang = thread.user.settings.interface_lang
+            check("sozlamalar eager yuklangan", lang == "id", lang)
+        except Exception as exc:
+            # MissingGreenlet aynan shu yerda chiqardi.
+            check("sozlamalar eager yuklangan", False, type(exc).__name__)
+
+        back = await SupportRepository(fresh).by_user_message(tg_id, 888000)
+        check("ip foydalanuvchi xabari bo'yicha topildi", back is not None)
+
+        missing = await SupportRepository(fresh).by_admin_message(777001, 999999)
+        check("noma'lum xabar uchun ip yo'q", missing is None)
+
+    async with AsyncSessionLocal() as session:
+        await session.execute(delete(SupportMessage).where(SupportMessage.user_id == user_id))
+        await session.execute(delete(UserSettings).where(UserSettings.user_id == user_id))
+        await session.execute(delete(User).where(User.id == user_id))
+        await session.commit()
+
+
 async def cleanup() -> None:
     async with AsyncSessionLocal() as session:
         from sqlalchemy import delete
@@ -802,6 +859,7 @@ async def main() -> None:
     await test_donate(user_id)
     await test_broadcast()
     await test_stats()
+    await test_support_thread()
     await test_support_thread()
 
     await cleanup()

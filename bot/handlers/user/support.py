@@ -224,10 +224,17 @@ def _is_admin(telegram_id: int) -> bool:
     return telegram_id in settings.ADMIN_USER_IDS
 
 
-# `StateFilter(None)` shart: admin xabar tarqatish rejimida turib eski
-# murojaatga reply qilsa, matn tarqatish o'rniga bitta userga ketib qolardi.
+# FSM holati bo'yicha filtr ataylab YO'Q, garchi u tabiiy ko'rinsa ham.
+#
+# `StateFilter(None)` qo'yilganda quyidagi xavf tug'ilardi: admin xabar
+# tarqatish rejimida turib murojaatga reply qilsa, bu handler ishlamay,
+# xabar `panel` routeridagi tarqatish handleriga tushardi va bitta odamga
+# mo'ljallangan javob 17 mingta foydalanuvchiga ketib qolardi.
+#
+# Ajratuvchi belgi — holat emas, **reply qilingan xabarning o'zi**: u
+# `support_messages` da topilsa, admin aniq javob yozyapti. Topilmasa
+# `SkipHandler` bilan odatdagi oqimga qaytaramiz.
 @router.message(
-    StateFilter(None),
     F.reply_to_message,
     F.text,
     F.from_user.func(lambda u: u and _is_admin(u.id)),
@@ -257,39 +264,64 @@ async def admin_reply(
         raise SkipHandler
 
     target = thread.user
-    # Javob foydalanuvchining o'z tilida sarlavhalanadi.
-    reply_locale = locales.get(target.settings.interface_lang if target.settings else None)
 
+    # Bu yerdan keyingi har qanday kutilmagan xato admin uchun ko'rinmas
+    # bo'lib qolmasligi kerak. Ilgari `target.settings` yuklanmagani uchun
+    # `MissingGreenlet` chiqar, javob jimgina yo'qolar va admin uni
+    # yuborilgan deb o'ylardi — 12 murojaatdan faqat 2 tasiga javob yetgan.
     try:
-        sent = await message.bot.send_message(
-            target.telegram_id,
-            reply_locale.CONTACT_REPLY_HEADER.format(text=html_escape(text)),
+        # Javob foydalanuvchining o'z tilida sarlavhalanadi. `settings`
+        # repositoryda oldindan yuklanadi (`selectinload`), aks holda bu
+        # qator async kontekstda lazy-load bilan yiqilardi.
+        reply_locale = locales.get(
+            target.settings.interface_lang if target.settings else None
         )
+
+        try:
+            sent = await message.bot.send_message(
+                target.telegram_id,
+                reply_locale.CONTACT_REPLY_HEADER.format(text=html_escape(text)),
+            )
+        except Exception:
+            logger.warning("Admin javobi yetmadi (user_id=%s)", target.id, exc_info=True)
+            await message.reply(
+                "⚠️ Javob yetkazilmadi — foydalanuvchi botni bloklagan bo'lishi mumkin."
+            )
+            return
+
+        await support.record(
+            user_id=target.id,
+            direction="out",
+            text=text,
+            admin_chat_id=message.chat.id,
+            admin_message_id=message.message_id,
+            user_chat_id=target.telegram_id,
+            user_message_id=sent.message_id,
+        )
+        await events.log(
+            EventType.SUPPORT_REPLY_SENT,
+            user_id=target.id,
+            chat_id=message.chat.id,
+            session_id=session_id,
+            chars=len(text),
+        )
+        await message.reply("✅ Yuborildi.")
+    except SkipHandler:
+        raise
     except Exception:
-        logger.warning("Admin javobi yetmadi (user_id=%s)", target.id, exc_info=True)
-        await message.reply("⚠️ Javob yetkazilmadi — foydalanuvchi botni bloklagan bo'lishi mumkin.")
-        return
-
-    await support.record(
-        user_id=target.id,
-        direction="out",
-        text=text,
-        admin_chat_id=message.chat.id,
-        admin_message_id=message.message_id,
-        user_chat_id=target.telegram_id,
-        user_message_id=sent.message_id,
-    )
-    await events.log(
-        EventType.SUPPORT_REPLY_SENT,
-        user_id=target.id,
-        chat_id=message.chat.id,
-        session_id=session_id,
-        chars=len(text),
-    )
-    await message.reply("✅ Yuborildi.")
+        logger.exception("Admin javobida kutilmagan xato (user_id=%s)", target.id)
+        # Telegram chaqiruvi bazadan mustaqil — sessiya buzilgan bo'lsa ham
+        # admin ogohlantirishni oladi.
+        await message.reply(
+            "⚠️ Javobni yuborishda kutilmagan xato yuz berdi. "
+            "Xabar foydalanuvchiga yetmagan bo'lishi mumkin."
+        )
 
 
-@router.message(StateFilter(None), F.reply_to_message, F.text)
+# Yuqoridagi kabi: ajratuvchi belgi reply qilingan xabar, holat emas.
+# Holatga bog'liq handlerlar (murojaat yozish, homiylik miqdori) baribir
+# oldinroq turadi va o'z navbatida ushlab qoladi.
+@router.message(F.reply_to_message, F.text)
 async def user_reply(
     message: Message,
     session: AsyncSession,

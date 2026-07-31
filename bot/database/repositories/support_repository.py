@@ -45,7 +45,11 @@ class SupportRepository:
         """Admin javob berayotgan xabarni topadi."""
         result = await self.session.execute(
             select(SupportMessage)
-            .options(selectinload(SupportMessage.user))
+            # `User.settings` ham yuklanishi SHART: javob foydalanuvchining
+            # tilida yuboriladi va `user.settings.interface_lang` o'qiladi.
+            # Faqat `user` yuklansa, `settings` ga murojaat async kontekstda
+            # `MissingGreenlet` bilan yiqiladi.
+            .options(selectinload(SupportMessage.user).selectinload(User.settings))
             .where(
                 SupportMessage.admin_chat_id == admin_chat_id,
                 SupportMessage.admin_message_id == admin_message_id,
@@ -60,7 +64,11 @@ class SupportRepository:
         """Foydalanuvchi javob berayotgan xabarni topadi."""
         result = await self.session.execute(
             select(SupportMessage)
-            .options(selectinload(SupportMessage.user))
+            # `User.settings` ham yuklanishi SHART: javob foydalanuvchining
+            # tilida yuboriladi va `user.settings.interface_lang` o'qiladi.
+            # Faqat `user` yuklansa, `settings` ga murojaat async kontekstda
+            # `MissingGreenlet` bilan yiqiladi.
+            .options(selectinload(SupportMessage.user).selectinload(User.settings))
             .where(
                 SupportMessage.user_chat_id == user_chat_id,
                 SupportMessage.user_message_id == user_message_id,
