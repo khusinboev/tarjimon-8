@@ -469,20 +469,25 @@ async def test_support() -> None:
 
     # Foydalanuvchi matnidagi HTML buzmasligi kerak: `<` bo'lsa Telegram
     # xabarni butunlay rad etadi va murojaat adminga yetmasdi.
+    # Sarlavhada foydalanuvchi ismi bor — u escape qilinishi shart, aks holda
+    # ismida `<` bo'lgan odam yozganda Telegram xabarni butunlay rad etadi
+    # va murojaat adminga yetmasdi. Xabar matnining o'zi endi bu yerda emas:
+    # u alohida xabar bo'lib `copy_message` bilan ko'chiriladi.
     fake = SimpleNamespace(
         username="tester", first_name="A <b>Bold</b>", telegram_id=123, telegram_lang="uz"
     )
-    view = _admin_view(fake, "narx < 100 & shart")
-    check("murojaat matni escape qilinadi", "&lt; 100 &amp; shart" in view)
-    check("ism ham escape qilinadi", "A &lt;b&gt;Bold&lt;/b&gt;" in view)
+    view = _admin_view(fake)
+    check("ism escape qilinadi", "A &lt;b&gt;Bold&lt;/b&gt;" in view, view.split(chr(10))[2])
     check("telegram id ko'rinadi", "<code>123</code>" in view)
     check("username ko'rinadi", "@tester" in view)
+    # `🆔` — suhbatni aniqlash belgisi, sarlavhada bo'lishi shart.
+    check("ID belgisi joyida", "🆔" in view)
 
     # Username yo'q bo'lsa yiqilmasligi kerak.
     anon = SimpleNamespace(
         username=None, first_name=None, telegram_id=9, telegram_lang=None
     )
-    check("username/ism yo'q bo'lsa ham ishlaydi", "—" in _admin_view(anon, "salom"))
+    check("username/ism yo'q bo'lsa ham ishlaydi", "—" in _admin_view(anon))
 
     # Redis yo'q — cheklov fail-open (tarjima oqimidagi bilan bir xil qaror).
     check("redis yo'q bo'lsa cheklov o'tkazadi", await _rate_limited(None, 1) == 0)

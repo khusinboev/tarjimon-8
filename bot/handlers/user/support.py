@@ -83,7 +83,7 @@ async def _rate_limited(
         return 0
 
 
-def _admin_view(user: User, text: str, *, is_reply: bool = False) -> str:
+def _admin_view(user: User, *, is_reply: bool = False) -> str:
     """Adminga ko'rinadigan sarlavha.
 
     Admin — bitta odam (egasi), shuning uchun bu matn tarjima qilinmaydi.
@@ -264,7 +264,7 @@ async def receive_message(
         telegram_id=user.telegram_id,
     )
 
-    header = _admin_view(user, described)
+    header = _admin_view(user)
     support = SupportRepository(session)
     delivered = 0
 
@@ -432,7 +432,7 @@ async def user_reply(
         await message.answer(t.CONTACT_RATE_LIMITED.format(minutes=minutes))
         return
 
-    header = _admin_view(user, described, is_reply=True)
+    header = _admin_view(user, is_reply=True)
     delivered = 0
 
     for admin_id in settings.ADMIN_USER_IDS:
