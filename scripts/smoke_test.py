@@ -817,6 +817,44 @@ async def test_support_thread() -> None:
         missing = await SupportRepository(fresh).by_admin_message(777001, 999999)
         check("noma'lum xabar uchun ip yo'q", missing is None)
 
+    # ── Suhbatni aniqlash: sarlavhadagi 🆔 ──
+    from types import SimpleNamespace
+
+    from bot.handlers.user.support import _describe, _extract_target_id
+
+    header = (
+        "\u2709\ufe0f Yangi murojaat\n\n"
+        "\U0001f464 Ali \u00b7 @ali\n"
+        "\U0001f194 5718446822\n"
+        "\U0001f310 uz"
+    )
+    check(
+        "sarlavhadan ID ajratiladi",
+        _extract_target_id(SimpleNamespace(text=header, caption=None)) == 5718446822,
+    )
+    check(
+        "izohdan ham ajratiladi",
+        _extract_target_id(SimpleNamespace(text=None, caption="\U0001f194 123456789")) == 123456789,
+    )
+    check(
+        "oddiy matnda ID yo'q",
+        _extract_target_id(SimpleNamespace(text="salom dunyo", caption=None)) is None,
+    )
+    check("reply bo'lmasa None", _extract_target_id(None) is None)
+
+    # ── Kontent turi tavsifi (matn bo'lmaganda jurnal uchun) ──
+    check(
+        "matn o'zi olinadi",
+        _describe(SimpleNamespace(text="salom", caption=None)) == "salom",
+    )
+    photo = SimpleNamespace(text=None, caption=None, photo=[object()])
+    check("rasm belgilanadi", "rasm" in _describe(photo), _describe(photo))
+    voice = SimpleNamespace(text=None, caption=None, photo=None, video=None,
+                            animation=None, voice=object())
+    check("ovoz belgilanadi", "ovoz" in _describe(voice), _describe(voice))
+    captioned = SimpleNamespace(text=None, caption="izoh matni", photo=[object()])
+    check("izoh matn sifatida olinadi", _describe(captioned) == "izoh matni")
+
     async with AsyncSessionLocal() as session:
         await session.execute(delete(SupportMessage).where(SupportMessage.user_id == user_id))
         await session.execute(delete(UserSettings).where(UserSettings.user_id == user_id))

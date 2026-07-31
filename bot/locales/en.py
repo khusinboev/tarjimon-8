@@ -138,13 +138,16 @@ DEVELOPER = (
 CONTACT_PROMPT = (
     "✉️ <b>Contact admin</b>\n\n"
     "Write your message — it goes straight to the admin.\n\n"
-    "<i>This is not a chat: you write, the admin reads. If you need a reply, "
-    "leave your contact details.</i>"
+    "Text, photo, video, voice message, document — any type works.\n\n"
+    "<i>The admin's answer arrives here. To continue the conversation just "
+    "reply to their message — any time, no need to open this again.</i>"
 )
-CONTACT_SENT = "✅ Your message was sent to the admin. Thank you!"
+CONTACT_SENT = (
+    "✅ <b>Your message was sent to the admin</b>\n\n"
+    "The answer will arrive here. Reply to it to continue the conversation."
+)
 CONTACT_CANCELLED = "Cancelled."
 CONTACT_TOO_LONG = "📏 The message is too long (<b>{length}</b> characters). Maximum: <b>{limit}</b>."
-CONTACT_ONLY_TEXT = "✍️ Please send your message as text."
 CONTACT_RATE_LIMITED = (
     "⏳ You sent a message recently.\n\n"
     "You can send the next one in <b>{minutes}</b> minutes."
@@ -152,7 +155,6 @@ CONTACT_RATE_LIMITED = (
 CONTACT_FAILED = "⚠️ Could not send the message. Please try again later."
 CONTACT_REPLY_HEADER = (
     "✉️ <b>Reply from the admin</b>\n\n"
-    "{text}\n\n"
     "<i>Reply to this message to answer.</i>"
 )
 CONTACT_REPLY_SENT = "✅ Your reply was sent to the admin."

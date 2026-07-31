@@ -90,7 +90,14 @@ class SupportRepository:
         ).scalar_one()
 
     async def find_user(self, telegram_id: int) -> Optional[User]:
+        """Telegram ID bo'yicha foydalanuvchi.
+
+        `settings` eager yuklanadi: javob foydalanuvchining tilida yuboriladi
+        va lazy yuklanish async kontekstda `MissingGreenlet` bilan yiqiladi.
+        """
         result = await self.session.execute(
-            select(User).where(User.telegram_id == telegram_id)
+            select(User)
+            .options(selectinload(User.settings))
+            .where(User.telegram_id == telegram_id)
         )
         return result.scalar_one_or_none()

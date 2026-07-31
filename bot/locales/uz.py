@@ -136,23 +136,25 @@ DEVELOPER = (
 # ── Adminga murojaat ─────────────────────────────────────────
 CONTACT_PROMPT = (
     "✉️ <b>Adminga murojaat</b>\n\n"
-    "Xabaringizni yozib yuboring — u to'g'ridan-to'g'ri adminga yetadi.\n\n"
-    "<i>Bu yerda suhbat yo'q: siz yozasiz, admin o'qiydi. Javob kerak bo'lsa "
-    "aloqa uchun ma'lumot qoldiring.</i>"
+    "Xabaringizni yozing — u to'g'ridan-to'g'ri adminga yetadi.\n\n"
+    "Matn, rasm, video, ovozli xabar, hujjat — istalgan turni yuborishingiz mumkin.\n\n"
+    "<i>Admin javobi shu yerga keladi. Suhbatni davom ettirish uchun uning "
+    "xabariga reply qiling — istalgan payt, qayta murojaat qilmasdan.</i>"
 )
-CONTACT_SENT = "✅ Xabaringiz adminga yuborildi. Rahmat!"
+CONTACT_SENT = (
+    "✅ <b>Xabaringiz adminga yuborildi</b>\n\n"
+    "Javob shu yerga keladi. Unga reply qilib suhbatni davom ettirishingiz mumkin."
+)
 CONTACT_CANCELLED = "Bekor qilindi."
 CONTACT_TOO_LONG = "📏 Xabar juda uzun (<b>{length}</b> belgi). Eng ko'pi: <b>{limit}</b>."
-CONTACT_ONLY_TEXT = "✍️ Iltimos, xabarni matn ko'rinishida yuboring."
 CONTACT_RATE_LIMITED = (
     "⏳ Siz yaqinda murojaat yubordingiz.\n\n"
     "Keyingi xabarni <b>{minutes}</b> daqiqadan keyin yuborishingiz mumkin."
 )
 CONTACT_FAILED = "⚠️ Xabarni yuborib bo'lmadi. Keyinroq urinib ko'ring."
 CONTACT_REPLY_HEADER = (
-    "✉️ <b>Admin javobi</b>\n\n"
-    "{text}\n\n"
-    "<i>Javob yozish uchun shu xabarga reply qiling.</i>"
+    "✉️ <b>Admindan javob</b>\n\n"
+    "<i>Javob berish uchun shu xabarga reply qiling.</i>"
 )
 CONTACT_REPLY_SENT = "✅ Javobingiz adminga yuborildi."
 

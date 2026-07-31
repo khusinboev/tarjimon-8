@@ -137,13 +137,16 @@ DEVELOPER = (
 CONTACT_PROMPT = (
     "✉️ <b>Hubungi admin</b>\n\n"
     "Tulis pesan Anda — pesan akan langsung sampai ke admin.\n\n"
-    "<i>Ini bukan obrolan: Anda menulis, admin membaca. Jika perlu balasan, "
-    "cantumkan kontak Anda.</i>"
+    "Teks, foto, video, pesan suara, dokumen — semua jenis bisa dikirim.\n\n"
+    "<i>Balasan admin akan muncul di sini. Untuk melanjutkan percakapan, "
+    "cukup balas pesannya — kapan saja, tanpa membuka menu ini lagi.</i>"
 )
-CONTACT_SENT = "✅ Pesan Anda sudah dikirim ke admin. Terima kasih!"
+CONTACT_SENT = (
+    "✅ <b>Pesan Anda sudah dikirim ke admin</b>\n\n"
+    "Balasannya akan muncul di sini. Balas pesan itu untuk melanjutkan percakapan."
+)
 CONTACT_CANCELLED = "Dibatalkan."
 CONTACT_TOO_LONG = "📏 Pesan terlalu panjang (<b>{length}</b> karakter). Maksimum: <b>{limit}</b>."
-CONTACT_ONLY_TEXT = "✍️ Mohon kirim pesan Anda dalam bentuk teks."
 CONTACT_RATE_LIMITED = (
     "⏳ Anda baru saja mengirim pesan.\n\n"
     "Anda bisa mengirim lagi dalam <b>{minutes}</b> menit."
@@ -151,7 +154,6 @@ CONTACT_RATE_LIMITED = (
 CONTACT_FAILED = "⚠️ Pesan tidak bisa dikirim. Coba lagi nanti."
 CONTACT_REPLY_HEADER = (
     "✉️ <b>Balasan dari admin</b>\n\n"
-    "{text}\n\n"
     "<i>Balas pesan ini untuk menjawab.</i>"
 )
 CONTACT_REPLY_SENT = "✅ Balasan Anda sudah dikirim ke admin."

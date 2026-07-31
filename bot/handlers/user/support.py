@@ -12,6 +12,12 @@ aniqlaydi. Har bir yetkazilgan xabar uchun ikki uchdagi `message_id`
 Ip topilmasa `SkipHandler` bilan keyingi handlerlarga o'tkaziladi: oddiy
 reply bo'lsa matn odatdagidek tarjima qilinishi kerak.
 
+Har qanday tur uzatiladi — rasm, video, ovoz, hujjat, stiker. Buning uchun
+`copy_message` ishlatiladi: media qayta yuklanmaydi, Telegram faylni o'zida
+ko'chiradi. Har bir uzatishda ikki xabar ketadi — kim yozgani haqida
+sarlavha va kontentning o'zi — va ikkalasi ham ipga bog'lanadi, shunda
+qaysi biriga reply qilinsa ham suhbat topiladi.
+
 Murojaat matni ikki joyga tushadi:
   1. Adminlarning Telegram chatiga — darhol ko'rish uchun
   2. `events` jadvaliga (`support.message_sent`) — admin o'tkazib yuborsa
@@ -21,6 +27,7 @@ Murojaat matni ikki joyga tushadi:
 from __future__ import annotations
 
 import logging
+import re
 from types import ModuleType
 
 from aiogram import F, Router
@@ -77,10 +84,11 @@ async def _rate_limited(
 
 
 def _admin_view(user: User, text: str, *, is_reply: bool = False) -> str:
-    """Adminga ko'rinadigan ko'rinish.
+    """Adminga ko'rinadigan sarlavha.
 
     Admin — bitta odam (egasi), shuning uchun bu matn tarjima qilinmaydi.
-    `html_escape` shart: foydalanuvchi matnida `<` bo'lsa xabar yuborilmaydi.
+    Kontentning o'zi alohida xabar bo'lib keladi (`_deliver`), bu yerda
+    faqat kim yozgani ko'rsatiladi.
     """
     username = f"@{user.username}" if user.username else "—"
     name = html_escape(user.first_name or "—")
@@ -89,10 +97,91 @@ def _admin_view(user: User, text: str, *, is_reply: bool = False) -> str:
         f"{title}\n\n"
         f"👤 {name} · {username}\n"
         f"🆔 <code>{user.telegram_id}</code>\n"
-        f"🌐 {user.telegram_lang or '—'}\n"
-        "──────────\n\n"
-        f"{html_escape(text)}"
+        f"🌐 {user.telegram_lang or '—'}"
     )
+
+
+# Matn bo'lmagan xabarlar uchun belgi. `support_messages.text` NOT NULL,
+# shuning uchun bo'sh qoldirib bo'lmaydi — va admin jurnalda nima
+# kelganini ko'rishi kerak.
+_CONTENT_MARKERS = (
+    ("photo", "🖼 rasm"),
+    ("video", "🎬 video"),
+    ("animation", "🎞 GIF"),
+    ("voice", "🎤 ovozli xabar"),
+    ("audio", "🎵 audio"),
+    ("document", "📄 hujjat"),
+    ("sticker", "🩶 stiker"),
+    ("video_note", "⭕️ video xabar"),
+    ("contact", "👤 kontakt"),
+    ("location", "📍 joylashuv"),
+    ("poll", "📊 so'rovnoma"),
+    ("dice", "🎲 o'yin"),
+)
+
+
+def _describe(message: Message) -> str:
+    """Yozuvga tushadigan matn: matn yoki izoh, bo'lmasa kontent turi."""
+    text = (message.text or message.caption or "").strip()
+    if text:
+        return text
+    for attr, label in _CONTENT_MARKERS:
+        if getattr(message, attr, None):
+            return f"[{label}]"
+    return "[xabar]"
+
+
+async def _deliver(message: Message, to_chat_id: int, header: str) -> tuple[int, int | None]:
+    """Sarlavha + kontent nusxasini yuboradi. `(sarlavha_id, nusxa_id)`.
+
+    `copy_message` har qanday turni ko'chiradi — rasm, video, ovoz, hujjat,
+    stiker — va media qayta yuklanmaydi, Telegram faylni o'zida ko'chiradi.
+
+    Ba'zi turlarni ko'chirib bo'lmaydi (masalan so'rovnoma). O'shanda faqat
+    sarlavha ketadi va ikkinchi qiymat `None` bo'ladi — chaqiruvchi buni
+    ko'rib foydalanuvchiga xabar beradi.
+    """
+    head = await message.bot.send_message(to_chat_id, header)
+    try:
+        copied = await message.bot.copy_message(
+            chat_id=to_chat_id,
+            from_chat_id=message.chat.id,
+            message_id=message.message_id,
+        )
+        return head.message_id, copied.message_id
+    except Exception:
+        logger.warning(
+            "Kontentni ko'chirib bo'lmadi (chat=%s)", to_chat_id, exc_info=True
+        )
+        return head.message_id, None
+
+
+# Sarlavhadagi `🆔 123456789` — suhbatni aniqlashning asosiy yo'li.
+#
+# Nega bazadagi qidiruv emas: admin eski xabarga ham javob bera olishi kerak,
+# `support_messages` da esa faqat shu jadval paydo bo'lgandan keyingi
+# xabarlar bor. Sarlavha matni xabarning o'zida turadi va hech qachon
+# eskirmaydi. Baza qidiruvi zaxira bo'lib qoladi: admin kontent nusxasiga
+# reply qilsa, unda sarlavha yo'q.
+_ID_PATTERN = re.compile(r"🆔\s*(\d{5,})")
+
+
+def _extract_target_id(message: Message | None) -> int | None:
+    """Reply qilingan xabardagi foydalanuvchi ID sini qaytaradi."""
+    if message is None:
+        return None
+    found = _ID_PATTERN.search(message.text or message.caption or "")
+    return int(found.group(1)) if found else None
+
+
+def _is_reserved(message: Message) -> bool:
+    """Menyu tugmasi yoki buyruqmi.
+
+    Bular murojaat matni sifatida qabul qilinmasligi kerak — foydalanuvchi
+    "🌐 Tillar" bosganda u adminga ketib qolmasin.
+    """
+    text = message.text or ""
+    return text.startswith("/") or text in RESERVED_BUTTONS
 
 
 @router.message(F.text.in_(CONTACT_BUTTONS))
@@ -122,9 +211,11 @@ async def cancel_contact(message: Message, state: FSMContext, t: ModuleType) -> 
     await message.answer(t.CONTACT_CANCELLED, reply_markup=main_menu(t))
 
 
+# Matn ham, media ham qabul qilinadi — filtr faqat menyu tugmalari va
+# buyruqlarni chiqarib tashlaydi.
 @router.message(
     StateFilter(SupportStates.waiting_message),
-    F.text & ~F.text.startswith("/") & ~F.text.in_(RESERVED_BUTTONS),
+    lambda message: not _is_reserved(message),
 )
 async def receive_message(
     message: Message,
@@ -136,9 +227,8 @@ async def receive_message(
     t: ModuleType,
     redis=None,
 ) -> None:
-    text = (message.text or "").strip()
-    if not text:
-        return
+    described = _describe(message)
+    text = (message.text or message.caption or "").strip()
 
     if len(text) > settings.SUPPORT_MAX_CHARS:
         await message.answer(
@@ -168,30 +258,34 @@ async def receive_message(
         user_id=user.id,
         chat_id=message.chat.id,
         session_id=session_id,
-        text=truncate(text, settings.SUPPORT_MAX_CHARS),
+        text=truncate(described, settings.SUPPORT_MAX_CHARS),
         chars=len(text),
         username=user.username,
         telegram_id=user.telegram_id,
     )
 
-    body = _admin_view(user, text)
+    header = _admin_view(user, described)
     support = SupportRepository(session)
     delivered = 0
+
     for admin_id in settings.ADMIN_USER_IDS:
         try:
-            sent = await message.bot.send_message(admin_id, body)
+            head_id, copy_id = await _deliver(message, admin_id, header)
             delivered += 1
-            # Ipni yozamiz: admin shu xabarga reply qilsa kimga javob
-            # berayotganini shundan topamiz.
-            await support.record(
-                user_id=user.id,
-                direction="in",
-                text=text,
-                admin_chat_id=admin_id,
-                admin_message_id=sent.message_id,
-                user_chat_id=message.chat.id,
-                user_message_id=message.message_id,
-            )
+            # Ikkala xabar ham ipga bog'lanadi — admin qaysi biriga reply
+            # qilsa ham suhbat topilishi kerak.
+            for admin_message_id in (head_id, copy_id):
+                if admin_message_id is None:
+                    continue
+                await support.record(
+                    user_id=user.id,
+                    direction="in",
+                    text=described,
+                    admin_chat_id=admin_id,
+                    admin_message_id=admin_message_id,
+                    user_chat_id=message.chat.id,
+                    user_message_id=message.message_id,
+                )
         except Exception:
             # Bitta admin yetib olmasa qolganlariga yuborishda davom etamiz.
             logger.warning("Murojaatni %s ga yuborib bo'lmadi", admin_id, exc_info=True)
@@ -205,19 +299,6 @@ async def receive_message(
         # "yuborildi" deb aytish yolg'on bo'lardi.
         logger.error("Murojaat hech bir adminga yetmadi (user_id=%s)", user.id)
         await message.answer(t.CONTACT_FAILED, reply_markup=main_menu(t))
-
-
-# Buyruqlar bu yerga tushmasligi kerak: murojaat yozayotgan odam `/donate`
-# yozsa unga "matn yuboring" deb javob berish noto'g'ri bo'lardi. Buyruq
-# routerlari `support` dan oldin turadi, lekin filtrda ham aniq yozamiz —
-# keyinchalik yangi buyruq qo'shilib, tartibi keyinroq qolib ketishi mumkin.
-@router.message(StateFilter(SupportStates.waiting_message), ~F.text.startswith("/"))
-async def reject_non_text(message: Message, t: ModuleType) -> None:
-    """Matn bo'lmagan hamma narsa — rasm, ovoz, stiker.
-
-    Holat saqlanadi: foydalanuvchi matn ko'rinishida qayta yuborishi mumkin.
-    """
-    await message.answer(t.CONTACT_ONLY_TEXT)
 
 
 def _is_admin(telegram_id: int) -> bool:
@@ -236,7 +317,6 @@ def _is_admin(telegram_id: int) -> bool:
 # `SkipHandler` bilan odatdagi oqimga qaytaramiz.
 @router.message(
     F.reply_to_message,
-    F.text,
     F.from_user.func(lambda u: u and _is_admin(u.id)),
 )
 async def admin_reply(
@@ -247,81 +327,71 @@ async def admin_reply(
 ) -> None:
     """Admin murojaat xabariga reply qilsa — javob foydalanuvchiga boradi.
 
-    Ip `support_messages` dan topiladi: admin qaysi xabarga javob berayotgan
-    bo'lsa, o'sha yozuvdagi foydalanuvchi nishon bo'ladi. Boshqa xabarga
-    reply bo'lsa `SkipHandler` bilan keyingi handlerlarga o'tkazamiz —
-    admin ham botdan tarjima uchun foydalanishi mumkin.
+    Har qanday tur uzatiladi: matn, rasm, ovoz, hujjat.
     """
     support = SupportRepository(session)
-    thread = await support.by_admin_message(
-        message.chat.id, message.reply_to_message.message_id
-    )
-    if thread is None or thread.user is None:
-        raise SkipHandler
 
-    text = (message.text or "").strip()
-    if not text:
-        raise SkipHandler
+    # 1. Sarlavhadagi ID — asosiy yo'l, eski xabarlarda ham ishlaydi.
+    target = None
+    target_id = _extract_target_id(message.reply_to_message)
+    if target_id is not None:
+        target = await support.find_user(target_id)
 
-    target = thread.user
-
-    # Bu yerdan keyingi har qanday kutilmagan xato admin uchun ko'rinmas
-    # bo'lib qolmasligi kerak. Ilgari `target.settings` yuklanmagani uchun
-    # `MissingGreenlet` chiqar, javob jimgina yo'qolar va admin uni
-    # yuborilgan deb o'ylardi — 12 murojaatdan faqat 2 tasiga javob yetgan.
-    try:
-        # Javob foydalanuvchining o'z tilida sarlavhalanadi. `settings`
-        # repositoryda oldindan yuklanadi (`selectinload`), aks holda bu
-        # qator async kontekstda lazy-load bilan yiqilardi.
-        reply_locale = locales.get(
-            target.settings.interface_lang if target.settings else None
+    # 2. Zaxira: admin kontent nusxasiga reply qilgan bo'lsa sarlavha yo'q.
+    if target is None:
+        thread = await support.by_admin_message(
+            message.chat.id, message.reply_to_message.message_id
         )
+        target = thread.user if thread else None
 
-        try:
-            sent = await message.bot.send_message(
-                target.telegram_id,
-                reply_locale.CONTACT_REPLY_HEADER.format(text=html_escape(text)),
-            )
-        except Exception:
-            logger.warning("Admin javobi yetmadi (user_id=%s)", target.id, exc_info=True)
-            await message.reply(
-                "⚠️ Javob yetkazilmadi — foydalanuvchi botni bloklagan bo'lishi mumkin."
-            )
-            return
+    if target is None:
+        raise SkipHandler
 
+    described = _describe(message)
+
+    # Sarlavha foydalanuvchining o'z tilida.
+    reply_locale = locales.get(
+        target.settings.interface_lang if target.settings else None
+    )
+
+    try:
+        head_id, copy_id = await _deliver(
+            message, target.telegram_id, reply_locale.CONTACT_REPLY_HEADER
+        )
+    except Exception:
+        logger.warning("Admin javobi yetmadi (user_id=%s)", target.id, exc_info=True)
+        await message.reply(
+            "⚠️ Javob yetkazilmadi — foydalanuvchi botni bloklagan bo'lishi mumkin."
+        )
+        return
+
+    for user_message_id in (head_id, copy_id):
+        if user_message_id is None:
+            continue
         await support.record(
             user_id=target.id,
             direction="out",
-            text=text,
+            text=described,
             admin_chat_id=message.chat.id,
             admin_message_id=message.message_id,
             user_chat_id=target.telegram_id,
-            user_message_id=sent.message_id,
+            user_message_id=user_message_id,
         )
-        await events.log(
-            EventType.SUPPORT_REPLY_SENT,
-            user_id=target.id,
-            chat_id=message.chat.id,
-            session_id=session_id,
-            chars=len(text),
-        )
-        await message.reply("✅ Yuborildi.")
-    except SkipHandler:
-        raise
-    except Exception:
-        logger.exception("Admin javobida kutilmagan xato (user_id=%s)", target.id)
-        # Telegram chaqiruvi bazadan mustaqil — sessiya buzilgan bo'lsa ham
-        # admin ogohlantirishni oladi.
-        await message.reply(
-            "⚠️ Javobni yuborishda kutilmagan xato yuz berdi. "
-            "Xabar foydalanuvchiga yetmagan bo'lishi mumkin."
-        )
+
+    await events.log(
+        EventType.SUPPORT_REPLY_SENT,
+        user_id=target.id,
+        chat_id=message.chat.id,
+        session_id=session_id,
+        chars=len(described),
+    )
+    await message.reply("✅ Yuborildi." if copy_id else "⚠️ Faqat sarlavha ketdi — bu turni ko'chirib bo'lmadi.")
 
 
 # Yuqoridagi kabi: ajratuvchi belgi reply qilingan xabar, holat emas.
 # Holatga bog'liq handlerlar (murojaat yozish, homiylik miqdori) baribir
 # oldinroq turadi va o'z navbatida ushlab qoladi.
-@router.message(F.reply_to_message, F.text)
+@router.message(F.reply_to_message)
 async def user_reply(
     message: Message,
     session: AsyncSession,
@@ -344,9 +414,8 @@ async def user_reply(
     if thread is None:
         raise SkipHandler
 
-    text = (message.text or "").strip()
-    if not text:
-        raise SkipHandler
+    described = _describe(message)
+    text = (message.text or message.caption or "").strip()
 
     if len(text) > settings.SUPPORT_MAX_CHARS:
         await message.answer(
@@ -363,21 +432,25 @@ async def user_reply(
         await message.answer(t.CONTACT_RATE_LIMITED.format(minutes=minutes))
         return
 
-    body = _admin_view(user, text, is_reply=True)
+    header = _admin_view(user, described, is_reply=True)
     delivered = 0
+
     for admin_id in settings.ADMIN_USER_IDS:
         try:
-            sent = await message.bot.send_message(admin_id, body)
+            head_id, copy_id = await _deliver(message, admin_id, header)
             delivered += 1
-            await support.record(
-                user_id=user.id,
-                direction="in",
-                text=text,
-                admin_chat_id=admin_id,
-                admin_message_id=sent.message_id,
-                user_chat_id=message.chat.id,
-                user_message_id=message.message_id,
-            )
+            for admin_message_id in (head_id, copy_id):
+                if admin_message_id is None:
+                    continue
+                await support.record(
+                    user_id=user.id,
+                    direction="in",
+                    text=described,
+                    admin_chat_id=admin_id,
+                    admin_message_id=admin_message_id,
+                    user_chat_id=message.chat.id,
+                    user_message_id=message.message_id,
+                )
         except Exception:
             logger.warning("Javobni %s ga yuborib bo'lmadi", admin_id, exc_info=True)
 
@@ -386,7 +459,7 @@ async def user_reply(
         user_id=user.id,
         chat_id=message.chat.id,
         session_id=session_id,
-        text=truncate(text, settings.SUPPORT_MAX_CHARS),
+        text=truncate(described, settings.SUPPORT_MAX_CHARS),
         chars=len(text),
         is_reply=True,
         username=user.username,
