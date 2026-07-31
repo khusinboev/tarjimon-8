@@ -126,8 +126,8 @@ async def test_languages() -> None:
         codes = {lang.code for lang in langs}
         # Aniq songa bog'lamaymiz — til qo'shilganda sinov behuda yiqilardi.
         # Muhimi: asosiylari joyida va `auto` bor.
-        check("tillar yuklandi", len(langs) >= 22, f"{len(langs)} ta")
-        missing = {"auto", "uz", "ru", "en", "tr", "ar", "am", "id"} - codes
+        check("tillar yuklandi", len(langs) >= 23, f"{len(langs)} ta")
+        missing = {"auto", "uz", "ru", "en", "tr", "ar", "am", "om", "id"} - codes
         check("asosiy tillar joyida", not missing, f"yo'q: {missing}" if missing else "")
 
         source_opts = await repo.selectable(include_auto=True)
@@ -892,10 +892,11 @@ async def test_content_extraction() -> None:
     poll = SimpleNamespace(
         rich_message=None, text=None, caption=None, poll=Poll(
             id="1", question="Savol?", options=[
-                PollOption(text="Ha", voter_count=0),
-                PollOption(text="Yo'q", voter_count=0)],
+                PollOption(persistent_id="1", text="Ha", voter_count=0),
+                PollOption(persistent_id="2", text="Yo'q", voter_count=0)],
             total_voter_count=0, is_closed=False, is_anonymous=True,
-            type="regular", allows_multiple_answers=False),
+            type="regular", allows_multiple_answers=False,
+            allows_revoting=False, members_only=False),
         checklist=None,
     )
     got = extract(poll)

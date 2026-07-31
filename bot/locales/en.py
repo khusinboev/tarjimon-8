@@ -199,7 +199,7 @@ RELAUNCH = (
     "📋 <b>Easy copying</b> — tap the translation and it is copied\n"
     "🔄 <b>Swap button</b> — reverse the direction with one tap\n"
     "🔊 <b>Voice</b> — listen to any translation\n"
-    "🌐 <b>22 languages</b> — English, Russian, Uzbek, Turkish, Arabic, Amharic and more\n"
+    "🌐 <b>23 languages</b> — English, Russian, Uzbek, Turkish, Arabic, Amharic and more\n"
     "⚡️ <b>Speed</b> — repeated translations come back instantly\n"
     "🗣 <b>Your language</b> — the interface follows your Telegram language\n\n"
     "Just send any text to try it 👇"
