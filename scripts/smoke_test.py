@@ -732,6 +732,16 @@ async def test_support_thread() -> None:
         check("admin javobi ipni topadi", found is not None and found.user_id == user.id)
         check("ip foydalanuvchini biladi", found.user is not None and found.user.telegram_id == user.telegram_id)
 
+        # Handler `found.user.settings.interface_lang` ni o'qiydi — ikki qavat
+        # chuqur. Sinov faqat `found.user` ni tekshirgani uchun `settings`
+        # yuklanmagani sezilmay qolgan va ishlab turgan botda admin javoblari
+        # `MissingGreenlet` bilan jimgina yo'qolgan edi.
+        try:
+            lang = found.user.settings.interface_lang
+            check("ip foydalanuvchi sozlamasini ham biladi", bool(lang), lang)
+        except Exception as exc:  # MissingGreenlet — eager load tushib qolgan
+            check("ip foydalanuvchi sozlamasini ham biladi", False, type(exc).__name__)
+
         # Boshqa xabarga reply — ip yo'q, tarjimaga o'tishi kerak.
         check("begona xabar ipsiz", await support.by_admin_message(111, 999) is None)
 
@@ -859,7 +869,6 @@ async def main() -> None:
     await test_donate(user_id)
     await test_broadcast()
     await test_stats()
-    await test_support_thread()
     await test_support_thread()
 
     await cleanup()
