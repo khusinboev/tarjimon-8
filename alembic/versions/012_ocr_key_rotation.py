@@ -20,9 +20,12 @@ depends_on = None
 def upgrade() -> None:
     op.add_column("translations", sa.Column("ocr_key_index", sa.Integer()))
 
-    # Migratsiya 011 dagi indeks endi `ocr_key_index`ni ham qamrab olishi
-    # kerak — har bir kalitning oylik hajmi alohida hisoblanadi.
-    op.drop_index("idx_translations_ocr_monthly", table_name="translations")
+    # `idx_translations_ocr_monthly` migratsiya 011'da modelga (`models.py`)
+    # qo'shilgan edi, lekin migratsiyaning o'ziga `op.create_index` qo'shishni
+    # unutgan edim — ya'ni u hech qachon real bazada yaratilmagan (faqat
+    # SQLAlchemy model deklaratsiyasida bo'lgan). Shuning uchun bu yerda
+    # DROP qilmasdan, to'g'ridan-to'g'ri (yakuniy, 4 ustunli) ko'rinishda
+    # yaratiladi.
     op.create_index(
         "idx_translations_ocr_monthly",
         "translations",
@@ -32,9 +35,4 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_index("idx_translations_ocr_monthly", table_name="translations")
-    op.create_index(
-        "idx_translations_ocr_monthly",
-        "translations",
-        ["input_kind", "ocr_provider", "created_at"],
-    )
     op.drop_column("translations", "ocr_key_index")
