@@ -11,6 +11,7 @@ def admin_main_keyboard() -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton(text="📊 Statistika"), KeyboardButton(text="🔧 Kanallar")],
             [KeyboardButton(text="📤 Reklama"), KeyboardButton(text="👤 Foydalanuvchilar")],
+            [KeyboardButton(text="📜 Audit")],
         ],
         resize_keyboard=True,
     )
@@ -37,6 +38,10 @@ def admin_user_actions_keyboard() -> ReplyKeyboardMarkup:
             [
                 KeyboardButton(text="🔢 Limit o'rnatish"),
                 KeyboardButton(text="♻️ Limitni tozalash"),
+            ],
+            [
+                KeyboardButton(text="🔊 Ovoz limiti"),
+                KeyboardButton(text="🔇 Ovoz limitini tozalash"),
             ],
             [KeyboardButton(text="🔄 Yangilash")],
             [KeyboardButton(text="🔙 Orqaga")],

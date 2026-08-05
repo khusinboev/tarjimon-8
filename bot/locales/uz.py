@@ -43,7 +43,8 @@ HELP = (
     "• Istalgan matn yuboring — u avtomatik tarjima qilinadi\n"
     "• <b>🌐 Tillar</b> — tarjima yo'nalishini o'zgartirish\n"
     "• <b>⭐ Homiylik</b> — loyihani Telegram Stars bilan qo'llab-quvvatlash\n"
-    "• <b>✉️ Adminga murojaat</b> — savol yoki taklif yuborish\n\n"
+    "• <b>✉️ Adminga murojaat</b> — savol yoki taklif yuborish\n"
+    "• <b>/invite</b> — do'stlaringizni taklif qiling, ikkalangiz VIP kun yutasiz\n\n"
     "Tarjima ostidagi tugmalar:\n"
     "🔊 — matnni ovozda eshitish\n"
     "🔄 — yo'nalishni teskari almashtirish\n"
@@ -180,6 +181,15 @@ DONATE_THANKS = (
     "to'g'ridan-to'g'ri yordam beradi.\n\n"
     "Jamg'armangiz uchun katta rahmat!"
 )
+DONATE_THANKS_PREMIUM = (
+    "❤️ <b>Rahmat!</b>\n\n"
+    "Siz <b>{stars} ⭐</b> homiylik qildingiz va shu bilan <b>{days} kunlik VIP</b> "
+    "maqomiga ega bo'ldingiz!\n\n"
+    "💎 VIP paytida kunlik tarjima va ovoz limitlari cheksiz.\n"
+    "⏳ Amal qilish muddati: <b>{until}</b> gacha.\n\n"
+    "Jamg'armangiz uchun katta rahmat!"
+)
+DONATE_VIP_ACTIVE = "💎 <b>VIP faol</b> — <b>{until}</b> gacha kunlik limitlar cheksiz."
 DONATE_FAILED = "⚠️ To'lovni boshlab bo'lmadi. Keyinroq urinib ko'ring."
 DONATE_CUSTOM = "✏️ Boshqa miqdor"
 DONATE_CUSTOM_PROMPT = (
@@ -195,6 +205,27 @@ DONATE_CARDS = (
     "🟢 <b>UzCard</b>\n<code>{uzcard}</code>\n\n"
     "👤 {holder}\n\n"
     "<i>Har qanday miqdor yordam beradi. Rahmat!</i>"
+)
+
+# ── Referal dasturi ───────────────────────────────────────────
+INVITE_TEXT = (
+    "🎁 <b>Do'stlaringizni taklif qiling</b>\n\n"
+    "Shaxsiy havolangiz:\n<code>{link}</code>\n\n"
+    "Havola orqali kirgan do'stingiz birinchi tarjimasini qilishi bilanoq:\n"
+    "• sizga <b>{referrer_days} kun VIP</b>\n"
+    "• unga <b>{welcome_days} kun VIP</b>\n\n"
+    "Havolani istagancha odamga yuborishingiz mumkin — chegara yo'q."
+)
+REFERRAL_WELCOME_NOTICE = (
+    "🎁 <b>Xush kelibsiz bonusi!</b>\n\n"
+    "Taklif havolasi orqali kelganingiz uchun sizga <b>{days} kunlik VIP</b> berildi.\n"
+    "⏳ Amal qilish muddati: <b>{until}</b> gacha."
+)
+REFERRAL_BONUS_NOTICE = (
+    "🎉 <b>Referal bonusi!</b>\n\n"
+    "Siz taklif qilgan do'stingiz botdan foydalanishni boshladi — sizga "
+    "<b>{days} kunlik VIP</b> berildi.\n"
+    "⏳ Amal qilish muddati: <b>{until}</b> gacha."
 )
 
 # ── Qayta ishga tushish xabari (scripts/broadcast_relaunch.py) ──

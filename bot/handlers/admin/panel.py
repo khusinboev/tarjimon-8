@@ -50,7 +50,10 @@ async def go_back(message: Message, state: FSMContext):
     target_id = data.get("target_user_id")
 
     # Limit kiritish → foydalanuvchi kartochkasi
-    if current == AdminStates.waiting_user_limit.state and target_id is not None:
+    if (
+        current in (AdminStates.waiting_user_limit.state, AdminStates.waiting_user_tts_limit.state)
+        and target_id is not None
+    ):
         await state.set_state(None)
         ok = await _show_user_card(message, state, int(target_id))
         if not ok:
@@ -85,6 +88,16 @@ async def show_stats(message: Message):
         data = await StatsService(session).collect()
 
     await message.answer(render_stats(data), reply_markup=admin_main_keyboard())
+
+
+@router.message(F.text == "📜 Audit", F.from_user.func(lambda u: u and is_admin(u.id)))
+async def show_audit(message: Message):
+    """Oxirgi admin amallari — kim, qachon, nima qildi."""
+    async with AsyncSessionLocal() as session:
+        service = AdminService(session)
+        text = await service.format_recent_actions(limit=20)
+
+    await message.answer(text, reply_markup=admin_main_keyboard())
 
 
 @router.message(F.text == "🔧 Kanallar", F.from_user.func(lambda u: u and is_admin(u.id)))
@@ -619,6 +632,86 @@ async def user_limit_clear(message: Message, state: FSMContext, user):
     async with AsyncSessionLocal() as session:
         service = AdminService(session)
         ok, text = await service.clear_user_limit(user.id, target_id)
+
+    await message.answer(text, reply_markup=admin_user_actions_keyboard())
+    if ok:
+        await _show_user_card(message, state, target_id)
+
+
+@router.message(F.text == "🔊 Ovoz limiti", F.from_user.func(lambda u: u and is_admin(u.id)))
+async def user_tts_limit_start(message: Message, state: FSMContext):
+    target_id = await _require_target_user(state)
+    if target_id is None:
+        await message.answer(
+            "Avval foydalanuvchini qidiring.",
+            reply_markup=admin_users_keyboard(),
+        )
+        return
+
+    await state.set_state(AdminStates.waiting_user_tts_limit)
+    await message.answer(
+        "Kunlik ovoz (TTS) limitini yuboring.\n"
+        "• Oddiy son (masalan <code>50</code>)\n"
+        "• <code>0</code> — cheksiz\n\n"
+        f"Standart: {settings.DAILY_TTS_LIMIT}",
+        reply_markup=back_keyboard(),
+    )
+
+
+@router.message(AdminStates.waiting_user_tts_limit, F.from_user.func(lambda u: u and is_admin(u.id)))
+async def user_tts_limit_finish(message: Message, state: FSMContext, user):
+    if (message.text or "").strip() == "🔙 Orqaga":
+        target_id = await _require_target_user(state)
+        await state.set_state(None)
+        if target_id is not None:
+            await _show_user_card(message, state, target_id)
+        else:
+            await message.answer("Foydalanuvchi boshqaruvi", reply_markup=admin_users_keyboard())
+        return
+
+    target_id = await _require_target_user(state)
+    if target_id is None:
+        await state.clear()
+        await message.answer(
+            "Avval foydalanuvchini qidiring.",
+            reply_markup=admin_users_keyboard(),
+        )
+        return
+
+    raw = (message.text or "").strip()
+    try:
+        limit = int(raw)
+    except ValueError:
+        await message.answer(
+            "Iltimos, butun son yuboring (masalan 50 yoki 0).",
+            reply_markup=back_keyboard(),
+        )
+        return
+
+    async with AsyncSessionLocal() as session:
+        service = AdminService(session)
+        ok, text = await service.set_user_tts_limit(user.id, target_id, limit)
+
+    await message.answer(text, reply_markup=admin_user_actions_keyboard())
+    if ok:
+        await _show_user_card(message, state, target_id)
+    else:
+        await state.set_state(AdminStates.waiting_user_tts_limit)
+
+
+@router.message(F.text == "🔇 Ovoz limitini tozalash", F.from_user.func(lambda u: u and is_admin(u.id)))
+async def user_tts_limit_clear(message: Message, state: FSMContext, user):
+    target_id = await _require_target_user(state)
+    if target_id is None:
+        await message.answer(
+            "Avval foydalanuvchini qidiring.",
+            reply_markup=admin_users_keyboard(),
+        )
+        return
+
+    async with AsyncSessionLocal() as session:
+        service = AdminService(session)
+        ok, text = await service.clear_user_tts_limit(user.id, target_id)
 
     await message.answer(text, reply_markup=admin_user_actions_keyboard())
     if ok:

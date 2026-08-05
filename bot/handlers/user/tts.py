@@ -15,7 +15,7 @@ from bot.database.models import TtsRequest, User
 from bot.database.repositories.language_repository import LanguageRepository
 from bot.database.repositories.translation_repository import TranslationRepository
 from bot.services.events import EventService, EventType
-from bot.services.quota import QuotaService
+from bot.services.quota import QuotaService, resolve_limit_override
 from bot.services.tts import TtsError, TtsService
 from bot.utils.text import text_hash, truncate
 
@@ -45,8 +45,11 @@ async def send_voice(
     """
     quota = QuotaService(session, redis)
 
-    status = await quota.check_tts(user.id)
-    if not status.allowed and user.role not in ("admin", "owner"):
+    # Ustunlik: admin rol > qo'lda qo'yilgan override > VIP (translate.py
+    # dagi bilan bir xil mantiq — `resolve_limit_override` markazlashtiradi).
+    limit_override = resolve_limit_override(user, kind="tts")
+    status = await quota.check_tts(user.id, limit_override=limit_override)
+    if not status.allowed:
         await events.log(
             EventType.TTS_QUOTA_EXCEEDED,
             user_id=user.id,

@@ -68,6 +68,11 @@ class EventType:
     DONATE_INVOICE_SENT = "donate.invoice_sent"
     DONATE_PAID = "donate.paid"
 
+    # VIP va referal
+    PREMIUM_GRANTED = "premium.granted"
+    USER_REFERRED = "user.referred"
+    REFERRAL_BONUS_GRANTED = "referral.bonus_granted"
+
     # Tizim
     BROADCAST_DELIVERED = "broadcast.delivered"
     ERROR_UNHANDLED = "error.unhandled"
@@ -98,6 +103,9 @@ IMPORTANT_EVENTS = frozenset(
         EventType.SUPPORT_REPLY_SENT,
         # To'lov voqeasi har doim yoziladi — pul harakati hisobga olinishi kerak.
         EventType.DONATE_PAID,
+        # Mukofot berilishi ham pul/imtiyoz harakati bilan bir xil darajada muhim.
+        EventType.PREMIUM_GRANTED,
+        EventType.REFERRAL_BONUS_GRANTED,
         EventType.ERROR_UNHANDLED,
     }
 )

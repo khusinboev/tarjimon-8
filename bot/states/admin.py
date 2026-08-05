@@ -11,3 +11,4 @@ class AdminStates(StatesGroup):
     waiting_broadcast_cancel_id = State()
     waiting_user_query = State()
     waiting_user_limit = State()
+    waiting_user_tts_limit = State()

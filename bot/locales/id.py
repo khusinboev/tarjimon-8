@@ -43,7 +43,8 @@ HELP = (
     "• Kirim teks apa pun — akan diterjemahkan otomatis\n"
     "• <b>🌐 Bahasa</b> — ubah arah terjemahan\n"
     "• <b>⭐ Donasi</b> — dukung proyek ini dengan Telegram Stars\n"
-    "• <b>✉️ Hubungi admin</b> — kirim pertanyaan atau saran\n\n"
+    "• <b>✉️ Hubungi admin</b> — kirim pertanyaan atau saran\n"
+    "• <b>/invite</b> — undang teman, Anda berdua dapat hari VIP\n\n"
     "Tombol di bawah setiap terjemahan:\n"
     "🔊 — dengarkan teksnya\n"
     "🔄 — balik arah terjemahan\n"
@@ -179,6 +180,14 @@ DONATE_THANKS = (
     "Anda berdonasi <b>{stars} ⭐</b>. Ini langsung membantu bot tetap berjalan.\n\n"
     "Terima kasih banyak atas dukungan Anda!"
 )
+DONATE_THANKS_PREMIUM = (
+    "❤️ <b>Terima kasih!</b>\n\n"
+    "Anda berdonasi <b>{stars} ⭐</b> dan mendapatkan <b>{days} hari VIP</b>!\n\n"
+    "💎 Selama VIP, batas harian terjemahan dan suara tidak terbatas.\n"
+    "⏳ Berlaku sampai: <b>{until}</b>.\n\n"
+    "Terima kasih banyak atas dukungan Anda!"
+)
+DONATE_VIP_ACTIVE = "💎 <b>VIP aktif</b> — batas harian tidak terbatas sampai <b>{until}</b>."
 DONATE_FAILED = "⚠️ Pembayaran tidak bisa dimulai. Coba lagi nanti."
 DONATE_CUSTOM = "✏️ Jumlah lain"
 DONATE_CUSTOM_PROMPT = (
@@ -194,6 +203,27 @@ DONATE_CARDS = (
     "🟢 <b>UzCard</b>\n<code>{uzcard}</code>\n\n"
     "👤 {holder}\n\n"
     "<i>Berapa pun membantu. Terima kasih!</i>"
+)
+
+# ── Program referal ────────────────────────────────────────────
+INVITE_TEXT = (
+    "🎁 <b>Undang teman-teman Anda</b>\n\n"
+    "Tautan pribadi Anda:\n<code>{link}</code>\n\n"
+    "Begitu teman yang bergabung lewat tautan ini membuat terjemahan pertamanya:\n"
+    "• Anda dapat <b>{referrer_days} hari VIP</b>\n"
+    "• dia dapat <b>{welcome_days} hari VIP</b>\n\n"
+    "Bagikan ke sebanyak mungkin orang — tidak ada batasnya."
+)
+REFERRAL_WELCOME_NOTICE = (
+    "🎁 <b>Bonus selamat datang!</b>\n\n"
+    "Anda bergabung lewat tautan undangan, jadi Anda mendapat <b>{days} hari VIP</b>.\n"
+    "⏳ Berlaku sampai: <b>{until}</b>."
+)
+REFERRAL_BONUS_NOTICE = (
+    "🎉 <b>Bonus referal!</b>\n\n"
+    "Teman yang Anda undang mulai memakai bot — Anda mendapat "
+    "<b>{days} hari VIP</b>.\n"
+    "⏳ Berlaku sampai: <b>{until}</b>."
 )
 
 # ── Pengumuman peluncuran ulang (scripts/broadcast_relaunch.py) ──

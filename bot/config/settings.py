@@ -130,6 +130,23 @@ class Settings(BaseSettings):
     RATE_LIMIT_REQUESTS: int = Field(default=20)
     RATE_LIMIT_WINDOW: int = Field(default=60)
 
+    # ── VIP (bot ichidagi premium) ─────────────────────────────
+    # `User.is_premium` bilan aralashtirmaslik kerak — bu Telegram'ning o'z
+    # belgisi. Bu yerdagi VIP faqat homiylik yoki referal orqali beriladi va
+    # shu muddat ichida kunlik limitlar (tarjima + ovoz) cheksiz bo'ladi.
+    PREMIUM_STARS_PER_DAY: int = Field(default=5, description="N stars = 1 kun VIP")
+    # Bitta uzaytirishning yakuniy chegarasi — juda katta yagona homiylik
+    # yillar davomida VIP bermasin (himoya, hozirgi DONATE_MAX=10000 bilan
+    # birga: 10000/5=2000 kun bo'lardi, shuning uchun bu yerda kesamiz).
+    PREMIUM_MAX_DAYS: int = Field(default=365)
+
+    # ── Referal dasturi ───────────────────────────────────────
+    # Bonus faqat yangi userning BIRINCHI muvaffaqiyatli tarjimasidan keyin
+    # beriladi (`/start` bosilganda emas) — aks holda havolani spam qilib,
+    # botdan haqiqatan foydalanmasdan mukofot yig'ish oson bo'lardi.
+    REFERRAL_BONUS_DAYS: int = Field(default=3, description="taklif qilganga")
+    REFERRAL_WELCOME_DAYS: int = Field(default=1, description="yangi qo'shilganga")
+
     # ── Voqealar jurnali ──────────────────────────────────────
     # "all" — har bir tugma bosish ham yoziladi (ML uchun to'liq yo'l).
     # "important" — faqat tarjima/TTS/limit/obuna/xato.

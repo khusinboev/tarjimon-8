@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import List, Optional, Tuple
 
 from sqlalchemy import func, select, update
@@ -239,7 +239,64 @@ class UserRepository:
             .values(daily_limit_override=limit)
         )
 
+    async def set_tts_limit_override(
+        self, user_id: int, limit: Optional[int]
+    ) -> None:
+        """`set_daily_limit_override` bilan bir xil mantiq, ovoz (TTS) uchun."""
+        await self.session.execute(
+            update(UserSettings)
+            .where(UserSettings.user_id == user_id)
+            .values(tts_limit_override=limit)
+        )
+
+    async def extend_premium(
+        self, user_id: int, days: int, *, max_days: int
+    ) -> Optional[datetime]:
+        """VIP muddatini uzaytiradi (stacking) va yakuniy sanani qaytaradi.
+
+        Stacking: agar VIP hali faol bo'lsa, kunlar UNING ustiga qo'shiladi
+        (hozirgi vaqtga emas) — ikkinchi homiylik birinchisini "yeb qo'ymaydi".
+        `max_days` bilan kesiladi: bitta uzaytirish hozirgi vaqtdan shu
+        chegaradan uzoqqa cho'zilmaydi (himoya — juda katta yagona homiylik
+        cheksiz uzoq VIP bermasin).
+
+        `days <= 0` bo'lsa hech narsa qilinmaydi (masalan kichik homiylik
+        bir kunlik VIP'ga yetmasa) — `None` qaytadi.
+        """
+        if days <= 0:
+            return None
+
+        result = await self.session.execute(
+            select(UserSettings.premium_until).where(UserSettings.user_id == user_id)
+        )
+        current = result.scalar_one_or_none()
+
+        now = utcnow()
+        base = current if current is not None and current > now else now
+        new_until = min(base + timedelta(days=days), now + timedelta(days=max_days))
+
+        await self.session.execute(
+            update(UserSettings)
+            .where(UserSettings.user_id == user_id)
+            .values(premium_until=new_until)
+        )
+        return new_until
+
+    async def set_referral_bonus_granted(self, user_id: int) -> None:
+        await self.session.execute(
+            update(UserSettings)
+            .where(UserSettings.user_id == user_id)
+            .values(referral_bonus_granted=True)
+        )
+
     # ── Statistika ────────────────────────────────────────────
+
+    async def count_referrals(self, user_id: int) -> int:
+        return (
+            await self.session.execute(
+                select(func.count(User.id)).where(User.referred_by == user_id)
+            )
+        ).scalar_one()
 
     async def count_total(self) -> int:
         return (await self.session.execute(select(func.count(User.id)))).scalar_one()

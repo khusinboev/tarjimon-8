@@ -143,6 +143,15 @@ class Stats:
     donations_stars: int = 0
     donations_stars_month: int = 0
 
+    vip_active: int = 0
+    referrals_total: int = 0
+
+    # Hozircha ikkalasi ham bepul (deep_translator, edge-tts), shuning uchun
+    # bitta qiymatli bo'lsa ko'rsatilmaydi (`render()` da tekshiriladi) —
+    # lekin kelajakda pullik provayder qo'shilsa shu yerga tayyor infratuzilma.
+    translation_providers: dict[str, int] = field(default_factory=dict)
+    tts_providers: dict[str, int] = field(default_factory=dict)
+
     support_total: int = 0
     support_day: int = 0
 
@@ -275,6 +284,33 @@ class StatsService:
                 Donation.status == "paid", Donation.created_at >= month
             )
         )
+
+        # ── VIP va referal ──
+        s.vip_active = await self._scalar(
+            select(func.count(UserSettings.user_id)).where(
+                UserSettings.premium_until.is_not(None),
+                UserSettings.premium_until > now,
+            )
+        )
+        s.referrals_total = await self._scalar(
+            select(func.count(User.id)).where(User.referred_by.is_not(None))
+        )
+
+        # ── Provayder hisobi (kelajakda pullik provayder qo'shilsa kerak
+        # bo'ladigan xarajat monitoringi uchun tayyor hook) ──
+        rows = await self.session.execute(
+            select(Translation.provider, func.count(Translation.id))
+            .where(Translation.status == "success")
+            .group_by(Translation.provider)
+        )
+        s.translation_providers = {p or "?": n for p, n in rows.all()}
+
+        rows = await self.session.execute(
+            select(TtsRequest.provider, func.count(TtsRequest.id))
+            .where(TtsRequest.status == "success")
+            .group_by(TtsRequest.provider)
+        )
+        s.tts_providers = {p or "?": n for p, n in rows.all()}
 
         # ── Murojaatlar ──
         s.support_total = await self._scalar(
@@ -426,6 +462,8 @@ def render(s: Stats) -> str:
         ("Stars", num(s.donations_stars)),
         ("Stars 30 kun", num(s.donations_stars_month)),
         ("Homiylik soni", num(s.donations_count)),
+        ("VIP faol", num(s.vip_active)),
+        ("Referal (jami)", num(s.referrals_total)),
         ("Murojaat", num(s.support_total)),
         ("Murojaat bugun", num(s.support_day)),
         ("Voqealar", num(s.events_total)),
@@ -436,6 +474,20 @@ def render(s: Stats) -> str:
         "<blockquote expandable>📦 <b>Qolgan ko'rsatkichlar</b>\n"
         f"<pre>{table(other, align='lr')}</pre></blockquote>"
     )
+
+    # ── Provayder taqsimoti ──
+    # Faqat >1 provayder bo'lganda ko'rsatiladi: hozircha ikkalasi ham
+    # bepul (deep_translator, edge-tts), bitta qatorli 100% jadval ma'lumot
+    # bermaydi. Pullik provayder qo'shilganda avtomatik ko'rina boshlaydi —
+    # xarajat monitoringi shu yerdan boshlanadi.
+    if len(s.translation_providers) > 1 or len(s.tts_providers) > 1:
+        provider_rows = [
+            (f"T: {name}", num(count)) for name, count in s.translation_providers.items()
+        ] + [(f"O: {name}", num(count)) for name, count in s.tts_providers.items()]
+        parts.append(
+            "<blockquote expandable>🔌 <b>Provayderlar</b>\n"
+            f"<pre>{table(provider_rows, align='lr')}</pre></blockquote>"
+        )
 
     if s.last_broadcast:
         bid, status, ok, bad = s.last_broadcast

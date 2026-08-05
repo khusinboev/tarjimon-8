@@ -22,8 +22,9 @@ from bot.database.repositories.language_repository import LanguageRepository
 from bot.database.repositories.translation_repository import TranslationRepository
 from bot.database.repositories.user_repository import UserRepository
 from bot.database.session import AsyncSessionLocal, engine
-from bot.services.events import EventService, EventType
-from bot.services.quota import QuotaService
+from bot.services.events import EventService, EventType, utcnow
+from bot.services.quota import QuotaService, resolve_limit_override
+from bot.services.referral import grant_referral_bonus
 from bot.services.translation import TranslationError, TranslationService
 from bot.services.tts import TtsError, TtsService
 from bot.keyboards.user import direction_label, main_menu, translation_actions
@@ -241,6 +242,175 @@ async def test_quota(user_id: int) -> None:
         )
 
 
+async def test_premium_and_referral() -> None:
+    """VIP (homiylik/referal) ustunlik tartibi va referal bonusi."""
+    print("\n[6c] VIP va referal")
+    from datetime import timedelta
+
+    from sqlalchemy import delete
+
+    from bot.database.models import Event, User, UserSettings
+
+    async with AsyncSessionLocal() as session:
+        repo = UserRepository(session)
+        user, _ = await repo.get_or_create(TEST_TELEGRAM_ID + 90, first_name="Vip")
+        await session.commit()
+        user_id = user.id
+
+        # ── resolve_limit_override: ustunlik tartibi ──
+        # Bu yerda faqat Python obyekti ustida ishlaymiz (bazaga yozmasdan) —
+        # `resolve_limit_override` sof funksiya, `user.settings` dagi
+        # qiymatlarni o'qiydi, xolos.
+
+        # 1. Hech narsa yo'q -> None (chaqiruvchi standart limitni qo'llaydi).
+        check(
+            "override yo'q -> None",
+            resolve_limit_override(user, kind="translation") is None,
+        )
+
+        # 2. Faol VIP -> 0 (cheksiz).
+        user.settings.premium_until = utcnow() + timedelta(days=1)
+        check(
+            "faol VIP -> cheksiz",
+            resolve_limit_override(user, kind="translation") == 0,
+        )
+
+        # 3. Tugagan VIP -> yana None (standart limitga qaytadi).
+        user.settings.premium_until = utcnow() - timedelta(days=1)
+        check(
+            "tugagan VIP -> None",
+            resolve_limit_override(user, kind="translation") is None,
+        )
+
+        # 4. Qo'lda qo'yilgan override VIP'dan USTUN turadi (aniq admin qarori).
+        user.settings.premium_until = utcnow() + timedelta(days=1)
+        user.settings.daily_limit_override = 7
+        check(
+            "qo'lda override VIP'dan ustun",
+            resolve_limit_override(user, kind="translation") == 7,
+        )
+        # TTS uchun alohida ustun ishlatiladi, tarjima override'iga bog'liq emas.
+        check(
+            "TTS override alohida (hali yo'q -> VIP ishlaydi)",
+            resolve_limit_override(user, kind="tts") == 0,
+        )
+        user.settings.daily_limit_override = None
+
+        # 5. Admin roli hammasidan ustun.
+        user.role = "admin"
+        user.settings.premium_until = None
+        check(
+            "admin roli -> har doim cheksiz",
+            resolve_limit_override(user, kind="translation") == 0,
+        )
+        user.role = "user"
+        user.settings.premium_until = None
+        await session.rollback()  # sof Python o'zgarishlar — bazaga yozilmaydi
+
+        # ── extend_premium: stacking va max_days chegarasi ──
+        first = await repo.extend_premium(user_id, 5, max_days=365)
+        check("birinchi uzaytirish muvaffaqiyatli", first is not None)
+
+        # Stacking: ikkinchi chaqiruv MAVJUD muddatga qo'shiladi, hozirgi
+        # vaqtga emas — ikkinchi homiylik birinchisini "yeb qo'ymasligi" kerak.
+        second = await repo.extend_premium(user_id, 5, max_days=365)
+        gap_days = (second - first).days
+        check(
+            "stacking: ikkinchi muddat birinchisi ustiga qo'shiladi",
+            4 <= gap_days <= 6,
+            f"farq={gap_days} kun (birinchi={first}, ikkinchi={second})",
+        )
+
+        # max_days chegarasi: juda katta so'rov kesiladi.
+        capped = await repo.extend_premium(user_id, 10_000, max_days=30)
+        cap_days = (capped - utcnow()).days
+        check(
+            "max_days chegarasi ishlaydi",
+            cap_days <= 30,
+            f"{cap_days} kun (kutilgan <= 30)",
+        )
+
+        # days <= 0 -> hech narsa qilinmaydi.
+        noop = await repo.extend_premium(user_id, 0, max_days=365)
+        check("days=0 -> None, o'zgarish yo'q", noop is None)
+
+        await session.commit()
+
+    # ── Referal bonusi: end-to-end ──
+    from types import SimpleNamespace
+
+    class _FakeBot:
+        async def send_message(self, *args, **kwargs) -> None:
+            return None
+
+    class _FakeMessage:
+        def __init__(self) -> None:
+            self.bot = _FakeBot()
+
+        async def answer(self, *args, **kwargs) -> None:
+            return None
+
+    async with AsyncSessionLocal() as session:
+        repo = UserRepository(session)
+        referrer, _ = await repo.get_or_create(TEST_TELEGRAM_ID + 91, first_name="Referrer")
+        newbie, _ = await repo.get_or_create(TEST_TELEGRAM_ID + 92, first_name="Newbie")
+        await session.commit()
+
+        # `newbie` shu sessiyaga bog'langan — atributni to'g'ridan-to'g'ri
+        # o'zgartirish yetarli, `start.py` dagi bilan bir xil naqsh.
+        newbie.referred_by = referrer.id
+        await session.commit()
+
+        events = EventService(session)
+        fake_message = _FakeMessage()
+
+        await grant_referral_bonus(fake_message, session, events, newbie, None)
+        await session.commit()
+
+        refreshed_newbie = await repo.get_by_id(newbie.id)
+        refreshed_referrer = await repo.get_by_id(referrer.id)
+        check(
+            "yangi user VIP oldi",
+            refreshed_newbie.settings.premium_until is not None
+            and refreshed_newbie.settings.premium_until > utcnow(),
+        )
+        check(
+            "referrer VIP oldi",
+            refreshed_referrer.settings.premium_until is not None
+            and refreshed_referrer.settings.premium_until > utcnow(),
+        )
+        check(
+            "bayroq qo'yildi",
+            refreshed_newbie.settings.referral_bonus_granted is True,
+        )
+
+        # Ikkinchi chaqiruv — bonus IKKINCHI marta berilmasligi kerak.
+        referrer_until_before = refreshed_referrer.settings.premium_until
+        await grant_referral_bonus(fake_message, session, events, refreshed_newbie, None)
+        await session.commit()
+        refreshed_referrer_again = await repo.get_by_id(referrer.id)
+        check(
+            "takroriy chaqiruv bonus bermaydi",
+            refreshed_referrer_again.settings.premium_until == referrer_until_before,
+        )
+
+        await session.execute(
+            delete(Event).where(Event.user_id.in_([newbie.id, referrer.id]))
+        )
+        await session.execute(
+            delete(UserSettings).where(UserSettings.user_id.in_([newbie.id, referrer.id]))
+        )
+        await session.execute(delete(User).where(User.id.in_([newbie.id, referrer.id])))
+        await session.commit()
+
+    # Birinchi test blokidagi userni ham tozalaymiz.
+    async with AsyncSessionLocal() as session:
+        await session.execute(delete(UserSettings).where(UserSettings.user_id == user_id))
+        await session.execute(delete(User).where(User.id == user_id))
+        await session.commit()
+
+
+
 async def test_admin_users() -> None:
     """Admin: qidirish, limit, ban/unban va audit yozuvi."""
     print("\n[6b] Admin foydalanuvchi boshqaruvi")
@@ -319,6 +489,23 @@ async def test_admin_users() -> None:
             refreshed.settings.daily_limit_override is None,
         )
 
+        ok, msg = await service.set_user_tts_limit(admin_id, target_id, 7)
+        check("ovoz limiti o'rnatiladi", ok, msg)
+        refreshed = await repo.get_by_id(target_id)
+        check(
+            "ovoz limiti saqlanadi",
+            refreshed.settings.tts_limit_override == 7,
+            str(refreshed.settings.tts_limit_override),
+        )
+
+        ok, msg = await service.clear_user_tts_limit(admin_id, target_id)
+        check("ovoz limiti tozalanadi", ok, msg)
+        refreshed = await repo.get_by_id(target_id)
+        check(
+            "ovoz limiti override NULL",
+            refreshed.settings.tts_limit_override is None,
+        )
+
         ok, msg = await service.ban_user(admin_id, target_id)
         check("ban qilinadi", ok, msg)
         refreshed = await repo.get_by_id(target_id)
@@ -342,6 +529,9 @@ async def test_admin_users() -> None:
         card = await service.format_user_card(await repo.get_by_id(target_id))
         check("kartochkada telegram id bor", str(target_tg) in card)
         check("kartochkada holat bor", "Holat:" in card)
+        check("kartochkada VIP qatori bor", "VIP:" in card)
+        check("kartochkada ovoz limiti bor", "Ovoz limiti:" in card)
+        check("kartochkada taklif soni bor", "Taklif qilganlari:" in card)
 
         actions = (
             await session.execute(
@@ -350,7 +540,12 @@ async def test_admin_users() -> None:
                 )
             )
         ).scalar_one()
-        check("audit yozuvlari bor", actions >= 4, f"{actions} ta")
+        check("audit yozuvlari bor", actions >= 6, f"{actions} ta")
+
+        recent = await service.format_recent_actions(limit=20)
+        check("audit ro'yxati formatlanadi", len(recent) > 0)
+        check("audit ro'yxatida admin username bor", "@smoke_admin" in recent)
+        check("audit ro'yxatida amal nomi bor", "Ovoz limiti" in recent)
 
         # Tozalash
         from bot.database.models import DailyUsage
@@ -852,8 +1047,14 @@ async def test_stats() -> None:
         )
 
 
-async def test_support_thread() -> None:
-    """Ikki tomonlama murojaat: reply orqali ip topiladi."""
+async def test_support_thread_lookup() -> None:
+    """Ikki tomonlama murojaat: reply orqali ip topiladi.
+
+    Diqqat: bu funksiya ilgari `test_support_thread` deb nomlangan edi va
+    quyida boshqa bir `test_support_thread` bilan bir xil nom bo'lgani
+    uchun Python uni jimgina almashtirib qo'ygan — bu yerdagi 7 ta tekshiruv
+    hech qachon ishlamagan (`main()` faqat oxirgi ta'rifni chaqirgan).
+    """
     print("\n[16] Murojaat yozishmasi")
     from sqlalchemy import delete
 
@@ -915,7 +1116,7 @@ async def test_support_thread() -> None:
         await session.commit()
 
 
-async def test_support_thread() -> None:
+async def test_support_thread_lazy_load() -> None:
     """Murojaat ipi: admin javobi foydalanuvchi tilida yuborilishi kerak.
 
     Diqqat — qidiruv **yangi sessiyada** bajariladi. Aynan shu shart bo'lmasa
@@ -924,7 +1125,7 @@ async def test_support_thread() -> None:
     Ishlab turgan botda esa admin javob berayotgan foydalanuvchi boshqa
     obyekt bo'ladi va `user.settings` ga murojaat `MissingGreenlet` beradi.
     """
-    print("\n[16] Murojaat ipi")
+    print("\n[16b] Murojaat ipi — yangi sessiyada lazy-load")
     from sqlalchemy import delete
 
     from bot.database.models import SupportMessage, User, UserSettings
@@ -965,7 +1166,20 @@ async def test_support_thread() -> None:
         missing = await SupportRepository(fresh).by_admin_message(777001, 999999)
         check("noma'lum xabar uchun ip yo'q", missing is None)
 
-    # ── Suhbatni aniqlash: sarlavhadagi 🆔 ──
+    async with AsyncSessionLocal() as session:
+        await session.execute(delete(SupportMessage).where(SupportMessage.user_id == user_id))
+        await session.execute(delete(UserSettings).where(UserSettings.user_id == user_id))
+        await session.execute(delete(User).where(User.id == user_id))
+        await session.commit()
+
+
+async def test_support_parsing() -> None:
+    """Murojaat sarlavhasidan foydalanuvchi ID'sini va kontent turini ajratish.
+
+    Baza kerak emas — sof funksiyalar, `SimpleNamespace` bilan Telegram
+    xabarini taqlid qilamiz.
+    """
+    print("\n[16c] Murojaat sarlavhasini tahlil qilish")
     from types import SimpleNamespace
 
     from bot.handlers.user.support import _describe, _extract_target_id
@@ -990,7 +1204,6 @@ async def test_support_thread() -> None:
     )
     check("reply bo'lmasa None", _extract_target_id(None) is None)
 
-    # ── Kontent turi tavsifi (matn bo'lmaganda jurnal uchun) ──
     check(
         "matn o'zi olinadi",
         _describe(SimpleNamespace(text="salom", caption=None)) == "salom",
@@ -1002,12 +1215,6 @@ async def test_support_thread() -> None:
     check("ovoz belgilanadi", "ovoz" in _describe(voice), _describe(voice))
     captioned = SimpleNamespace(text=None, caption="izoh matni", photo=[object()])
     check("izoh matn sifatida olinadi", _describe(captioned) == "izoh matni")
-
-    async with AsyncSessionLocal() as session:
-        await session.execute(delete(SupportMessage).where(SupportMessage.user_id == user_id))
-        await session.execute(delete(UserSettings).where(UserSettings.user_id == user_id))
-        await session.execute(delete(User).where(User.id == user_id))
-        await session.commit()
 
 
 async def test_content_extraction() -> None:
@@ -1149,6 +1356,7 @@ async def main() -> None:
     user_id = await test_user_flow()
     await test_interface_lang_resolution()
     await test_quota(user_id)
+    await test_premium_and_referral()
     await test_admin_users()
     result = await test_translation()
     await test_translation_record(user_id, result)
@@ -1159,7 +1367,9 @@ async def main() -> None:
     await test_donate(user_id)
     await test_broadcast()
     await test_stats()
-    await test_support_thread()
+    await test_support_thread_lookup()
+    await test_support_thread_lazy_load()
+    await test_support_parsing()
     await test_content_extraction()
 
     await cleanup()

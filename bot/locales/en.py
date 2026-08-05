@@ -44,7 +44,8 @@ HELP = (
     "• Send any text — it is translated automatically\n"
     "• <b>🌐 Languages</b> — change the translation direction\n"
     "• <b>⭐ Donate</b> — support the project with Telegram Stars\n"
-    "• <b>✉️ Contact admin</b> — send a question or suggestion\n\n"
+    "• <b>✉️ Contact admin</b> — send a question or suggestion\n"
+    "• <b>/invite</b> — invite friends, you both get VIP days\n\n"
     "Buttons under each translation:\n"
     "🔊 — listen to the text\n"
     "🔄 — reverse the direction\n"
@@ -180,6 +181,14 @@ DONATE_THANKS = (
     "You donated <b>{stars} ⭐</b>. This directly helps keep the bot running.\n\n"
     "Thank you so much for your support!"
 )
+DONATE_THANKS_PREMIUM = (
+    "❤️ <b>Thank you!</b>\n\n"
+    "You donated <b>{stars} ⭐</b> and unlocked <b>{days} days of VIP</b>!\n\n"
+    "💎 During VIP, daily translation and voice limits are unlimited.\n"
+    "⏳ Valid until: <b>{until}</b>.\n\n"
+    "Thank you so much for your support!"
+)
+DONATE_VIP_ACTIVE = "💎 <b>VIP active</b> — unlimited daily limits until <b>{until}</b>."
 DONATE_FAILED = "⚠️ Could not start the payment. Please try again later."
 DONATE_CUSTOM = "✏️ Other amount"
 DONATE_CUSTOM_PROMPT = (
@@ -195,6 +204,27 @@ DONATE_CARDS = (
     "🟢 <b>UzCard</b>\n<code>{uzcard}</code>\n\n"
     "👤 {holder}\n\n"
     "<i>Any amount helps. Thank you!</i>"
+)
+
+# ── Referral program ───────────────────────────────────────────
+INVITE_TEXT = (
+    "🎁 <b>Invite your friends</b>\n\n"
+    "Your personal link:\n<code>{link}</code>\n\n"
+    "As soon as a friend who joined through it makes their first translation:\n"
+    "• you get <b>{referrer_days} days of VIP</b>\n"
+    "• they get <b>{welcome_days} days of VIP</b>\n\n"
+    "Share it with as many people as you like — no limit."
+)
+REFERRAL_WELCOME_NOTICE = (
+    "🎁 <b>Welcome bonus!</b>\n\n"
+    "You joined via an invite link, so you got <b>{days} days of VIP</b>.\n"
+    "⏳ Valid until: <b>{until}</b>."
+)
+REFERRAL_BONUS_NOTICE = (
+    "🎉 <b>Referral bonus!</b>\n\n"
+    "A friend you invited started using the bot — you got "
+    "<b>{days} days of VIP</b>.\n"
+    "⏳ Valid until: <b>{until}</b>."
 )
 
 # ── Relaunch announcement (scripts/broadcast_relaunch.py) ──

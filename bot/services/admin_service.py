@@ -29,6 +29,7 @@ from bot.services.broadcast import (
     RateLimiter,
     is_permanently_unreachable,
 )
+from bot.services.events import utcnow
 from bot.utils.formatters import format_datetime
 from bot.utils.text import html_escape
 
@@ -510,26 +511,38 @@ class AdminService:
 
         return await self.user_repo.find_by_username(query)
 
+    @staticmethod
+    def _limit_label(override: Optional[int], default: int) -> str:
+        if override is None:
+            return f"{default} (standart)"
+        if override <= 0:
+            return "cheksiz"
+        return f"{override} (alohida)"
+
     async def format_user_card(self, user: User) -> str:
         """Admin uchun foydalanuvchi kartochkasi (HTML)."""
         settings_row = user.settings
-        override = settings_row.daily_limit_override if settings_row else None
-        if override is None:
-            limit_text = f"{settings.DAILY_TRANSLATION_LIMIT} (standart)"
-        elif override <= 0:
-            limit_text = "cheksiz"
-        else:
-            limit_text = f"{override} (alohida)"
+        limit_text = self._limit_label(
+            settings_row.daily_limit_override if settings_row else None,
+            settings.DAILY_TRANSLATION_LIMIT,
+        )
+        tts_limit_text = self._limit_label(
+            settings_row.tts_limit_override if settings_row else None,
+            settings.DAILY_TTS_LIMIT,
+        )
 
         usage = await self.usage_repo.get(user.id)
         used_today = usage.translations_count if usage else 0
         tts_today = usage.tts_count if usage else 0
+        referrals = await self.user_repo.count_referrals(user.id)
 
         username = f"@{html_escape(user.username)}" if user.username else "—"
         name_parts = [user.first_name or "", user.last_name or ""]
         name = html_escape(" ".join(p for p in name_parts if p).strip() or "—")
         status = self.STATUS_LABELS.get(user.status, user.status)
-        premium = "ha" if user.is_premium else "yo'q"
+        # `is_premium` — Telegram'ning o'zi (Telegram Premium client), bizning
+        # VIP tizimimiz emas. Chalkashmasin deb ikkalasi alohida qatorda.
+        tg_premium = "ha" if user.is_premium else "yo'q"
         source = html_escape(user.source) if user.source else "—"
         ui_lang = (settings_row.interface_lang if settings_row else None) or "—"
         direction = (
@@ -538,6 +551,20 @@ class AdminService:
             else "—"
         )
 
+        premium_until = settings_row.premium_until if settings_row else None
+        if premium_until and premium_until > utcnow():
+            vip_text = f"faol, {format_datetime(premium_until)} gacha"
+        elif premium_until:
+            vip_text = f"tugagan ({format_datetime(premium_until)})"
+        else:
+            vip_text = "yo'q"
+
+        referred_line = ""
+        if user.referred_by is not None:
+            referrer = await self.user_repo.get_by_id(user.referred_by)
+            ref_label = f"<code>{referrer.telegram_id}</code>" if referrer else str(user.referred_by)
+            referred_line = f"\n👥 Taklif qilgan: {ref_label}"
+
         return (
             "👤 <b>Foydalanuvchi</b>\n\n"
             f"🆔 DB: <code>{user.id}</code>\n"
@@ -545,11 +572,15 @@ class AdminService:
             f"👤 {name} · {username}\n"
             f"🏷 Rol: <b>{user.role}</b>\n"
             f"📊 Holat: <b>{status}</b>\n"
-            f"⭐ Premium: {premium}\n"
+            f"⭐ Telegram Premium: {tg_premium}\n"
+            f"💎 VIP: <b>{vip_text}</b>\n"
             f"🗣 Interfeys: {ui_lang}\n"
             f"🌐 Yo'nalish: {direction}\n"
             f"📈 Bugun: {used_today} tarjima · {tts_today} ovoz\n"
-            f"🔢 Kunlik limit: <b>{limit_text}</b>\n"
+            f"🔢 Tarjima limiti: <b>{limit_text}</b>\n"
+            f"🔊 Ovoz limiti: <b>{tts_limit_text}</b>\n"
+            f"🎁 Taklif qilganlari: <b>{referrals}</b>"
+            f"{referred_line}\n"
             f"🔗 Manba: {source}\n"
             f"🕐 Ko'rilgan: {format_datetime(user.last_seen_at)}\n"
             f"📅 Ro'yxat: {format_datetime(user.created_at)}"
@@ -655,3 +686,102 @@ class AdminService:
             f"♻️ Limit tozalandi: <code>{user.telegram_id}</code> → "
             f"standart ({settings.DAILY_TRANSLATION_LIMIT})"
         )
+
+    async def set_user_tts_limit(
+        self, admin_id: int, target_user_id: int, limit: int
+    ) -> tuple[bool, str]:
+        """`set_user_limit` bilan bir xil mantiq, ovoz (TTS) uchun."""
+        if limit < 0:
+            return False, "Limit manfiy bo'lishi mumkin emas. Cheksiz uchun 0 yuboring."
+        if limit > 1_000_000:
+            return False, "Limit juda katta (maks. 1 000 000)."
+
+        user = await self.user_repo.get_by_id(target_user_id)
+        if not user:
+            return False, "Foydalanuvchi topilmadi."
+        if user.settings is None:
+            return False, "Foydalanuvchi sozlamalari topilmadi."
+
+        await self.user_repo.set_tts_limit_override(user.id, limit)
+        await self.log_action(
+            admin_id,
+            "user.set_tts_limit",
+            target_type="user",
+            target_id=user.id,
+            payload={"telegram_id": user.telegram_id, "limit": limit},
+        )
+        await self.session.commit()
+
+        label = "cheksiz" if limit <= 0 else str(limit)
+        return True, (
+            f"🔊 Ovoz limiti yangilandi: <code>{user.telegram_id}</code> → "
+            f"<b>{label}</b>"
+        )
+
+    async def clear_user_tts_limit(
+        self, admin_id: int, target_user_id: int
+    ) -> tuple[bool, str]:
+        user = await self.user_repo.get_by_id(target_user_id)
+        if not user:
+            return False, "Foydalanuvchi topilmadi."
+        if user.settings is None:
+            return False, "Foydalanuvchi sozlamalari topilmadi."
+
+        prev = user.settings.tts_limit_override
+        await self.user_repo.set_tts_limit_override(user.id, None)
+        await self.log_action(
+            admin_id,
+            "user.clear_tts_limit",
+            target_type="user",
+            target_id=user.id,
+            payload={"telegram_id": user.telegram_id, "prev_limit": prev},
+        )
+        await self.session.commit()
+        return True, (
+            f"♻️ Ovoz limiti tozalandi: <code>{user.telegram_id}</code> → "
+            f"standart ({settings.DAILY_TTS_LIMIT})"
+        )
+
+    # ── Audit ────────────────────────────────────────────────
+
+    ACTION_LABELS = {
+        "user.ban": "🚫 Bloklash",
+        "user.unban": "✅ Blokdan chiqarish",
+        "user.set_limit": "🔢 Tarjima limiti",
+        "user.clear_limit": "♻️ Tarjima limiti tozalandi",
+        "user.set_tts_limit": "🔊 Ovoz limiti",
+        "user.clear_tts_limit": "♻️ Ovoz limiti tozalandi",
+    }
+
+    async def format_recent_actions(self, limit: int = 20) -> str:
+        """Oxirgi admin amallari — kim, qachon, nima qildi.
+
+        `AdminAction` yozadigan har bir amal (`log_action`) shu yerda
+        ko'rinadi. Admin identifikatorini o'qishga qulay qilish uchun
+        `users` bilan LEFT JOIN qilinadi — admin o'chirilgan/topilmasa ham
+        (`ondelete="SET NULL"`) qator ko'rinishda qoladi.
+        """
+        rows = (
+            await self.session.execute(
+                select(AdminAction, User)
+                .outerjoin(User, User.id == AdminAction.admin_id)
+                .order_by(AdminAction.id.desc())
+                .limit(limit)
+            )
+        ).all()
+
+        if not rows:
+            return "📜 Hozircha audit yozuvlari yo'q."
+
+        lines = [f"📜 <b>Oxirgi amallar</b> (so'nggi {len(rows)} ta)\n"]
+        for action, admin in rows:
+            label = self.ACTION_LABELS.get(action.action, action.action)
+            who = f"@{admin.username}" if admin and admin.username else (
+                str(admin.telegram_id) if admin else "—"
+            )
+            target = f" → {action.target_id}" if action.target_id else ""
+            lines.append(
+                f"{format_datetime(action.created_at)} · {label}\n"
+                f"   👤 {who}{target}"
+            )
+        return "\n".join(lines)

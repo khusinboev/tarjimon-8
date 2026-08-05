@@ -117,6 +117,20 @@ class UserSettings(Base):
     allow_training = Column(Boolean, default=True, server_default=sql_text("true"), nullable=False, index=True)
 
     daily_limit_override = Column(Integer)
+    tts_limit_override = Column(Integer)
+
+    # Bot ichidagi VIP (Telegram Premium bilan aralashtirmaslik kerak —
+    # `User.is_premium` Telegram'ning o'z belgisi). Homiylik yoki referal
+    # orqali qo'lga kiritiladi: shu vaqtgacha kunlik limitlar cheksiz.
+    premium_until = Column(DateTime(timezone=True))
+
+    # Referal bonusi FAQAT yangi userning birinchi muvaffaqiyatli
+    # tarjimasidan keyin beriladi (`/start` bosilganda emas) — aks holda
+    # havolani haqiqiy foydalanmasdan spam qilib mukofot yig'ish oson bo'lardi.
+    # Bu bayroq bonusni ikki marta bermaslik uchun.
+    referral_bonus_granted = Column(
+        Boolean, default=False, server_default=sql_text("false"), nullable=False
+    )
 
     updated_at = Column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False

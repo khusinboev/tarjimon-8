@@ -16,7 +16,8 @@ from bot.database.repositories.translation_repository import TranslationReposito
 from bot.keyboards.user import translation_actions
 from bot.locales import MENU_BUTTONS
 from bot.services.events import EventService, EventType
-from bot.services.quota import QuotaService
+from bot.services.quota import QuotaService, resolve_limit_override
+from bot.services.referral import grant_referral_bonus
 from bot.services.translation import TranslationError, TranslationService
 from bot.utils.content import extract
 from bot.utils.text import chunk_html_safe, content_hash, html_escape
@@ -88,10 +89,8 @@ async def _translate(
         )
         return
 
-    # 4. Kunlik limit. Adminlarga cheklov qo'yilmaydi.
-    limit_override = user_settings.daily_limit_override
-    if user.role in ("admin", "owner"):
-        limit_override = 0
+    # 4. Kunlik limit. Ustunlik: admin rol > qo'lda qo'yilgan override > VIP.
+    limit_override = resolve_limit_override(user, kind="translation")
     status = await quota.check_translation(user.id, limit_override=limit_override)
     if not status.allowed:
         await events.log(
@@ -185,6 +184,12 @@ async def _translate(
     )
 
     await quota.consume_translation(user.id, chars=len(text))
+
+    # Referal bonusi: faqat yangi userning BIRINCHI muvaffaqiyatli tarjimasida
+    # ishlaydi (`grant_referral_bonus` ichida bayroq bilan tekshiriladi).
+    # Tarjima natijasidan oldin chaqiramiz — bonus xabari (agar bo'lsa) ham,
+    # tarjima natijasi ham foydalanuvchiga bir xil javob ichida ketadi.
+    await grant_referral_bonus(message, session, events, user, session_id)
 
     await events.log(
         EventType.TRANSLATE_SUCCEEDED,

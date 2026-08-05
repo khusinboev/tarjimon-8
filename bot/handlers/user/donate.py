@@ -26,10 +26,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config.settings import settings
 from bot.database.models import Donation, User
+from bot.database.repositories.user_repository import UserRepository
 from bot.keyboards.user import cancel_menu, donate_amounts, main_menu
 from bot.locales import CANCEL_BUTTONS, DONATE_BUTTONS, RESERVED_BUTTONS
-from bot.services.events import EventService, EventType
+from bot.services.events import EventService, EventType, utcnow
 from bot.states.support import DonateStates
+from bot.utils.formatters import format_datetime
 from bot.utils.text import html_escape
 
 logger = logging.getLogger(__name__)
@@ -74,8 +76,18 @@ async def open_donate(
         chat_id=message.chat.id,
         session_id=session_id,
     )
+
+    intro = t.DONATE_INTRO
+    premium_until = user.settings.premium_until if user.settings else None
+    if premium_until and premium_until > utcnow():
+        intro = (
+            t.DONATE_VIP_ACTIVE.format(until=format_datetime(premium_until))
+            + "\n\n"
+            + intro
+        )
+
     await message.answer(
-        t.DONATE_INTRO,
+        intro,
         reply_markup=donate_amounts(
             t, settings.DONATE_PRESETS, with_cards=settings.HAS_DONATE_CARDS
         ),
@@ -249,17 +261,46 @@ async def on_paid(
         charge_id=payment.telegram_payment_charge_id,
     )
 
-    await message.answer(
-        t.DONATE_THANKS.format(stars=stars), reply_markup=main_menu(t)
-    )
+    # Stars → VIP kun. Bu yerga faqat GENUINE (birinchi) to'lovda yetib
+    # keladi — takroriy xabar yuqorida IntegrityError bilan qaytib ketadi,
+    # ya'ni bir to'lov uchun VIP ikki marta berilmaydi.
+    days = stars // settings.PREMIUM_STARS_PER_DAY
+    premium_until = None
+    if days > 0:
+        premium_until = await UserRepository(session).extend_premium(
+            user.id, days, max_days=settings.PREMIUM_MAX_DAYS
+        )
+        await events.log(
+            EventType.PREMIUM_GRANTED,
+            user_id=user.id,
+            chat_id=message.chat.id,
+            session_id=session_id,
+            days=days,
+            reason="donation",
+            stars=stars,
+        )
+
+    if premium_until:
+        await message.answer(
+            t.DONATE_THANKS_PREMIUM.format(
+                stars=stars, days=days, until=format_datetime(premium_until)
+            ),
+            reply_markup=main_menu(t),
+        )
+    else:
+        await message.answer(
+            t.DONATE_THANKS.format(stars=stars), reply_markup=main_menu(t)
+        )
 
     # Adminni xabardor qilamiz — homiylikni ko'rish va rahmat aytish uchun.
     username = f"@{user.username}" if user.username else "—"
+    vip_line = f"\n💎 VIP: +{days} kun ({format_datetime(premium_until)} gacha)" if premium_until else ""
     note = (
         "⭐ <b>Yangi homiylik</b>\n\n"
         f"👤 {html_escape(user.first_name or '—')} · {username}\n"
         f"🆔 <code>{user.telegram_id}</code>\n"
         f"💰 <b>{stars} ⭐</b>"
+        f"{vip_line}"
     )
     for admin_id in settings.ADMIN_USER_IDS:
         try:
