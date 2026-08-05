@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from types import ModuleType
+from typing import Optional
 
 from aiogram import F, Router
 from aiogram.types import Message
@@ -13,11 +14,13 @@ from bot.config.settings import settings
 from bot.database.models import User
 from bot.database.repositories.language_repository import LanguageRepository
 from bot.database.repositories.translation_repository import TranslationRepository
-from bot.keyboards.user import translation_actions
+from bot.keyboards.user import quota_exceeded_keyboard, translation_actions
 from bot.locales import MENU_BUTTONS
 from bot.services.events import EventService, EventType
+from bot.services.ocr import OcrError, extract_text
 from bot.services.quota import QuotaService, resolve_limit_override
 from bot.services.referral import grant_referral_bonus
+from bot.services.system_config import get_effective_limits
 from bot.services.translation import TranslationError, TranslationService
 from bot.utils.content import extract
 from bot.utils.text import chunk_html_safe, content_hash, html_escape
@@ -40,10 +43,17 @@ async def _translate(
     *,
     text: str,
     input_kind: str,
+    manage_quota: bool = True,
+    ocr_provider: Optional[str] = None,
 ) -> None:
     """Tarjima oqimi. Matn qayerdan kelganidan qat'i nazar bir xil.
 
     `input_kind` faqat yozuvga tushadi — oqimga ta'sir qilmaydi.
+
+    `manage_quota=False` — rasm (OCR) oqimi uchun: kvota OCR chaqiruvidan
+    OLDIN, chaqiruvchida allaqachon tekshirilgan va sarflangan (rasm limiti
+    matn limitidan butunlay alohida hisoblanadi), shuning uchun bu yerda
+    yana matn kvotasini tekshirish/sarflash noto'g'ri bo'lardi.
     """
     text = text.strip()
     if not text:
@@ -90,19 +100,24 @@ async def _translate(
         return
 
     # 4. Kunlik limit. Ustunlik: admin rol > qo'lda qo'yilgan override > VIP.
-    limit_override = resolve_limit_override(user, kind="translation")
-    status = await quota.check_translation(user.id, limit_override=limit_override)
-    if not status.allowed:
-        await events.log(
-            EventType.TRANSLATE_QUOTA_EXCEEDED,
-            user_id=user.id,
-            chat_id=message.chat.id,
-            session_id=session_id,
-            limit=status.limit,
-            used=status.used,
-        )
-        await message.answer(t.QUOTA_EXCEEDED.format(limit=status.limit))
-        return
+    # Rasm oqimida bu allaqachon chaqiruvchida tekshirilgan — takrorlanmaydi.
+    if manage_quota:
+        limit_override = resolve_limit_override(user, kind="translation")
+        status = await quota.check_translation(user.id, limit_override=limit_override)
+        if not status.allowed:
+            await events.log(
+                EventType.TRANSLATE_QUOTA_EXCEEDED,
+                user_id=user.id,
+                chat_id=message.chat.id,
+                session_id=session_id,
+                limit=status.limit,
+                used=status.used,
+            )
+            await message.answer(
+                t.QUOTA_EXCEEDED.format(limit=status.limit),
+                reply_markup=quota_exceeded_keyboard(t),
+            )
+            return
 
     await events.log(
         EventType.TRANSLATE_REQUESTED,
@@ -144,6 +159,7 @@ async def _translate(
             source_hash=source_hash,
             source_chars=len(text),
             provider=settings.TRANSLATION_PROVIDER,
+            ocr_provider=ocr_provider,
             status="timeout" if exc.code == "timeout" else "error",
             error_code=exc.code,
             error_message=str(exc)[:500],
@@ -178,12 +194,14 @@ async def _translate(
         target_chars=len(result.text),
         provider=result.provider,
         provider_model=result.provider_model,
+        ocr_provider=ocr_provider,
         status="success",
         latency_ms=result.latency_ms,
         cache_hit=result.cache_hit,
     )
 
-    await quota.consume_translation(user.id, chars=len(text))
+    if manage_quota:
+        await quota.consume_translation(user.id, chars=len(text))
 
     # Referal bonusi: faqat yangi userning BIRINCHI muvaffaqiyatli tarjimasida
     # ishlaydi (`grant_referral_bonus` ichida bayroq bilan tekshiriladi).
@@ -270,14 +288,123 @@ async def handle_content(
     )
 
 
+# Izohsiz rasm — OCR bilan matnini o'qib tarjima qilamiz. Izohli rasm
+# yuqoridagi `handle_content` ga tushadi (caption tarjima qilinadi, rasm
+# o'zi OCR qilinmaydi) — ikkalasi bir-birini hech qachon qamrab olmaydi.
+@router.message(F.photo & ~F.caption)
+async def handle_photo(
+    message: Message,
+    session: AsyncSession,
+    user: User,
+    events: EventService,
+    session_id,
+    t: ModuleType,
+    redis=None,
+) -> None:
+    """Rasmdagi matnni OCR bilan ajratib tarjima qiladi.
+
+    Kvota OCR chaqiruvidan OLDIN tekshiriladi — bu tashqi provayderga
+    pul/hajm sarflanishining oldini oladi (foydalanuvchi limitdan oshgan
+    bo'lsa OCR umuman chaqirilmaydi). Matn/ovoz limitidan butunlay alohida
+    hisoblanadi (`images_count`); VIP uni cheksiz emas, faqat kengaytirilgan
+    (`DAILY_IMAGE_LIMIT_VIP`) qiladi — OCR pulga tushishi mumkin.
+    """
+    quota = QuotaService(session, redis)
+
+    if await quota.hit_rate_limit(user.id):
+        await events.log(
+            EventType.TRANSLATE_RATE_LIMITED,
+            user_id=user.id,
+            chat_id=message.chat.id,
+            session_id=session_id,
+        )
+        await message.answer(t.RATE_LIMITED)
+        return
+
+    limits = await get_effective_limits(session)
+    limit_override = resolve_limit_override(user, kind="image", vip_value=limits.image_vip)
+    status = await quota.check_image(user.id, limit_override=limit_override)
+    if not status.allowed:
+        await events.log(
+            EventType.IMAGE_QUOTA_EXCEEDED,
+            user_id=user.id,
+            chat_id=message.chat.id,
+            session_id=session_id,
+            limit=status.limit,
+            used=status.used,
+        )
+        await message.answer(
+            t.IMAGE_QUOTA_EXCEEDED.format(limit=status.limit),
+            reply_markup=quota_exceeded_keyboard(t),
+        )
+        return
+
+    await message.bot.send_chat_action(message.chat.id, "typing")
+    await events.log(
+        EventType.IMAGE_OCR_REQUESTED,
+        user_id=user.id,
+        chat_id=message.chat.id,
+        session_id=session_id,
+    )
+
+    photo_file = await message.bot.download(message.photo[-1].file_id)
+    image_bytes = photo_file.read()
+
+    try:
+        result = await extract_text(session, image_bytes)
+    except OcrError as exc:
+        await events.log(
+            EventType.IMAGE_OCR_FAILED,
+            user_id=user.id,
+            chat_id=message.chat.id,
+            session_id=session_id,
+            error_code=exc.code,
+        )
+        text = t.IMAGE_OCR_UNAVAILABLE if exc.code == "not_configured" else t.IMAGE_OCR_FAILED
+        await message.answer(text)
+        return
+
+    # OCR chaqiruvi allaqachon amalga oshdi (pul/hajm sarflandi) — natija
+    # bo'sh bo'lsa ham kvota sarflanadi, aks holda bo'sh rasm yuborib
+    # cheksiz urinish mumkin bo'lardi.
+    await quota.consume_image(user.id)
+
+    if not result.text.strip():
+        await events.log(
+            EventType.IMAGE_OCR_EMPTY,
+            user_id=user.id,
+            chat_id=message.chat.id,
+            session_id=session_id,
+            provider=result.provider,
+        )
+        await message.answer(t.IMAGE_NO_TEXT_FOUND)
+        return
+
+    await events.log(
+        EventType.IMAGE_OCR_SUCCEEDED,
+        user_id=user.id,
+        chat_id=message.chat.id,
+        session_id=session_id,
+        provider=result.provider,
+        chars=len(result.text),
+    )
+
+    await _translate(
+        message, session, user, events, session_id, t, redis,
+        text=result.text, input_kind="photo",
+        manage_quota=False, ocr_provider=result.provider,
+    )
+
+
 @router.message(
-    F.voice | F.audio | F.video_note | F.photo | F.document | F.video
+    F.voice | F.audio | F.video_note | F.document | F.video
     | F.sticker | F.animation | F.story | F.location | F.contact
 )
 async def handle_unsupported(message: Message, t: ModuleType) -> None:
     """Matni umuman yo'q kontent.
 
-    Izohli media yuqoridagi `handle_content` ga tushadi, bu yerga faqat
-    izohsizlari yetib keladi.
+    Izohli media yuqoridagi `handle_content` ga tushadi, izohsiz rasm
+    yuqoridagi `handle_photo` ga (OCR) — bu yerga faqat OCR qilib
+    bo'lmaydigan turlar yetib keladi.
     """
     await message.answer(t.UNSUPPORTED_INPUT)

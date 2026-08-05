@@ -12,3 +12,9 @@ class AdminStates(StatesGroup):
     waiting_user_query = State()
     waiting_user_limit = State()
     waiting_user_tts_limit = State()
+    waiting_user_image_limit = State()
+
+    waiting_global_translation_limit = State()
+    waiting_global_tts_limit = State()
+    waiting_global_image_free_limit = State()
+    waiting_global_image_vip_limit = State()

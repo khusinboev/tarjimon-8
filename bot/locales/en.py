@@ -45,7 +45,8 @@ HELP = (
     "• <b>🌐 Languages</b> — change the translation direction\n"
     "• <b>⭐ Donate</b> — support the project with Telegram Stars\n"
     "• <b>✉️ Contact admin</b> — send a question or suggestion\n"
-    "• <b>/invite</b> — invite friends, you both get VIP days\n\n"
+    "• <b>/invite</b> — invite friends, you both get VIP days\n"
+    "• 🖼 Send a photo — I read the text in it and translate it\n\n"
     "Buttons under each translation:\n"
     "🔊 — listen to the text\n"
     "🔄 — reverse the direction\n"
@@ -88,6 +89,15 @@ QUOTA_EXCEEDED = (
 )
 
 TTS_QUOTA_EXCEEDED = "🚫 Today's voice limit ({limit}) is used up."
+
+IMAGE_QUOTA_EXCEEDED = (
+    "🚫 <b>Daily photo limit reached</b>\n\n"
+    "You have translated {limit} photos today.\n"
+    "The limit resets every day — you can continue tomorrow."
+)
+IMAGE_OCR_UNAVAILABLE = "🖼 Photo translation is being set up — it will be available soon."
+IMAGE_OCR_FAILED = "⚠️ Could not read the photo. Try a clearer or better-lit picture."
+IMAGE_NO_TEXT_FOUND = "🔍 No text found in the photo."
 
 RATE_LIMITED = "⏳ A little slower, please. Try again in a few seconds."
 
@@ -190,6 +200,16 @@ DONATE_THANKS_PREMIUM = (
 )
 DONATE_VIP_ACTIVE = "💎 <b>VIP active</b> — unlimited daily limits until <b>{until}</b>."
 DONATE_FAILED = "⚠️ Could not start the payment. Please try again later."
+
+# Discounted, fixed-price offer shown when a daily limit is hit — independent
+# of the regular donate pricing (`QUICK_VIP_STARS`/`QUICK_VIP_DAYS`).
+QUICK_VIP_BUTTON = "🌟 {stars} ⭐ — {days} days unlimited"
+DONATE_OTHER_BUTTON = "⭐ Other amounts"
+QUICK_VIP_INVOICE_TITLE = "Quick VIP"
+QUICK_VIP_INVOICE_DESC = (
+    "{stars} ⭐ — {days} days of VIP: unlimited text translation, unlimited "
+    "voice, expanded photo limit."
+)
 DONATE_CUSTOM = "✏️ Other amount"
 DONATE_CUSTOM_PROMPT = (
     "✏️ How many ⭐ would you like to donate?\n\n"

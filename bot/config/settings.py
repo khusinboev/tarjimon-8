@@ -147,6 +147,34 @@ class Settings(BaseSettings):
     REFERRAL_BONUS_DAYS: int = Field(default=3, description="taklif qilganga")
     REFERRAL_WELCOME_DAYS: int = Field(default=1, description="yangi qo'shilganga")
 
+    # ── Limitga yetganda chegirmali VIP taklifi ────────────────
+    # Umumiy "⭐ Homiylik" narxidan (PREMIUM_STARS_PER_DAY) MUSTAQIL, alohida
+    # chegirmali narx — faqat kunlik limitga yetgan joyda ko'rsatiladi.
+    # `donate.py` buni "quickvip" invoice payload orqali ajratadi va
+    # PREMIUM_STARS_PER_DAY formulasidan o'tkazmaydi.
+    QUICK_VIP_STARS: int = Field(default=10)
+    QUICK_VIP_DAYS: int = Field(default=30)
+
+    # ── Rasmdan tarjima (OCR) ──────────────────────────────────
+    # Ikkala provayder ham REST orqali (aiohttp bilan) — SDK/kalit fayli
+    # kerak emas. Bo'sh qoldirilsa o'sha provayder o'tkazib yuboriladi.
+    #   OCR.Space: https://ocr.space/ocrapi — ro'yxatdan o'tib bepul kalit.
+    #   Google Vision: GCP loyihasida "Cloud Vision API"ni yoqib, shu APIga
+    #   cheklangan API kalit yaratiladi (https://console.cloud.google.com/).
+    OCRSPACE_API_KEY: str = Field(default="")
+    OCRSPACE_LANGUAGE: str = Field(default="auto")
+    OCRSPACE_FREE_MONTHLY: int = Field(default=25000)
+
+    GOOGLE_VISION_API_KEY: str = Field(default="")
+    GOOGLE_VISION_FREE_MONTHLY: int = Field(default=1000)
+
+    # Rasm tarjimasi matn/ovoz limitidan BUTUNLAY ALOHIDA hisoblanadi
+    # (`daily_usage.images_count`). VIP uni cheksiz emas, faqat kengaytirilgan
+    # qiladi — OCR tashqi provayderga pul/hajm sarflaydi, cheksiz qilib
+    # bo'lmaydi.
+    DAILY_IMAGE_LIMIT_FREE: int = Field(default=3)
+    DAILY_IMAGE_LIMIT_VIP: int = Field(default=15)
+
     # ── Voqealar jurnali ──────────────────────────────────────
     # "all" — har bir tugma bosish ham yoziladi (ML uchun to'liq yo'l).
     # "important" — faqat tarjima/TTS/limit/obuna/xato.

@@ -249,6 +249,16 @@ class UserRepository:
             .values(tts_limit_override=limit)
         )
 
+    async def set_image_limit_override(
+        self, user_id: int, limit: Optional[int]
+    ) -> None:
+        """`set_daily_limit_override` bilan bir xil mantiq, rasm (OCR) uchun."""
+        await self.session.execute(
+            update(UserSettings)
+            .where(UserSettings.user_id == user_id)
+            .values(image_limit_override=limit)
+        )
+
     async def extend_premium(
         self, user_id: int, days: int, *, max_days: int
     ) -> Optional[datetime]:

@@ -14,6 +14,7 @@ from bot.config.settings import settings
 from bot.database.models import TtsRequest, User
 from bot.database.repositories.language_repository import LanguageRepository
 from bot.database.repositories.translation_repository import TranslationRepository
+from bot.keyboards.user import quota_exceeded_keyboard
 from bot.services.events import EventService, EventType
 from bot.services.quota import QuotaService, resolve_limit_override
 from bot.services.tts import TtsError, TtsService
@@ -56,7 +57,10 @@ async def send_voice(
             session_id=session_id,
             limit=status.limit,
         )
-        await message.answer(t.TTS_QUOTA_EXCEEDED.format(limit=status.limit))
+        await message.answer(
+            t.TTS_QUOTA_EXCEEDED.format(limit=status.limit),
+            reply_markup=quota_exceeded_keyboard(t),
+        )
         return False
 
     if len(text) > settings.TTS_MAX_CHARS:

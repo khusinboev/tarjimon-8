@@ -410,6 +410,193 @@ async def test_premium_and_referral() -> None:
         await session.commit()
 
 
+async def test_image_translation() -> None:
+    """Rasm tarjimasi: alohida kvota, admin-sozlanadigan umumiy limitlar, OCR provayder tanlovi."""
+    print("\n[6d] Rasm tarjimasi va umumiy limitlar")
+    from datetime import timedelta
+
+    from sqlalchemy import delete
+
+    from bot.database.models import DailyUsage, SystemSettings, User, UserSettings
+    from bot.services import ocr as ocr_module
+    from bot.services import system_config
+
+    async with AsyncSessionLocal() as session:
+        repo = UserRepository(session)
+        user, _ = await repo.get_or_create(TEST_TELEGRAM_ID + 95, first_name="ImgUser")
+        await session.commit()
+        user_id = user.id
+
+        # ── resolve_limit_override: rasm uchun VIP CHEKSIZ emas, faqat
+        # kengaytirilgan (`vip_value`) — OCR pulga tushishi mumkin.
+        check(
+            "override yo'q -> None",
+            resolve_limit_override(user, kind="image", vip_value=15) is None,
+        )
+        user.settings.premium_until = utcnow() + timedelta(days=1)
+        check(
+            "faol VIP -> vip_value (cheksiz emas, kengaytirilgan)",
+            resolve_limit_override(user, kind="image", vip_value=15) == 15,
+        )
+        user.settings.image_limit_override = 2
+        check(
+            "qo'lda override VIP'dan ustun",
+            resolve_limit_override(user, kind="image", vip_value=15) == 2,
+        )
+        user.role = "admin"
+        check(
+            "admin -> cheksiz (0)",
+            resolve_limit_override(user, kind="image", vip_value=15) == 0,
+        )
+        user.role = "user"
+        user.settings.image_limit_override = None
+        user.settings.premium_until = None
+        await session.rollback()  # sof Python o'zgarishlar — bazaga yozilmaydi
+
+    async with AsyncSessionLocal() as session:
+        quota = QuotaService(session, redis=None)
+
+        status = await quota.check_image(user_id)
+        check("boshlang'ich holat ruxsat", status.allowed and status.used == 0)
+
+        for _ in range(3):
+            await quota.consume_image(user_id)
+        await session.commit()
+
+        status = await quota.check_image(user_id, limit_override=3)
+        check("rasm limitiga yetganda taqiqlanadi", not status.allowed)
+
+        # Rasm sarfi matn/ovoz hisoblagichiga umuman tegmasligi kerak —
+        # bular butunlay alohida o'q (`images_count` vs `translations_count`).
+        text_status = await quota.check_translation(user_id)
+        check(
+            "rasm sarfi matn hisobiga ta'sir qilmaydi",
+            text_status.used == 0,
+            f"matn used={text_status.used}",
+        )
+
+        await session.execute(delete(DailyUsage).where(DailyUsage.user_id == user_id))
+        await session.execute(delete(UserSettings).where(UserSettings.user_id == user_id))
+        await session.execute(delete(User).where(User.id == user_id))
+        await session.commit()
+
+    # ── system_config: admin-sozlanadigan umumiy limitlar ──
+    system_config.invalidate_cache()
+    async with AsyncSessionLocal() as session:
+        await session.execute(delete(SystemSettings).where(SystemSettings.id == 1))
+        await session.commit()
+
+        limits = await system_config.get_effective_limits(session)
+        check(
+            "sozlanmagan holatda .env standarti",
+            limits.translation == settings.DAILY_TRANSLATION_LIMIT
+            and limits.image_free == settings.DAILY_IMAGE_LIMIT_FREE,
+        )
+
+        await system_config.set_limit(session, "daily_image_limit_free", 0)
+        await session.commit()
+        limits = await system_config.get_effective_limits(session)
+        check(
+            "0 = hammaga cheksiz (falsy-zero xatosisiz)",
+            limits.image_free == 0,
+            f"image_free={limits.image_free}",
+        )
+
+        await system_config.set_limit(session, "daily_image_limit_free", None)
+        await session.commit()
+        limits = await system_config.get_effective_limits(session)
+        check(
+            "None = .env standartiga qaytadi",
+            limits.image_free == settings.DAILY_IMAGE_LIMIT_FREE,
+        )
+
+        await session.execute(delete(SystemSettings).where(SystemSettings.id == 1))
+        await session.commit()
+    system_config.invalidate_cache()
+
+    # ── ocr.py: provayder tanlovi va fallback (tarmoqsiz — chaqiruvlar
+    # almashtiriladi, `_monthly_count` ham soxtalashtiriladi, chunki
+    # haqiqiy oylik hisob uchun `translations` jadvaliga qator kerak
+    # bo'lardi) ──
+    original_ocrspace_key = settings.OCRSPACE_API_KEY
+    original_vision_key = settings.GOOGLE_VISION_API_KEY
+    original_monthly_count = ocr_module._monthly_count
+    original_callers = dict(ocr_module._CALLERS)
+    monthly_counts = {"ocrspace": 0, "google_vision": 0}
+
+    async def _fake_monthly_count(_session, provider: str) -> int:
+        return monthly_counts[provider]
+
+    async def _fake_ocrspace(_image_bytes: bytes) -> str:
+        return "ocrspace matni"
+
+    async def _fake_vision(_image_bytes: bytes) -> str:
+        return "vision matni"
+
+    async def _fake_ocrspace_fails(_image_bytes: bytes) -> str:
+        raise ocr_module.OcrError("provider_error", "test xatosi")
+
+    ocr_module._monthly_count = _fake_monthly_count
+
+    try:
+        async with AsyncSessionLocal() as session:
+            # Ikkalasi ham sozlanmagan -> not_configured.
+            settings.OCRSPACE_API_KEY = ""
+            settings.GOOGLE_VISION_API_KEY = ""
+            try:
+                await ocr_module.extract_text(session, b"x")
+                check("ikkalasi ham yo'q -> xato", False, "OcrError kutilgan edi")
+            except ocr_module.OcrError as exc:
+                check("ikkalasi ham yo'q -> not_configured", exc.code == "not_configured")
+
+            # Faqat OCR.Space -> shu ishlatiladi.
+            settings.OCRSPACE_API_KEY = "test-key"
+            settings.GOOGLE_VISION_API_KEY = ""
+            ocr_module._CALLERS["ocrspace"] = _fake_ocrspace
+            ocr_module._CALLERS["google_vision"] = _fake_vision
+            result = await ocr_module.extract_text(session, b"x")
+            check(
+                "faqat OCR.Space sozlangan -> OCR.Space ishlatiladi",
+                result.provider == "ocrspace" and result.text == "ocrspace matni",
+                result.provider,
+            )
+
+            # Ikkalasi ham sozlangan, OCR.Space bepul hajmi tugamagan -> OCR.Space.
+            settings.GOOGLE_VISION_API_KEY = "test-key"
+            monthly_counts["ocrspace"] = 0
+            result = await ocr_module.extract_text(session, b"x")
+            check(
+                "bepul hajm tugamagan -> avval OCR.Space",
+                result.provider == "ocrspace",
+                result.provider,
+            )
+
+            # OCR.Space bepul hajmi tugagan -> Vision'ga o'tadi.
+            monthly_counts["ocrspace"] = settings.OCRSPACE_FREE_MONTHLY
+            result = await ocr_module.extract_text(session, b"x")
+            check(
+                "bepul hajm tugasa -> Vision'ga o'tadi",
+                result.provider == "google_vision" and result.text == "vision matni",
+                result.provider,
+            )
+
+            # OCR.Space tarmoq xatosi bilan yiqilsa ham Vision'ga tushadi —
+            # foydalanuvchi "ishlamayapti" deb qolmasin.
+            monthly_counts["ocrspace"] = 0
+            ocr_module._CALLERS["ocrspace"] = _fake_ocrspace_fails
+            result = await ocr_module.extract_text(session, b"x")
+            check(
+                "birinchi provayder yiqilsa ikkinchisiga o'tadi",
+                result.provider == "google_vision",
+                result.provider,
+            )
+    finally:
+        settings.OCRSPACE_API_KEY = original_ocrspace_key
+        settings.GOOGLE_VISION_API_KEY = original_vision_key
+        ocr_module._monthly_count = original_monthly_count
+        ocr_module._CALLERS.clear()
+        ocr_module._CALLERS.update(original_callers)
+
 
 async def test_admin_users() -> None:
     """Admin: qidirish, limit, ban/unban va audit yozuvi."""
@@ -506,6 +693,23 @@ async def test_admin_users() -> None:
             refreshed.settings.tts_limit_override is None,
         )
 
+        ok, msg = await service.set_user_image_limit(admin_id, target_id, 5)
+        check("rasm limiti o'rnatiladi", ok, msg)
+        refreshed = await repo.get_by_id(target_id)
+        check(
+            "rasm limiti saqlanadi",
+            refreshed.settings.image_limit_override == 5,
+            str(refreshed.settings.image_limit_override),
+        )
+
+        ok, msg = await service.clear_user_image_limit(admin_id, target_id)
+        check("rasm limiti tozalanadi", ok, msg)
+        refreshed = await repo.get_by_id(target_id)
+        check(
+            "rasm limiti override NULL",
+            refreshed.settings.image_limit_override is None,
+        )
+
         ok, msg = await service.ban_user(admin_id, target_id)
         check("ban qilinadi", ok, msg)
         refreshed = await repo.get_by_id(target_id)
@@ -531,6 +735,7 @@ async def test_admin_users() -> None:
         check("kartochkada holat bor", "Holat:" in card)
         check("kartochkada VIP qatori bor", "VIP:" in card)
         check("kartochkada ovoz limiti bor", "Ovoz limiti:" in card)
+        check("kartochkada rasm limiti bor", "Rasm limiti:" in card)
         check("kartochkada taklif soni bor", "Taklif qilganlari:" in card)
 
         actions = (
@@ -540,7 +745,7 @@ async def test_admin_users() -> None:
                 )
             )
         ).scalar_one()
-        check("audit yozuvlari bor", actions >= 6, f"{actions} ta")
+        check("audit yozuvlari bor", actions >= 8, f"{actions} ta")
 
         recent = await service.format_recent_actions(limit=20)
         check("audit ro'yxati formatlanadi", len(recent) > 0)
@@ -1357,6 +1562,7 @@ async def main() -> None:
     await test_interface_lang_resolution()
     await test_quota(user_id)
     await test_premium_and_referral()
+    await test_image_translation()
     await test_admin_users()
     result = await test_translation()
     await test_translation_record(user_id, result)

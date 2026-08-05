@@ -39,6 +39,7 @@ class UsageRepository:
         *,
         translations: int = 0,
         tts: int = 0,
+        images: int = 0,
         chars: int = 0,
         day: Optional[date_type] = None,
     ) -> DailyUsage:
@@ -51,6 +52,7 @@ class UsageRepository:
                 date=day,
                 translations_count=translations,
                 tts_count=tts,
+                images_count=images,
                 chars_count=chars,
             )
             .on_conflict_do_update(
@@ -58,6 +60,7 @@ class UsageRepository:
                 set_={
                     "translations_count": DailyUsage.translations_count + translations,
                     "tts_count": DailyUsage.tts_count + tts,
+                    "images_count": DailyUsage.images_count + images,
                     "chars_count": DailyUsage.chars_count + chars,
                     "updated_at": utcnow(),
                 },

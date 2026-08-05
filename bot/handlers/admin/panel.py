@@ -1,12 +1,14 @@
 from aiogram import Router, F
 import logging
 import re
-from aiogram.filters import Command
+from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import BufferedInputFile, CallbackQuery, Message
 from aiogram.exceptions import TelegramBadRequest
+from sqlalchemy import select
 
 from bot.config.settings import settings
+from bot.database.models import SystemSettings
 from bot.database.repositories.broadcast_repository import BroadcastRepository
 from bot.database.session import AsyncSessionLocal
 from bot.keyboards.admin import (
@@ -15,12 +17,14 @@ from bot.keyboards.admin import (
     admin_broadcast_keyboard,
     admin_users_keyboard,
     admin_user_actions_keyboard,
+    admin_global_limits_keyboard,
     broadcast_confirm_keyboard,
     back_keyboard,
 )
 from bot.services.admin_service import AdminService
 from bot.services.stats import StatsService, render as render_stats
 from bot.services.events import utcnow
+from bot.services.system_config import get_effective_limits, set_limit as set_system_limit
 from bot.states.admin import AdminStates
 
 
@@ -49,9 +53,26 @@ async def go_back(message: Message, state: FSMContext):
     data = await state.get_data()
     target_id = data.get("target_user_id")
 
+    # Umumiy limit kiritish → umumiy limitlar menyusi
+    global_limit_states = (
+        AdminStates.waiting_global_translation_limit.state,
+        AdminStates.waiting_global_tts_limit.state,
+        AdminStates.waiting_global_image_free_limit.state,
+        AdminStates.waiting_global_image_vip_limit.state,
+    )
+    if current in global_limit_states:
+        await state.set_state(None)
+        await global_limits_menu(message, state)
+        return
+
     # Limit kiritish → foydalanuvchi kartochkasi
     if (
-        current in (AdminStates.waiting_user_limit.state, AdminStates.waiting_user_tts_limit.state)
+        current
+        in (
+            AdminStates.waiting_user_limit.state,
+            AdminStates.waiting_user_tts_limit.state,
+            AdminStates.waiting_user_image_limit.state,
+        )
         and target_id is not None
     ):
         await state.set_state(None)
@@ -98,6 +119,128 @@ async def show_audit(message: Message):
         text = await service.format_recent_actions(limit=20)
 
     await message.answer(text, reply_markup=admin_main_keyboard())
+
+
+# Tugma matni → (system_settings ustuni, FSM holati, so'rov matni).
+_GLOBAL_LIMIT_FIELDS = {
+    "✏️ Matn limiti": (
+        "daily_translation_limit",
+        AdminStates.waiting_global_translation_limit,
+        "Kunlik matn tarjima limiti (hammaga standart)",
+    ),
+    "✏️ Ovoz limiti": (
+        "daily_tts_limit",
+        AdminStates.waiting_global_tts_limit,
+        "Kunlik ovoz limiti (hammaga standart)",
+    ),
+    "✏️ Rasm (bepul)": (
+        "daily_image_limit_free",
+        AdminStates.waiting_global_image_free_limit,
+        "Kunlik rasm limiti — oddiy foydalanuvchi",
+    ),
+    "✏️ Rasm (VIP)": (
+        "daily_image_limit_vip",
+        AdminStates.waiting_global_image_vip_limit,
+        "Kunlik rasm limiti — VIP foydalanuvchi",
+    ),
+}
+
+
+@router.message(F.text == "⚙️ Umumiy limitlar", F.from_user.func(lambda u: u and is_admin(u.id)))
+async def global_limits_menu(message: Message, state: FSMContext):
+    """Admin panelidan sozlanadigan umumiy (hamma uchun) standart limitlar.
+
+    Har birida qavs ichida "(o'zgartirilgan)" — bazada aniq qiymat qo'yilgan,
+    yo'q bo'lsa `.env` dagi standart ishlatilmoqda degani.
+    """
+    await state.set_state(None)
+    async with AsyncSessionLocal() as session:
+        limits = await get_effective_limits(session)
+        row = await session.execute(select(SystemSettings).where(SystemSettings.id == 1))
+        row = row.scalar_one_or_none()
+
+    def line(label: str, value: int, db_value) -> str:
+        note = " <i>(o'zgartirilgan)</i>" if db_value is not None else ""
+        return f"{label}: <b>{value}</b>{note}"
+
+    text = (
+        "⚙️ <b>Umumiy limitlar</b>\n"
+        "Bular hamma uchun STANDART qiymat — foydalanuvchi kartochkasidagi\n"
+        "alohida limit bo'lsa, u bundan ustun turadi.\n\n"
+        + line("📝 Matn/kun", limits.translation, row.daily_translation_limit if row else None) + "\n"
+        + line("🔊 Ovoz/kun", limits.tts, row.daily_tts_limit if row else None) + "\n"
+        + line("🖼 Rasm/kun (oddiy)", limits.image_free, row.daily_image_limit_free if row else None) + "\n"
+        + line("💎 Rasm/kun (VIP)", limits.image_vip, row.daily_image_limit_vip if row else None)
+    )
+    await message.answer(text, reply_markup=admin_global_limits_keyboard())
+
+
+@router.message(F.text.in_(_GLOBAL_LIMIT_FIELDS), F.from_user.func(lambda u: u and is_admin(u.id)))
+async def global_limit_edit_start(message: Message, state: FSMContext):
+    field, fsm_state, label = _GLOBAL_LIMIT_FIELDS[message.text]
+    await state.update_data(global_limit_field=field)
+    await state.set_state(fsm_state)
+    await message.answer(
+        f"{label}ni yuboring.\n"
+        "• Oddiy son (masalan <code>100</code>)\n"
+        "• <code>0</code> — cheksiz\n"
+        "• <code>standart</code> — .env qiymatiga qaytarish",
+        reply_markup=back_keyboard(),
+    )
+
+
+@router.message(
+    StateFilter(
+        AdminStates.waiting_global_translation_limit,
+        AdminStates.waiting_global_tts_limit,
+        AdminStates.waiting_global_image_free_limit,
+        AdminStates.waiting_global_image_vip_limit,
+    ),
+    F.from_user.func(lambda u: u and is_admin(u.id)),
+)
+async def global_limit_edit_finish(message: Message, state: FSMContext, user):
+    if (message.text or "").strip() == "🔙 Orqaga":
+        await state.set_state(None)
+        await global_limits_menu(message, state)
+        return
+
+    data = await state.get_data()
+    field = data.get("global_limit_field")
+    raw = (message.text or "").strip().lower()
+
+    if raw in ("standart", "avto", "default"):
+        value = None
+    else:
+        try:
+            value = int(raw)
+        except ValueError:
+            await message.answer(
+                "Iltimos, butun son, <code>0</code> yoki <code>standart</code> yuboring.",
+                reply_markup=back_keyboard(),
+            )
+            return
+        if value < 0:
+            await message.answer(
+                "Limit manfiy bo'lishi mumkin emas. Cheksiz uchun 0 yuboring.",
+                reply_markup=back_keyboard(),
+            )
+            return
+
+    async with AsyncSessionLocal() as session:
+        await set_system_limit(session, field, value)
+        service = AdminService(session)
+        await service.log_action(
+            user.id,
+            "system.set_limit",
+            target_type="system",
+            target_id=field,
+            payload={"field": field, "value": value},
+        )
+        await session.commit()
+
+    await state.set_state(None)
+    await message.answer("✅ Yangilandi.")
+    await global_limits_menu(message, state)
 
 
 @router.message(F.text == "🔧 Kanallar", F.from_user.func(lambda u: u and is_admin(u.id)))
@@ -568,12 +711,15 @@ async def user_limit_start(message: Message, state: FSMContext):
         )
         return
 
+    async with AsyncSessionLocal() as session:
+        limits = await get_effective_limits(session)
+
     await state.set_state(AdminStates.waiting_user_limit)
     await message.answer(
         "Kunlik tarjima limitini yuboring.\n"
         "• Oddiy son (masalan <code>100</code>)\n"
         "• <code>0</code> — cheksiz\n\n"
-        f"Standart: {settings.DAILY_TRANSLATION_LIMIT}",
+        f"Standart: {limits.translation}",
         reply_markup=back_keyboard(),
     )
 
@@ -648,12 +794,15 @@ async def user_tts_limit_start(message: Message, state: FSMContext):
         )
         return
 
+    async with AsyncSessionLocal() as session:
+        limits = await get_effective_limits(session)
+
     await state.set_state(AdminStates.waiting_user_tts_limit)
     await message.answer(
         "Kunlik ovoz (TTS) limitini yuboring.\n"
         "• Oddiy son (masalan <code>50</code>)\n"
         "• <code>0</code> — cheksiz\n\n"
-        f"Standart: {settings.DAILY_TTS_LIMIT}",
+        f"Standart: {limits.tts}",
         reply_markup=back_keyboard(),
     )
 
@@ -712,6 +861,89 @@ async def user_tts_limit_clear(message: Message, state: FSMContext, user):
     async with AsyncSessionLocal() as session:
         service = AdminService(session)
         ok, text = await service.clear_user_tts_limit(user.id, target_id)
+
+    await message.answer(text, reply_markup=admin_user_actions_keyboard())
+    if ok:
+        await _show_user_card(message, state, target_id)
+
+
+@router.message(F.text == "🖼 Rasm limiti", F.from_user.func(lambda u: u and is_admin(u.id)))
+async def user_image_limit_start(message: Message, state: FSMContext):
+    target_id = await _require_target_user(state)
+    if target_id is None:
+        await message.answer(
+            "Avval foydalanuvchini qidiring.",
+            reply_markup=admin_users_keyboard(),
+        )
+        return
+
+    async with AsyncSessionLocal() as session:
+        limits = await get_effective_limits(session)
+
+    await state.set_state(AdminStates.waiting_user_image_limit)
+    await message.answer(
+        "Kunlik rasm (OCR) limitini yuboring.\n"
+        "• Oddiy son (masalan <code>10</code>)\n"
+        "• <code>0</code> — cheksiz\n\n"
+        f"Standart: oddiy {limits.image_free} / VIP {limits.image_vip}",
+        reply_markup=back_keyboard(),
+    )
+
+
+@router.message(AdminStates.waiting_user_image_limit, F.from_user.func(lambda u: u and is_admin(u.id)))
+async def user_image_limit_finish(message: Message, state: FSMContext, user):
+    if (message.text or "").strip() == "🔙 Orqaga":
+        target_id = await _require_target_user(state)
+        await state.set_state(None)
+        if target_id is not None:
+            await _show_user_card(message, state, target_id)
+        else:
+            await message.answer("Foydalanuvchi boshqaruvi", reply_markup=admin_users_keyboard())
+        return
+
+    target_id = await _require_target_user(state)
+    if target_id is None:
+        await state.clear()
+        await message.answer(
+            "Avval foydalanuvchini qidiring.",
+            reply_markup=admin_users_keyboard(),
+        )
+        return
+
+    raw = (message.text or "").strip()
+    try:
+        limit = int(raw)
+    except ValueError:
+        await message.answer(
+            "Iltimos, butun son yuboring (masalan 10 yoki 0).",
+            reply_markup=back_keyboard(),
+        )
+        return
+
+    async with AsyncSessionLocal() as session:
+        service = AdminService(session)
+        ok, text = await service.set_user_image_limit(user.id, target_id, limit)
+
+    await message.answer(text, reply_markup=admin_user_actions_keyboard())
+    if ok:
+        await _show_user_card(message, state, target_id)
+    else:
+        await state.set_state(AdminStates.waiting_user_image_limit)
+
+
+@router.message(F.text == "🚫 Rasm limitini tozalash", F.from_user.func(lambda u: u and is_admin(u.id)))
+async def user_image_limit_clear(message: Message, state: FSMContext, user):
+    target_id = await _require_target_user(state)
+    if target_id is None:
+        await message.answer(
+            "Avval foydalanuvchini qidiring.",
+            reply_markup=admin_users_keyboard(),
+        )
+        return
+
+    async with AsyncSessionLocal() as session:
+        service = AdminService(session)
+        ok, text = await service.clear_user_image_limit(user.id, target_id)
 
     await message.answer(text, reply_markup=admin_user_actions_keyboard())
     if ok:

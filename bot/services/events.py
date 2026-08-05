@@ -50,6 +50,13 @@ class EventType:
     TTS_FAILED = "tts.failed"
     TTS_QUOTA_EXCEEDED = "tts.quota_exceeded"
 
+    # Rasmdan tarjima (OCR)
+    IMAGE_QUOTA_EXCEEDED = "image.quota_exceeded"
+    IMAGE_OCR_REQUESTED = "image.ocr_requested"
+    IMAGE_OCR_SUCCEEDED = "image.ocr_succeeded"
+    IMAGE_OCR_FAILED = "image.ocr_failed"
+    IMAGE_OCR_EMPTY = "image.ocr_empty"
+
     # Sifat signallari
     FEEDBACK_GIVEN = "feedback.given"
 
@@ -96,6 +103,11 @@ IMPORTANT_EVENTS = frozenset(
         EventType.TTS_REQUESTED,
         EventType.TTS_SUCCEEDED,
         EventType.TTS_FAILED,
+        # OCR tashqi provayderga pul/hajm sarflaydi — har biri kuzatilishi kerak.
+        EventType.IMAGE_QUOTA_EXCEEDED,
+        EventType.IMAGE_OCR_REQUESTED,
+        EventType.IMAGE_OCR_SUCCEEDED,
+        EventType.IMAGE_OCR_FAILED,
         EventType.FEEDBACK_GIVEN,
         # Murojaat matni faqat shu voqeada saqlanadi — admin Telegram'da
         # o'tkazib yuborsa yagona nusxa bo'lib qoladi, shuning uchun "muhim".

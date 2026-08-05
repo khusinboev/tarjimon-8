@@ -11,7 +11,19 @@ def admin_main_keyboard() -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton(text="📊 Statistika"), KeyboardButton(text="🔧 Kanallar")],
             [KeyboardButton(text="📤 Reklama"), KeyboardButton(text="👤 Foydalanuvchilar")],
-            [KeyboardButton(text="📜 Audit")],
+            [KeyboardButton(text="📜 Audit"), KeyboardButton(text="⚙️ Umumiy limitlar")],
+        ],
+        resize_keyboard=True,
+    )
+
+
+def admin_global_limits_keyboard() -> ReplyKeyboardMarkup:
+    """Admin panelidan sozlanadigan umumiy (hamma uchun) standart limitlar."""
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="✏️ Matn limiti"), KeyboardButton(text="✏️ Ovoz limiti")],
+            [KeyboardButton(text="✏️ Rasm (bepul)"), KeyboardButton(text="✏️ Rasm (VIP)")],
+            [KeyboardButton(text="🔙 Orqaga")],
         ],
         resize_keyboard=True,
     )
@@ -42,6 +54,10 @@ def admin_user_actions_keyboard() -> ReplyKeyboardMarkup:
             [
                 KeyboardButton(text="🔊 Ovoz limiti"),
                 KeyboardButton(text="🔇 Ovoz limitini tozalash"),
+            ],
+            [
+                KeyboardButton(text="🖼 Rasm limiti"),
+                KeyboardButton(text="🚫 Rasm limitini tozalash"),
             ],
             [KeyboardButton(text="🔄 Yangilash")],
             [KeyboardButton(text="🔙 Orqaga")],

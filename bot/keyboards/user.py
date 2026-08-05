@@ -20,6 +20,7 @@ from aiogram.types import (
     ReplyKeyboardMarkup,
 )
 
+from bot.config.settings import settings
 from bot.database.models import Language
 
 
@@ -146,6 +147,28 @@ def translation_actions(
                     callback_data=f"tr:langs:{translation_id}",
                 )
             ],
+        ]
+    )
+
+
+def quota_exceeded_keyboard(t: ModuleType) -> InlineKeyboardMarkup:
+    """Kunlik limitga (matn/ovoz/rasm) yetganda ko'rsatiladigan taklif.
+
+    Ikkala tugma ham xuddi shu VIP holatiga olib boradi (`premium_until`) —
+    birinchisi chegirmali tayyor narx, ikkinchisi umumiy homiylik menyusi
+    (boshqa summa tanlamoqchi bo'lganlar uchun).
+    """
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=t.QUICK_VIP_BUTTON.format(
+                        stars=settings.QUICK_VIP_STARS, days=settings.QUICK_VIP_DAYS
+                    ),
+                    callback_data="donate:quick_vip",
+                )
+            ],
+            [InlineKeyboardButton(text=t.DONATE_OTHER_BUTTON, callback_data="donate:open")],
         ]
     )
 

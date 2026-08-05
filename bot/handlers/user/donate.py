@@ -94,6 +94,71 @@ async def open_donate(
     )
 
 
+@router.callback_query(F.data == "donate:open")
+async def open_donate_inline(
+    callback,
+    user: User,
+    events: EventService,
+    session_id,
+    t: ModuleType,
+) -> None:
+    """`open_donate` bilan bir xil, faqat limitga yetganda chiqadigan
+    taklif tugmasidan (inline) ochilganda ishlatiladi."""
+    await callback.answer()
+    await events.log(
+        EventType.DONATE_OPENED,
+        user_id=user.id,
+        chat_id=callback.message.chat.id if callback.message else None,
+        session_id=session_id,
+    )
+    await callback.message.answer(
+        t.DONATE_INTRO,
+        reply_markup=donate_amounts(
+            t, settings.DONATE_PRESETS, with_cards=settings.HAS_DONATE_CARDS
+        ),
+    )
+
+
+@router.callback_query(F.data == "donate:quick_vip")
+async def quick_vip_offer(
+    callback,
+    user: User,
+    events: EventService,
+    session_id,
+    t: ModuleType,
+) -> None:
+    """Limitga yetganda ko'rsatiladigan chegirmali, tayyor narxli taklif.
+
+    Umumiy homiylik narxidan (`PREMIUM_STARS_PER_DAY`) MUSTAQIL — invoice
+    payload `"quickvip"` (star miqdori emas), `on_paid` buni shu belgi
+    bo'yicha ajratib `QUICK_VIP_DAYS`ni to'g'ridan-to'g'ri qo'llaydi.
+    """
+    await callback.answer()
+    stars = settings.QUICK_VIP_STARS
+    try:
+        await callback.message.answer_invoice(
+            title=t.QUICK_VIP_INVOICE_TITLE,
+            description=t.QUICK_VIP_INVOICE_DESC.format(
+                stars=stars, days=settings.QUICK_VIP_DAYS
+            ),
+            payload="quickvip",
+            currency=CURRENCY,
+            provider_token="",
+            prices=[LabeledPrice(label=f"{stars} ⭐", amount=stars)],
+        )
+        await events.log(
+            EventType.DONATE_INVOICE_SENT,
+            user_id=user.id,
+            chat_id=callback.message.chat.id if callback.message else None,
+            session_id=session_id,
+            stars=stars,
+            method="quick_vip",
+        )
+    except Exception:
+        logger.exception("Tezkor VIP invoice yuborib bo'lmadi")
+        await callback.message.answer(t.DONATE_FAILED)
+
+
 @router.callback_query(F.data == "donate:custom")
 async def ask_custom_amount(callback, state: FSMContext, t: ModuleType) -> None:
     await state.set_state(DonateStates.waiting_custom_amount)
@@ -264,7 +329,15 @@ async def on_paid(
     # Stars → VIP kun. Bu yerga faqat GENUINE (birinchi) to'lovda yetib
     # keladi — takroriy xabar yuqorida IntegrityError bilan qaytib ketadi,
     # ya'ni bir to'lov uchun VIP ikki marta berilmaydi.
-    days = stars // settings.PREMIUM_STARS_PER_DAY
+    #
+    # "quickvip" — limitga yetganda ko'rsatiladigan chegirmali, TAYYOR narx
+    # (`donate:quick_vip`), umumiy PREMIUM_STARS_PER_DAY formulasidan
+    # mustaqil — aks holda 10 ⭐ atigi 2 kun berardi, va'da qilingan
+    # "10 ⭐ = 1 oy" emas.
+    if payment.invoice_payload == "quickvip":
+        days = settings.QUICK_VIP_DAYS
+    else:
+        days = stars // settings.PREMIUM_STARS_PER_DAY
     premium_until = None
     if days > 0:
         premium_until = await UserRepository(session).extend_premium(

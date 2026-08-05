@@ -118,6 +118,7 @@ class UserSettings(Base):
 
     daily_limit_override = Column(Integer)
     tts_limit_override = Column(Integer)
+    image_limit_override = Column(Integer)
 
     # Bot ichidagi VIP (Telegram Premium bilan aralashtirmaslik kerak —
     # `User.is_premium` Telegram'ning o'z belgisi). Homiylik yoki referal
@@ -204,6 +205,10 @@ class Translation(Base):
 
     provider = Column(String(32), nullable=False)
     provider_model = Column(String(64))
+    # Faqat `input_kind='photo'` uchun to'ldiriladi — rasmdan matnni qaysi
+    # OCR provayder (ocrspace / google_vision) ajratganini bildiradi.
+    # `provider` bilan aralashmasin: u har doim tarjima dvigateli.
+    ocr_provider = Column(String(32))
 
     status = Column(String(20), default="success", server_default=sql_text("'success'"), nullable=False)
     error_code = Column(String(64))
@@ -218,6 +223,8 @@ class Translation(Base):
     __table_args__ = (
         # btree teskari yo'nalishda ham skanlanadi, shuning uchun DESC belgilash shart emas.
         Index("idx_translations_user_created", "user_id", "created_at"),
+        # OCR provayder oylik bepul hajmini hisoblash uchun (`ocr.py`).
+        Index("idx_translations_ocr_monthly", "input_kind", "ocr_provider", "created_at"),
         Index("idx_translations_lang_pair", "source_lang_detected", "target_lang"),
         # BRIN — append-only vaqt ustuni uchun btree'dan minglab marta arzon.
         Index(
@@ -370,6 +377,7 @@ class DailyUsage(Base):
 
     translations_count = Column(Integer, default=0, server_default=sql_text("0"), nullable=False)
     tts_count = Column(Integer, default=0, server_default=sql_text("0"), nullable=False)
+    images_count = Column(Integer, default=0, server_default=sql_text("0"), nullable=False)
     chars_count = Column(Integer, default=0, server_default=sql_text("0"), nullable=False)
 
     updated_at = Column(
@@ -382,6 +390,30 @@ class DailyUsage(Base):
 # ─────────────────────────────────────────────────────────────
 #  Blok 4 — Boshqaruv
 # ─────────────────────────────────────────────────────────────
+
+
+class SystemSettings(Base):
+    """Yagona qatorli (id=1) konfiguratsiya — admin panelidan sozlanadigan
+    umumiy standart limitlar.
+
+    `NULL` — `.env` dagi standart qiymat ishlatiladi (`bot/config/settings.py`).
+    Boshqa qiymat qo'yilsa shu ustun turadi. `UserSettings.*_override` bilan
+    aralashtirmaslik kerak: bu yerdagi qiymat HAMMA uchun standart, u yerdagi
+    — bitta foydalanuvchiga alohida.
+    """
+
+    __tablename__ = "system_settings"
+
+    id = Column(Integer, primary_key=True)
+
+    daily_translation_limit = Column(Integer)
+    daily_tts_limit = Column(Integer)
+    daily_image_limit_free = Column(Integer)
+    daily_image_limit_vip = Column(Integer)
+
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
 
 
 class Channel(Base):

@@ -44,7 +44,8 @@ HELP = (
     "• <b>🌐 Tillar</b> — tarjima yo'nalishini o'zgartirish\n"
     "• <b>⭐ Homiylik</b> — loyihani Telegram Stars bilan qo'llab-quvvatlash\n"
     "• <b>✉️ Adminga murojaat</b> — savol yoki taklif yuborish\n"
-    "• <b>/invite</b> — do'stlaringizni taklif qiling, ikkalangiz VIP kun yutasiz\n\n"
+    "• <b>/invite</b> — do'stlaringizni taklif qiling, ikkalangiz VIP kun yutasiz\n"
+    "• 🖼 Rasm yuboring — undagi matnni o'qib tarjima qilaman\n\n"
     "Tarjima ostidagi tugmalar:\n"
     "🔊 — matnni ovozda eshitish\n"
     "🔄 — yo'nalishni teskari almashtirish\n"
@@ -87,6 +88,15 @@ QUOTA_EXCEEDED = (
 )
 
 TTS_QUOTA_EXCEEDED = "🚫 Bugungi ovoz limiti ({limit} ta) tugadi."
+
+IMAGE_QUOTA_EXCEEDED = (
+    "🚫 <b>Bugungi rasm limiti tugadi</b>\n\n"
+    "Bugun {limit} ta rasmni tarjima qildingiz.\n"
+    "Limit har kuni yangilanadi — ertaga davom ettirishingiz mumkin."
+)
+IMAGE_OCR_UNAVAILABLE = "🖼 Rasmdan tarjima hozircha sozlanmoqda — tez orada ishga tushadi."
+IMAGE_OCR_FAILED = "⚠️ Rasmni o'qib bo'lmadi. Aniqroq/yorug'roq rasm bilan qayta urinib ko'ring."
+IMAGE_NO_TEXT_FOUND = "🔍 Rasmda matn topilmadi."
 
 RATE_LIMITED = "⏳ Biroz sekinroq, iltimos. Bir necha soniyadan keyin urinib ko'ring."
 
@@ -191,6 +201,16 @@ DONATE_THANKS_PREMIUM = (
 )
 DONATE_VIP_ACTIVE = "💎 <b>VIP faol</b> — <b>{until}</b> gacha kunlik limitlar cheksiz."
 DONATE_FAILED = "⚠️ To'lovni boshlab bo'lmadi. Keyinroq urinib ko'ring."
+
+# Limitga yetganda ko'rsatiladigan chegirmali, tayyor narxli taklif —
+# umumiy homiylik narxidan mustaqil (`QUICK_VIP_STARS`/`QUICK_VIP_DAYS`).
+QUICK_VIP_BUTTON = "🌟 {stars} ⭐ — {days} kun cheksiz"
+DONATE_OTHER_BUTTON = "⭐ Boshqa summalar"
+QUICK_VIP_INVOICE_TITLE = "Tezkor VIP"
+QUICK_VIP_INVOICE_DESC = (
+    "{stars} ⭐ — {days} kunlik VIP: matn tarjima cheksiz, ovoz cheksiz, "
+    "rasm limiti kengaygan."
+)
 DONATE_CUSTOM = "✏️ Boshqa miqdor"
 DONATE_CUSTOM_PROMPT = (
     "✏️ Necha ⭐ homiylik qilmoqchisiz?\n\n"

@@ -30,6 +30,7 @@ from bot.services.broadcast import (
     is_permanently_unreachable,
 )
 from bot.services.events import utcnow
+from bot.services.system_config import get_effective_limits
 from bot.utils.formatters import format_datetime
 from bot.utils.text import html_escape
 
@@ -522,18 +523,28 @@ class AdminService:
     async def format_user_card(self, user: User) -> str:
         """Admin uchun foydalanuvchi kartochkasi (HTML)."""
         settings_row = user.settings
+        limits = await get_effective_limits(self.session)
+
+        premium_until = settings_row.premium_until if settings_row else None
+        is_vip = premium_until is not None and premium_until > utcnow()
+
         limit_text = self._limit_label(
             settings_row.daily_limit_override if settings_row else None,
-            settings.DAILY_TRANSLATION_LIMIT,
+            limits.translation,
         )
         tts_limit_text = self._limit_label(
             settings_row.tts_limit_override if settings_row else None,
-            settings.DAILY_TTS_LIMIT,
+            limits.tts,
+        )
+        image_limit_text = self._limit_label(
+            settings_row.image_limit_override if settings_row else None,
+            limits.image_vip if is_vip else limits.image_free,
         )
 
         usage = await self.usage_repo.get(user.id)
         used_today = usage.translations_count if usage else 0
         tts_today = usage.tts_count if usage else 0
+        images_today = usage.images_count if usage else 0
         referrals = await self.user_repo.count_referrals(user.id)
 
         username = f"@{html_escape(user.username)}" if user.username else "—"
@@ -551,8 +562,7 @@ class AdminService:
             else "—"
         )
 
-        premium_until = settings_row.premium_until if settings_row else None
-        if premium_until and premium_until > utcnow():
+        if is_vip:
             vip_text = f"faol, {format_datetime(premium_until)} gacha"
         elif premium_until:
             vip_text = f"tugagan ({format_datetime(premium_until)})"
@@ -576,9 +586,10 @@ class AdminService:
             f"💎 VIP: <b>{vip_text}</b>\n"
             f"🗣 Interfeys: {ui_lang}\n"
             f"🌐 Yo'nalish: {direction}\n"
-            f"📈 Bugun: {used_today} tarjima · {tts_today} ovoz\n"
+            f"📈 Bugun: {used_today} tarjima · {tts_today} ovoz · {images_today} rasm\n"
             f"🔢 Tarjima limiti: <b>{limit_text}</b>\n"
             f"🔊 Ovoz limiti: <b>{tts_limit_text}</b>\n"
+            f"🖼 Rasm limiti: <b>{image_limit_text}</b>\n"
             f"🎁 Taklif qilganlari: <b>{referrals}</b>"
             f"{referred_line}\n"
             f"🔗 Manba: {source}\n"
@@ -742,6 +753,62 @@ class AdminService:
             f"standart ({settings.DAILY_TTS_LIMIT})"
         )
 
+    async def set_user_image_limit(
+        self, admin_id: int, target_user_id: int, limit: int
+    ) -> tuple[bool, str]:
+        """`set_user_limit` bilan bir xil mantiq, rasm (OCR) uchun."""
+        if limit < 0:
+            return False, "Limit manfiy bo'lishi mumkin emas. Cheksiz uchun 0 yuboring."
+        if limit > 1_000_000:
+            return False, "Limit juda katta (maks. 1 000 000)."
+
+        user = await self.user_repo.get_by_id(target_user_id)
+        if not user:
+            return False, "Foydalanuvchi topilmadi."
+        if user.settings is None:
+            return False, "Foydalanuvchi sozlamalari topilmadi."
+
+        await self.user_repo.set_image_limit_override(user.id, limit)
+        await self.log_action(
+            admin_id,
+            "user.set_image_limit",
+            target_type="user",
+            target_id=user.id,
+            payload={"telegram_id": user.telegram_id, "limit": limit},
+        )
+        await self.session.commit()
+
+        label = "cheksiz" if limit <= 0 else str(limit)
+        return True, (
+            f"🖼 Rasm limiti yangilandi: <code>{user.telegram_id}</code> → "
+            f"<b>{label}</b>"
+        )
+
+    async def clear_user_image_limit(
+        self, admin_id: int, target_user_id: int
+    ) -> tuple[bool, str]:
+        user = await self.user_repo.get_by_id(target_user_id)
+        if not user:
+            return False, "Foydalanuvchi topilmadi."
+        if user.settings is None:
+            return False, "Foydalanuvchi sozlamalari topilmadi."
+
+        prev = user.settings.image_limit_override
+        await self.user_repo.set_image_limit_override(user.id, None)
+        await self.log_action(
+            admin_id,
+            "user.clear_image_limit",
+            target_type="user",
+            target_id=user.id,
+            payload={"telegram_id": user.telegram_id, "prev_limit": prev},
+        )
+        await self.session.commit()
+        limits = await get_effective_limits(self.session)
+        return True, (
+            f"♻️ Rasm limiti tozalandi: <code>{user.telegram_id}</code> → "
+            f"standart (oddiy {limits.image_free} / VIP {limits.image_vip})"
+        )
+
     # ── Audit ────────────────────────────────────────────────
 
     ACTION_LABELS = {
@@ -751,6 +818,9 @@ class AdminService:
         "user.clear_limit": "♻️ Tarjima limiti tozalandi",
         "user.set_tts_limit": "🔊 Ovoz limiti",
         "user.clear_tts_limit": "♻️ Ovoz limiti tozalandi",
+        "user.set_image_limit": "🖼 Rasm limiti",
+        "user.clear_image_limit": "♻️ Rasm limiti tozalandi",
+        "system.set_limit": "⚙️ Umumiy limit o'zgardi",
     }
 
     async def format_recent_actions(self, limit: int = 20) -> str:
