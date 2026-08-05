@@ -209,6 +209,11 @@ class Translation(Base):
     # OCR provayder (ocrspace / google_vision) ajratganini bildiradi.
     # `provider` bilan aralashmasin: u har doim tarjima dvigateli.
     ocr_provider = Column(String(32))
+    # `ocr_provider='ocrspace'` bo'lganda, `settings.OCRSPACE_KEYS`
+    # ro'yxatidagi QAYSI kalit ishlatilganini bildiradi (0-based) — bir
+    # nechta kalit navbat bilan ishlatilganda har birining oylik bepul
+    # hajmini alohida hisoblash uchun kerak.
+    ocr_key_index = Column(Integer)
 
     status = Column(String(20), default="success", server_default=sql_text("'success'"), nullable=False)
     error_code = Column(String(64))
@@ -223,8 +228,11 @@ class Translation(Base):
     __table_args__ = (
         # btree teskari yo'nalishda ham skanlanadi, shuning uchun DESC belgilash shart emas.
         Index("idx_translations_user_created", "user_id", "created_at"),
-        # OCR provayder oylik bepul hajmini hisoblash uchun (`ocr.py`).
-        Index("idx_translations_ocr_monthly", "input_kind", "ocr_provider", "created_at"),
+        # OCR provayder/kalit oylik bepul hajmini hisoblash uchun (`ocr.py`).
+        Index(
+            "idx_translations_ocr_monthly",
+            "input_kind", "ocr_provider", "ocr_key_index", "created_at",
+        ),
         Index("idx_translations_lang_pair", "source_lang_detected", "target_lang"),
         # BRIN — append-only vaqt ustuni uchun btree'dan minglab marta arzon.
         Index(

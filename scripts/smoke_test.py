@@ -514,33 +514,40 @@ async def test_image_translation() -> None:
         await session.commit()
     system_config.invalidate_cache()
 
-    # ── ocr.py: provayder tanlovi va fallback (tarmoqsiz — chaqiruvlar
-    # almashtiriladi, `_monthly_count` ham soxtalashtiriladi, chunki
-    # haqiqiy oylik hisob uchun `translations` jadvaliga qator kerak
-    # bo'lardi) ──
+    # ── ocr.py: ko'p kalitli navbat, tanlov va fallback (tarmoqsiz —
+    # chaqiruvlar almashtiriladi, `_ocrspace_key_usage` ham soxtalashtiriladi,
+    # chunki haqiqiy oylik hisob uchun `translations` jadvaliga qator
+    # kerak bo'lardi) ──
+    original_ocrspace_keys_raw = settings.OCRSPACE_API_KEYS_RAW
     original_ocrspace_key = settings.OCRSPACE_API_KEY
     original_vision_key = settings.GOOGLE_VISION_API_KEY
-    original_monthly_count = ocr_module._monthly_count
-    original_callers = dict(ocr_module._CALLERS)
-    monthly_counts = {"ocrspace": 0, "google_vision": 0}
+    original_key_usage = ocr_module._ocrspace_key_usage
+    original_call_ocrspace = ocr_module._call_ocrspace
+    original_call_vision = ocr_module._call_google_vision
+    key_usage: dict[int, int] = {}
 
-    async def _fake_monthly_count(_session, provider: str) -> int:
-        return monthly_counts[provider]
+    async def _fake_key_usage(_session) -> dict:
+        return dict(key_usage)
 
-    async def _fake_ocrspace(_image_bytes: bytes) -> str:
-        return "ocrspace matni"
+    async def _fake_ocrspace(_image_bytes: bytes, api_key: str) -> str:
+        return f"ocrspace matni ({api_key})"
 
     async def _fake_vision(_image_bytes: bytes) -> str:
         return "vision matni"
 
-    async def _fake_ocrspace_fails(_image_bytes: bytes) -> str:
-        raise ocr_module.OcrError("provider_error", "test xatosi")
+    async def _fake_ocrspace_first_key_fails(_image_bytes: bytes, api_key: str) -> str:
+        if api_key == "keyA":
+            raise ocr_module.OcrError("provider_error", "test xatosi")
+        return f"ocrspace matni ({api_key})"
 
-    ocr_module._monthly_count = _fake_monthly_count
+    ocr_module._ocrspace_key_usage = _fake_key_usage
+    ocr_module._call_ocrspace = _fake_ocrspace
+    ocr_module._call_google_vision = _fake_vision
 
     try:
         async with AsyncSessionLocal() as session:
             # Ikkalasi ham sozlanmagan -> not_configured.
+            settings.OCRSPACE_API_KEYS_RAW = ""
             settings.OCRSPACE_API_KEY = ""
             settings.GOOGLE_VISION_API_KEY = ""
             try:
@@ -549,53 +556,80 @@ async def test_image_translation() -> None:
             except ocr_module.OcrError as exc:
                 check("ikkalasi ham yo'q -> not_configured", exc.code == "not_configured")
 
-            # Faqat OCR.Space -> shu ishlatiladi.
-            settings.OCRSPACE_API_KEY = "test-key"
+            # Uch ta OCR.Space kaliti sozlangan, ikkalasi ham hali
+            # ishlatilmagan -> birinchisi (indeks 0) tanlanadi.
+            settings.OCRSPACE_API_KEYS_RAW = "keyA,keyB,keyC"
             settings.GOOGLE_VISION_API_KEY = ""
-            ocr_module._CALLERS["ocrspace"] = _fake_ocrspace
-            ocr_module._CALLERS["google_vision"] = _fake_vision
+            key_usage.clear()
             result = await ocr_module.extract_text(session, b"x")
             check(
-                "faqat OCR.Space sozlangan -> OCR.Space ishlatiladi",
-                result.provider == "ocrspace" and result.text == "ocrspace matni",
-                result.provider,
+                "hech biri ishlatilmagan -> 0-indeks tanlanadi",
+                result.provider == "ocrspace" and result.key_index == 0,
+                f"key_index={result.key_index}",
             )
 
-            # Ikkalasi ham sozlangan, OCR.Space bepul hajmi tugamagan -> OCR.Space.
+            # 0-kalit ko'proq ishlatilgan -> kam ishlatilgan (1-indeks) tanlanadi.
+            key_usage[0] = 100
+            key_usage[1] = 5
+            key_usage[2] = 5
+            result = await ocr_module.extract_text(session, b"x")
+            check(
+                "kam ishlatilgan kalit ustunlik qiladi",
+                result.key_index == 1,
+                f"key_index={result.key_index}",
+            )
+
+            # 0 va 1-kalit bepul hajmidan oshgan -> faqat 2-kalit qoladi.
+            key_usage[0] = settings.OCRSPACE_FREE_MONTHLY
+            key_usage[1] = settings.OCRSPACE_FREE_MONTHLY
+            key_usage[2] = 10
+            result = await ocr_module.extract_text(session, b"x")
+            check(
+                "bepul hajmi tuganganlar chetlanadi",
+                result.key_index == 2,
+                f"key_index={result.key_index}",
+            )
+
+            # Barcha OCR.Space kalitlari tugagan, Vision sozlanmagan ->
+            # quota_exhausted (not_configured emas — farqi bor).
+            key_usage[0] = key_usage[1] = key_usage[2] = settings.OCRSPACE_FREE_MONTHLY
+            try:
+                await ocr_module.extract_text(session, b"x")
+                check("hammasi tugagan -> xato", False, "OcrError kutilgan edi")
+            except ocr_module.OcrError as exc:
+                check(
+                    "hammasi tugagan, Vision yo'q -> quota_exhausted",
+                    exc.code == "quota_exhausted",
+                    exc.code,
+                )
+
+            # Endi Vision ham sozlangan -> OCR.Space tugagach avtomatik
+            # Vision'ga o'tadi.
             settings.GOOGLE_VISION_API_KEY = "test-key"
-            monthly_counts["ocrspace"] = 0
             result = await ocr_module.extract_text(session, b"x")
             check(
-                "bepul hajm tugamagan -> avval OCR.Space",
-                result.provider == "ocrspace",
-                result.provider,
-            )
-
-            # OCR.Space bepul hajmi tugagan -> Vision'ga o'tadi.
-            monthly_counts["ocrspace"] = settings.OCRSPACE_FREE_MONTHLY
-            result = await ocr_module.extract_text(session, b"x")
-            check(
-                "bepul hajm tugasa -> Vision'ga o'tadi",
+                "OCR.Space tugasa Vision'ga o'tadi",
                 result.provider == "google_vision" and result.text == "vision matni",
                 result.provider,
             )
 
-            # OCR.Space tarmoq xatosi bilan yiqilsa ham Vision'ga tushadi —
-            # foydalanuvchi "ishlamayapti" deb qolmasin.
-            monthly_counts["ocrspace"] = 0
-            ocr_module._CALLERS["ocrspace"] = _fake_ocrspace_fails
+            # Tanlangan (0-indeks, "keyA") kalit xato bersa — boshqa TAYYOR
+            # OCR.Space kalitiga o'tiladi, darhol Vision'ga sakramaydi.
+            key_usage.clear()
+            ocr_module._call_ocrspace = _fake_ocrspace_first_key_fails
             result = await ocr_module.extract_text(session, b"x")
             check(
-                "birinchi provayder yiqilsa ikkinchisiga o'tadi",
-                result.provider == "google_vision",
-                result.provider,
+                "birinchi kalit yiqilsa ikkinchi OCR.Space kalitiga o'tadi",
+                result.provider == "ocrspace" and result.key_index == 1,
+                f"provider={result.provider}, key_index={result.key_index}",
             )
     finally:
+        settings.OCRSPACE_API_KEYS_RAW = original_ocrspace_keys_raw
         settings.OCRSPACE_API_KEY = original_ocrspace_key
         settings.GOOGLE_VISION_API_KEY = original_vision_key
-        ocr_module._monthly_count = original_monthly_count
-        ocr_module._CALLERS.clear()
-        ocr_module._CALLERS.update(original_callers)
+        ocr_module._ocrspace_key_usage = original_key_usage
+        ocr_module._call_ocrspace = original_call_ocrspace
+        ocr_module._call_google_vision = original_call_vision
 
 
 async def test_admin_users() -> None:

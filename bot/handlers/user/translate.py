@@ -45,6 +45,7 @@ async def _translate(
     input_kind: str,
     manage_quota: bool = True,
     ocr_provider: Optional[str] = None,
+    ocr_key_index: Optional[int] = None,
 ) -> None:
     """Tarjima oqimi. Matn qayerdan kelganidan qat'i nazar bir xil.
 
@@ -160,6 +161,7 @@ async def _translate(
             source_chars=len(text),
             provider=settings.TRANSLATION_PROVIDER,
             ocr_provider=ocr_provider,
+            ocr_key_index=ocr_key_index,
             status="timeout" if exc.code == "timeout" else "error",
             error_code=exc.code,
             error_message=str(exc)[:500],
@@ -195,6 +197,7 @@ async def _translate(
         provider=result.provider,
         provider_model=result.provider_model,
         ocr_provider=ocr_provider,
+        ocr_key_index=ocr_key_index,
         status="success",
         latency_ms=result.latency_ms,
         cache_hit=result.cache_hit,
@@ -386,6 +389,7 @@ async def handle_photo(
         chat_id=message.chat.id,
         session_id=session_id,
         provider=result.provider,
+        key_index=result.key_index,
         chars=len(result.text),
     )
 
@@ -393,6 +397,7 @@ async def handle_photo(
         message, session, user, events, session_id, t, redis,
         text=result.text, input_kind="photo",
         manage_quota=False, ocr_provider=result.provider,
+        ocr_key_index=result.key_index,
     )
 
 

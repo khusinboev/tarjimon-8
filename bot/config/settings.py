@@ -161,9 +161,25 @@ class Settings(BaseSettings):
     #   OCR.Space: https://ocr.space/ocrapi — ro'yxatdan o'tib bepul kalit.
     #   Google Vision: GCP loyihasida "Cloud Vision API"ni yoqib, shu APIga
     #   cheklangan API kalit yaratiladi (https://console.cloud.google.com/).
+    #
+    # OCR.Space bepul hajmi (`OCRSPACE_FREE_MONTHLY`) HAR BIR kalit/hisobga
+    # alohida beriladi. Shuning uchun bir nechta kalit (har biri alohida
+    # email bilan ro'yxatdan o'tkazilgan) vergul bilan berilsa, ular
+    # navbat bilan ishlatiladi — umumiy bepul hajm shuncha marta ko'payadi
+    # (masalan 6 ta kalit = 6 × 25 000 = 150 000/oy). Eskilik uchun
+    # `OCRSPACE_API_KEY` (birlik) ham qo'llab-quvvatlanadi.
+    OCRSPACE_API_KEYS_RAW: str = Field(default="", alias="OCRSPACE_API_KEYS")
     OCRSPACE_API_KEY: str = Field(default="")
     OCRSPACE_LANGUAGE: str = Field(default="auto")
     OCRSPACE_FREE_MONTHLY: int = Field(default=25000)
+
+    @property
+    def OCRSPACE_KEYS(self) -> List[str]:
+        if self.OCRSPACE_API_KEYS_RAW:
+            keys = [k.strip() for k in self.OCRSPACE_API_KEYS_RAW.split(",") if k.strip()]
+            if keys:
+                return keys
+        return [self.OCRSPACE_API_KEY] if self.OCRSPACE_API_KEY else []
 
     GOOGLE_VISION_API_KEY: str = Field(default="")
     GOOGLE_VISION_FREE_MONTHLY: int = Field(default=1000)

@@ -2,20 +2,25 @@
 
 Ikki provayder, ikkalasi ham oddiy REST orqali (`aiohttp` bilan) — alohida
 SDK yoki kalit fayli kerak emas:
-  - **OCR.Space**: oyiga 25 000 ta BEPUL, bitta API kalit.
+  - **OCR.Space**: har bir kalit/hisobga oyiga 25 000 ta BEPUL. Bir nechta
+    kalit (`settings.OCRSPACE_KEYS`, har biri alohida email bilan
+    ro'yxatdan o'tkazilgan hisob) sozlansa, navbat bilan — kam ishlatilgani
+    ustunlik bilan — ishlatiladi, ya'ni umumiy bepul hajm N marta ko'payadi.
   - **Google Cloud Vision**: aniqroq, lekin oyiga faqat 1000 ta BEPUL, undan
     keyin pullik (pay-as-you-go, REST API kalit orqali — `google-cloud-vision`
     SDK/service-account JSON shart emas).
 
-Tanlash tartibi: avval OCR.Space (bepul hajmi kattaroq), oylik bepul hajmi
-tugagach Google Vision'ga o'tiladi (u pullik rejimda ham ishlashda davom
+Tanlash tartibi: avval OCR.Space kalitlaridan biri (bepul hajmidan
+oshmaganlari orasida eng kam ishlatilgani), hammasi tugagach yoki xato
+bersa Google Vision'ga o'tiladi (u pullik rejimda ham ishlashda davom
 etadi — OCR.Space'ning pullik rejimi alohida obuna talab qiladi, avtomatik
-davom etolmaydi). Provayderlardan biri sozlanmagan (`.env`da kalit yo'q)
-bo'lsa — o'tkazib yuboriladi, ikkalasi ham yo'q bo'lsa `OcrError("not_configured")`.
+davom etolmaydi). Provayder/kalit sozlanmagan bo'lsa o'tkazib yuboriladi,
+hech biri yo'q/hammasi tugagan bo'lsa `OcrError` ko'tariladi.
 
 Oylik hisob `translations` jadvalidan olinadi (`input_kind='photo'`,
-`ocr_provider`, `created_at`) — alohida hisoblagich jadvali kerak emas,
-chunki bu jadval baribir har bir muvaffaqiyatli chaqiruvni yozadi.
+`ocr_provider`, `ocr_key_index`, `created_at`) — alohida hisoblagich
+jadvali kerak emas, chunki bu jadval baribir har bir muvaffaqiyatli
+chaqiruvni yozadi.
 """
 
 from __future__ import annotations
@@ -52,6 +57,7 @@ class OcrError(Exception):
 class OcrResult:
     text: str
     provider: str
+    key_index: Optional[int] = None
 
 
 def _month_start() -> datetime:
@@ -59,20 +65,26 @@ def _month_start() -> datetime:
     return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
 
-async def _monthly_count(session: AsyncSession, provider: str) -> int:
-    result = await session.execute(
-        select(func.count(Translation.id)).where(
+async def _ocrspace_key_usage(session: AsyncSession) -> dict[int, int]:
+    """Har bir OCR.Space kaliti shu oy necha marta ishlatilganini qaytaradi.
+
+    Bitta GROUP BY so'rov — kalitlar soni qancha bo'lmasin bir marta ishlaydi.
+    """
+    rows = await session.execute(
+        select(Translation.ocr_key_index, func.count(Translation.id))
+        .where(
             Translation.input_kind == "photo",
-            Translation.ocr_provider == provider,
+            Translation.ocr_provider == "ocrspace",
             Translation.created_at >= _month_start(),
         )
+        .group_by(Translation.ocr_key_index)
     )
-    return result.scalar_one()
+    return {index: count for index, count in rows.all() if index is not None}
 
 
-async def _call_ocrspace(image_bytes: bytes) -> str:
+async def _call_ocrspace(image_bytes: bytes, api_key: str) -> str:
     form = aiohttp.FormData()
-    form.add_field("apikey", settings.OCRSPACE_API_KEY)
+    form.add_field("apikey", api_key)
     form.add_field("language", settings.OCRSPACE_LANGUAGE)
     form.add_field("OCREngine", "2")
     form.add_field("scale", "true")
@@ -132,39 +144,52 @@ async def _call_google_vision(image_bytes: bytes) -> str:
     return ""
 
 
-_CALLERS = {"ocrspace": _call_ocrspace, "google_vision": _call_google_vision}
-
-
 async def extract_text(session: AsyncSession, image_bytes: bytes) -> OcrResult:
-    """Rasmdan matn ajratadi, ishlagan provayderni ham qaytaradi.
+    """Rasmdan matn ajratadi, ishlagan provayder/kalitni ham qaytaradi.
 
-    Tartib: OCR.Space (bepul hajmi katta) → oylik bepul hajmi tugasa yoki
-    xato bersa Google Vision. Bittasi tarmoq xatosi bilan yiqilsa ham
-    ikkinchisiga o'tiladi — foydalanuvchi "ishlamayapti" deb qolmasin.
+    Tartib: OCR.Space kalitlaridan biri (bepul hajmidan oshmaganlari orasida
+    eng kam ishlatilgani) → hammasi tugagan/xato bersa Google Vision.
+    Bitta kalit xato bersa boshqasiga o'tiladi — bitta kalit muammosi
+    (bloklangan, tarmoq xatosi) butun oqimni to'xtatmasin.
     """
-    ready = {
-        "ocrspace": bool(settings.OCRSPACE_API_KEY),
-        "google_vision": bool(settings.GOOGLE_VISION_API_KEY),
-    }
-    if not any(ready.values()):
+    ocrspace_keys = settings.OCRSPACE_KEYS
+    vision_ready = bool(settings.GOOGLE_VISION_API_KEY)
+
+    if not ocrspace_keys and not vision_ready:
         raise OcrError("not_configured", "Hech qanday OCR provayder sozlanmagan")
 
-    prefer_ocrspace = ready["ocrspace"]
-    if ready["ocrspace"] and settings.OCRSPACE_FREE_MONTHLY > 0:
-        used = await _monthly_count(session, "ocrspace")
-        prefer_ocrspace = used < settings.OCRSPACE_FREE_MONTHLY
-
-    order = ("ocrspace", "google_vision") if prefer_ocrspace else ("google_vision", "ocrspace")
-    order = [p for p in order if ready[p]]
-
     last_error: Optional[OcrError] = None
-    for provider in order:
+    tried_ocrspace = False
+
+    if ocrspace_keys:
+        usage: dict[int, int] = {}
+        if settings.OCRSPACE_FREE_MONTHLY > 0:
+            usage = await _ocrspace_key_usage(session)
+
+        order = sorted(range(len(ocrspace_keys)), key=lambda i: usage.get(i, 0))
+        if settings.OCRSPACE_FREE_MONTHLY > 0:
+            order = [i for i in order if usage.get(i, 0) < settings.OCRSPACE_FREE_MONTHLY]
+
+        for index in order:
+            tried_ocrspace = True
+            try:
+                text = await _call_ocrspace(image_bytes, ocrspace_keys[index])
+                return OcrResult(text=text, provider="ocrspace", key_index=index)
+            except Exception as exc:
+                logger.warning("OCR.Space kalit #%s ishlamadi: %s", index, exc)
+                last_error = exc if isinstance(exc, OcrError) else OcrError("network_error", str(exc))
+                continue
+
+    if vision_ready:
         try:
-            text = await _CALLERS[provider](image_bytes)
-            return OcrResult(text=text, provider=provider)
+            text = await _call_google_vision(image_bytes)
+            return OcrResult(text=text, provider="google_vision", key_index=None)
         except Exception as exc:
-            logger.warning("OCR provayder %s ishlamadi: %s", provider, exc)
+            logger.warning("Google Vision ishlamadi: %s", exc)
             last_error = exc if isinstance(exc, OcrError) else OcrError("network_error", str(exc))
-            continue
+    elif ocrspace_keys and not tried_ocrspace:
+        # Kalitlar bor, lekin barchasi shu oy bepul hajmidan oshgan, va
+        # Vision sozlanmagan — "sozlanmagan" emas, "tugagan" degani.
+        raise OcrError("quota_exhausted", "OCR.Space kalitlarining barchasi oylik bepul hajmidan oshgan")
 
     raise last_error or OcrError("not_configured")
