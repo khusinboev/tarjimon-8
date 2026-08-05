@@ -89,6 +89,11 @@ TTS_QUOTA_EXCEEDED = "🚫 Bugungi ovoz limiti ({limit} ta) tugadi."
 
 RATE_LIMITED = "⏳ Biroz sekinroq, iltimos. Bir necha soniyadan keyin urinib ko'ring."
 
+BANNED = (
+    "🚫 <b>Hisobingiz bloklangan</b>\n\n"
+    "Botdan foydalanish vaqtincha yopilgan. Savollar uchun: @{admin}"
+)
+
 TOO_LONG = "📏 Matn juda uzun (<b>{length}</b> belgi).\n\nEng ko'pi: <b>{limit}</b> belgi."
 
 TTS_TOO_LONG = "📏 Ovoz uchun matn juda uzun. Eng ko'pi: <b>{limit}</b> belgi."

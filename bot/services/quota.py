@@ -37,7 +37,12 @@ class QuotaService:
     async def check_translation(
         self, user_id: int, *, limit_override: Optional[int] = None
     ) -> QuotaStatus:
-        limit = limit_override or settings.DAILY_TRANSLATION_LIMIT
+        # `is not None` shart: `0 or DEFAULT` Python'da `0` yolg'on qiymat
+        # bo'lgani uchun har doim `DEFAULT` ga tushib qolardi va "0 — cheksiz"
+        # degan shartnoma (adminlar, `set_user_limit(..., 0)`) buzilardi.
+        limit = (
+            limit_override if limit_override is not None else settings.DAILY_TRANSLATION_LIMIT
+        )
         # 0 yoki manfiy — cheksiz (adminlar va maxsus userlar uchun).
         if limit <= 0:
             return QuotaStatus(allowed=True, used=0, limit=0)

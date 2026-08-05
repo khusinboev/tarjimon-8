@@ -13,6 +13,8 @@ from bot.keyboards.admin import (
     admin_main_keyboard,
     admin_channels_keyboard,
     admin_broadcast_keyboard,
+    admin_users_keyboard,
+    admin_user_actions_keyboard,
     broadcast_confirm_keyboard,
     back_keyboard,
 )
@@ -42,6 +44,32 @@ async def open_admin_panel(message: Message, state: FSMContext):
 
 @router.message(F.text == "🔙 Orqaga", F.from_user.func(lambda u: u and is_admin(u.id)))
 async def go_back(message: Message, state: FSMContext):
+    """Orqaga: foydalanuvchi bo'limida bosqichma-bosqich, qolganida bosh menyu."""
+    current = await state.get_state()
+    data = await state.get_data()
+    target_id = data.get("target_user_id")
+
+    # Limit kiritish → foydalanuvchi kartochkasi
+    if current == AdminStates.waiting_user_limit.state and target_id is not None:
+        await state.set_state(None)
+        ok = await _show_user_card(message, state, int(target_id))
+        if not ok:
+            await state.clear()
+            await message.answer(
+                "Foydalanuvchi boshqaruvi",
+                reply_markup=admin_users_keyboard(),
+            )
+        return
+
+    # Qidiruv yoki tanlangan user → foydalanuvchilar menyusi
+    if current == AdminStates.waiting_user_query.state or target_id is not None:
+        await state.clear()
+        await message.answer(
+            "Foydalanuvchi boshqaruvi",
+            reply_markup=admin_users_keyboard(),
+        )
+        return
+
     await state.clear()
     await message.answer("Bosh menyu", reply_markup=admin_main_keyboard())
 
@@ -386,3 +414,212 @@ async def broadcast_cancel_finish(message: Message, state: FSMContext):
         await message.answer("Bekor qilish so'rovi yuborildi. Yuborish sikli yaqin daqiqalarda to'xtaydi.", reply_markup=admin_broadcast_keyboard())
     else:
         await message.answer("Running holatdagi shu ID topilmadi.", reply_markup=admin_broadcast_keyboard())
+
+
+# ── Foydalanuvchilar ─────────────────────────────────────────
+
+
+@router.message(F.text == "👤 Foydalanuvchilar", F.from_user.func(lambda u: u and is_admin(u.id)))
+async def users_menu(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer(
+        "Foydalanuvchi boshqaruvi.\n"
+        "Qidirish: Telegram ID, @username yoki ichki DB ID.",
+        reply_markup=admin_users_keyboard(),
+    )
+
+
+@router.message(F.text == "🔍 Qidirish", F.from_user.func(lambda u: u and is_admin(u.id)))
+async def user_search_start(message: Message, state: FSMContext):
+    await state.set_state(AdminStates.waiting_user_query)
+    await message.answer(
+        "Telegram ID, @username yoki ichki ID yuboring.",
+        reply_markup=back_keyboard(),
+    )
+
+
+async def _show_user_card(message: Message, state: FSMContext, user_id: int) -> bool:
+    """Kartochkani chiqaradi va FSM da target saqlaydi. Topilmasa False."""
+    async with AsyncSessionLocal() as session:
+        service = AdminService(session)
+        user = await service.user_repo.get_by_id(user_id)
+        if not user:
+            return False
+        card = await service.format_user_card(user)
+
+    await state.update_data(target_user_id=user_id)
+    await state.set_state(None)
+    await message.answer(card, reply_markup=admin_user_actions_keyboard())
+    return True
+
+
+@router.message(AdminStates.waiting_user_query, F.from_user.func(lambda u: u and is_admin(u.id)))
+async def user_search_finish(message: Message, state: FSMContext):
+    if (message.text or "").strip() == "🔙 Orqaga":
+        await state.clear()
+        await message.answer("Foydalanuvchi boshqaruvi", reply_markup=admin_users_keyboard())
+        return
+
+    async with AsyncSessionLocal() as session:
+        service = AdminService(session)
+        found = await service.find_users(message.text or "")
+
+    if not found:
+        await message.answer(
+            "Foydalanuvchi topilmadi. Qayta urinib ko'ring.",
+            reply_markup=back_keyboard(),
+        )
+        return
+
+    if len(found) > 1:
+        lines = [
+            f"Bir nechta moslik ({len(found)}). Aniqroq ID yuboring:\n"
+        ]
+        for u in found:
+            uname = f"@{u.username}" if u.username else "—"
+            lines.append(
+                f"• TG <code>{u.telegram_id}</code> · DB {u.id} · {uname} · {u.status}"
+            )
+        await message.answer("\n".join(lines), reply_markup=back_keyboard())
+        return
+
+    await _show_user_card(message, state, found[0].id)
+
+
+async def _require_target_user(state: FSMContext) -> int | None:
+    data = await state.get_data()
+    target = data.get("target_user_id")
+    return int(target) if target is not None else None
+
+
+@router.message(F.text == "🔄 Yangilash", F.from_user.func(lambda u: u and is_admin(u.id)))
+async def user_refresh(message: Message, state: FSMContext):
+    target_id = await _require_target_user(state)
+    if target_id is None:
+        await message.answer(
+            "Avval foydalanuvchini qidiring.",
+            reply_markup=admin_users_keyboard(),
+        )
+        return
+    ok = await _show_user_card(message, state, target_id)
+    if not ok:
+        await state.clear()
+        await message.answer("Foydalanuvchi topilmadi.", reply_markup=admin_users_keyboard())
+
+
+@router.message(F.text == "🚫 Bloklash", F.from_user.func(lambda u: u and is_admin(u.id)))
+async def user_ban(message: Message, state: FSMContext, user):
+    target_id = await _require_target_user(state)
+    if target_id is None:
+        await message.answer(
+            "Avval foydalanuvchini qidiring.",
+            reply_markup=admin_users_keyboard(),
+        )
+        return
+
+    async with AsyncSessionLocal() as session:
+        service = AdminService(session)
+        ok, text = await service.ban_user(user.id, target_id)
+
+    await message.answer(text, reply_markup=admin_user_actions_keyboard())
+    if ok:
+        await _show_user_card(message, state, target_id)
+
+
+@router.message(F.text == "✅ Blokdan chiqarish", F.from_user.func(lambda u: u and is_admin(u.id)))
+async def user_unban(message: Message, state: FSMContext, user):
+    target_id = await _require_target_user(state)
+    if target_id is None:
+        await message.answer(
+            "Avval foydalanuvchini qidiring.",
+            reply_markup=admin_users_keyboard(),
+        )
+        return
+
+    async with AsyncSessionLocal() as session:
+        service = AdminService(session)
+        ok, text = await service.unban_user(user.id, target_id)
+
+    await message.answer(text, reply_markup=admin_user_actions_keyboard())
+    if ok:
+        await _show_user_card(message, state, target_id)
+
+
+@router.message(F.text == "🔢 Limit o'rnatish", F.from_user.func(lambda u: u and is_admin(u.id)))
+async def user_limit_start(message: Message, state: FSMContext):
+    target_id = await _require_target_user(state)
+    if target_id is None:
+        await message.answer(
+            "Avval foydalanuvchini qidiring.",
+            reply_markup=admin_users_keyboard(),
+        )
+        return
+
+    await state.set_state(AdminStates.waiting_user_limit)
+    await message.answer(
+        "Kunlik tarjima limitini yuboring.\n"
+        "• Oddiy son (masalan <code>100</code>)\n"
+        "• <code>0</code> — cheksiz\n\n"
+        f"Standart: {settings.DAILY_TRANSLATION_LIMIT}",
+        reply_markup=back_keyboard(),
+    )
+
+
+@router.message(AdminStates.waiting_user_limit, F.from_user.func(lambda u: u and is_admin(u.id)))
+async def user_limit_finish(message: Message, state: FSMContext, user):
+    if (message.text or "").strip() == "🔙 Orqaga":
+        target_id = await _require_target_user(state)
+        await state.set_state(None)
+        if target_id is not None:
+            await _show_user_card(message, state, target_id)
+        else:
+            await message.answer("Foydalanuvchi boshqaruvi", reply_markup=admin_users_keyboard())
+        return
+
+    target_id = await _require_target_user(state)
+    if target_id is None:
+        await state.clear()
+        await message.answer(
+            "Avval foydalanuvchini qidiring.",
+            reply_markup=admin_users_keyboard(),
+        )
+        return
+
+    raw = (message.text or "").strip()
+    try:
+        limit = int(raw)
+    except ValueError:
+        await message.answer(
+            "Iltimos, butun son yuboring (masalan 100 yoki 0).",
+            reply_markup=back_keyboard(),
+        )
+        return
+
+    async with AsyncSessionLocal() as session:
+        service = AdminService(session)
+        ok, text = await service.set_user_limit(user.id, target_id, limit)
+
+    await message.answer(text, reply_markup=admin_user_actions_keyboard())
+    if ok:
+        await _show_user_card(message, state, target_id)
+    else:
+        await state.set_state(AdminStates.waiting_user_limit)
+
+
+@router.message(F.text == "♻️ Limitni tozalash", F.from_user.func(lambda u: u and is_admin(u.id)))
+async def user_limit_clear(message: Message, state: FSMContext, user):
+    target_id = await _require_target_user(state)
+    if target_id is None:
+        await message.answer(
+            "Avval foydalanuvchini qidiring.",
+            reply_markup=admin_users_keyboard(),
+        )
+        return
+
+    async with AsyncSessionLocal() as session:
+        service = AdminService(session)
+        ok, text = await service.clear_user_limit(user.id, target_id)
+
+    await message.answer(text, reply_markup=admin_user_actions_keyboard())
+    if ok:
+        await _show_user_card(message, state, target_id)

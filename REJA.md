@@ -215,9 +215,9 @@ DB da: `vocab_entries` 307 qator, `practice_sessions` 0.
 
 Qo'shiladigan:
 - `[x]` Tarjima statistikasi (til juftliklari, kunlik hajm)
-- `[x]` AI xarajat monitoringi (token/dollar hisobi)
+- `[ ]` AI xarajat monitoringi (token/dollar hisobi)
 - `[x]` User qidirish va bloklash
-- `[ ]` Limit sozlash (kunlik bepul tarjima soni)
+- `[x]` Limit sozlash (kunlik bepul tarjima soni — user override)
 - `[ ]` A/B test (model taqqoslash)
 
 ---

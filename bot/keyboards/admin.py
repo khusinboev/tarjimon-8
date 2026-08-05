@@ -10,7 +10,36 @@ def admin_main_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="📊 Statistika"), KeyboardButton(text="🔧 Kanallar")],
-            [KeyboardButton(text="📤 Reklama")],
+            [KeyboardButton(text="📤 Reklama"), KeyboardButton(text="👤 Foydalanuvchilar")],
+        ],
+        resize_keyboard=True,
+    )
+
+
+def admin_users_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="🔍 Qidirish")],
+            [KeyboardButton(text="🔙 Orqaga")],
+        ],
+        resize_keyboard=True,
+    )
+
+
+def admin_user_actions_keyboard() -> ReplyKeyboardMarkup:
+    """Tanlangan foydalanuvchi ustida amallar."""
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [
+                KeyboardButton(text="🚫 Bloklash"),
+                KeyboardButton(text="✅ Blokdan chiqarish"),
+            ],
+            [
+                KeyboardButton(text="🔢 Limit o'rnatish"),
+                KeyboardButton(text="♻️ Limitni tozalash"),
+            ],
+            [KeyboardButton(text="🔄 Yangilash")],
+            [KeyboardButton(text="🔙 Orqaga")],
         ],
         resize_keyboard=True,
     )

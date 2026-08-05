@@ -89,6 +89,11 @@ TTS_QUOTA_EXCEEDED = "🚫 Batas suara hari ini ({limit}) sudah habis."
 
 RATE_LIMITED = "⏳ Mohon sedikit lebih lambat. Coba lagi beberapa detik."
 
+BANNED = (
+    "🚫 <b>Akun Anda diblokir</b>\n\n"
+    "Akses ke bot sementara ditutup. Pertanyaan: @{admin}"
+)
+
 TOO_LONG = "📏 Teks terlalu panjang (<b>{length}</b> karakter).\n\nMaksimum: <b>{limit}</b>."
 
 TTS_TOO_LONG = "📏 Teks terlalu panjang untuk suara. Maksimum: <b>{limit}</b> karakter."

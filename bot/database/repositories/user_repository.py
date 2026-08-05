@@ -32,6 +32,20 @@ class UserRepository:
         )
         return result.scalar_one_or_none()
 
+    async def find_by_username(self, username: str, *, limit: int = 10) -> List[User]:
+        """Username bo'yicha qidiradi (@ va registr farqsiz)."""
+        cleaned = username.strip().lstrip("@").lower()
+        if not cleaned:
+            return []
+        result = await self.session.execute(
+            select(User)
+            .options(selectinload(User.settings))
+            .where(func.lower(User.username) == cleaned)
+            .order_by(User.id.desc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
     # ── Yozish ────────────────────────────────────────────────
 
     async def get_or_create(
@@ -199,6 +213,31 @@ class UserRepository:
 
     async def set_role(self, user_id: int, role: str) -> None:
         await self.session.execute(update(User).where(User.id == user_id).values(role=role))
+
+    async def set_status(self, user_id: int, status: str) -> None:
+        """Foydalanuvchi holatini o'zgartiradi (`active`, `banned`, …)."""
+        values: dict = {"status": status}
+        if status == "banned":
+            values["blocked_at"] = utcnow()
+        elif status == "active":
+            values["blocked_at"] = None
+        await self.session.execute(
+            update(User).where(User.id == user_id).values(**values)
+        )
+
+    async def set_daily_limit_override(
+        self, user_id: int, limit: Optional[int]
+    ) -> None:
+        """Kunlik tarjima limitini alohida belgilaydi.
+
+        `None` — global standartga qaytaradi.
+        `0` yoki manfiy — cheksiz (QuotaService shunday talqin qiladi).
+        """
+        await self.session.execute(
+            update(UserSettings)
+            .where(UserSettings.user_id == user_id)
+            .values(daily_limit_override=limit)
+        )
 
     # ── Statistika ────────────────────────────────────────────
 

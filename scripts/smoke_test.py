@@ -217,8 +217,151 @@ async def test_quota(user_id: int) -> None:
         status = await quota.check_translation(user_id, limit_override=3)
         check("limitga yetganda taqiqlanadi", not status.allowed)
 
+        # Regressiya: `limit = limit_override or DEFAULT` Python'da `0` ni
+        # yolg'on qiymat deb hisoblab, har doim DEFAULT'ga (50) tushib
+        # qolgan edi. Usage hali DEFAULT'dan past bo'lgani uchun natija
+        # tasodifan "allowed=True" chiqib, xatoni sinov ushlamagan edi.
+        # Shu sababli bu yerda usage'ni ataylab DEFAULT'dan oshiramiz —
+        # faqat shunda "0 = cheksiz" haqiqatan tekshiriladi.
+        await quota.usage.increment(user_id, translations=settings.DAILY_TRANSLATION_LIMIT)
+        await session.commit()
         status = await quota.check_translation(user_id, limit_override=0)
-        check("0 = cheksiz", status.allowed)
+        check(
+            "0 = cheksiz (usage DEFAULT'dan yuqori bo'lsa ham)",
+            status.allowed,
+            f"used={status.used}, limit={status.limit}",
+        )
+
+        # `None` — override yo'q, standart limit ishlaydi.
+        status = await quota.check_translation(user_id, limit_override=None)
+        check(
+            "None = standart limit (cheksiz emas)",
+            not status.allowed,
+            f"used={status.used}, limit={status.limit}",
+        )
+
+
+async def test_admin_users() -> None:
+    """Admin: qidirish, limit, ban/unban va audit yozuvi."""
+    print("\n[6b] Admin foydalanuvchi boshqaruvi")
+    from sqlalchemy import delete
+
+    from bot.database.models import AdminAction, User, UserSettings
+    from bot.services.admin_service import AdminService
+
+    target_tg = TEST_TELEGRAM_ID + 77
+    admin_tg = TEST_TELEGRAM_ID + 78
+
+    async with AsyncSessionLocal() as session:
+        repo = UserRepository(session)
+        target, _ = await repo.get_or_create(
+            target_tg, username="smoke_target", first_name="Target"
+        )
+        admin, _ = await repo.get_or_create(
+            admin_tg, username="smoke_admin", first_name="Admin"
+        )
+        await session.commit()
+        target_id, admin_id = target.id, admin.id
+
+        service = AdminService(session)
+        by_tg = await service.find_users(str(target_tg))
+        check("telegram_id bilan topiladi", len(by_tg) == 1 and by_tg[0].id == target_id)
+
+        by_name = await service.find_users("@smoke_target")
+        check("username bilan topiladi", len(by_name) == 1 and by_name[0].id == target_id)
+
+        # Ichki id: avval telegram_id deb qarab ko'riladi. To'qnash bo'lmasa
+        # ichki id yo'li ishlashi kerak.
+        if await repo.get_by_telegram_id(target_id) is None:
+            by_db = await service.find_users(str(target_id))
+            check(
+                "ichki id bilan topiladi",
+                len(by_db) == 1 and by_db[0].id == target_id,
+            )
+        else:
+            print("  ⏭  ichki id telegram_id bilan to'qnashdi — o'tkazib yuborildi")
+
+        ok, msg = await service.set_user_limit(admin_id, target_id, 12)
+        check("limit o'rnatiladi", ok, msg)
+        refreshed = await repo.get_by_id(target_id)
+        check(
+            "limit saqlanadi",
+            refreshed.settings.daily_limit_override == 12,
+            str(refreshed.settings.daily_limit_override),
+        )
+
+        ok, msg = await service.set_user_limit(admin_id, target_id, 0)
+        check("0 = cheksiz saqlanadi", ok and refreshed is not None, msg)
+        refreshed = await repo.get_by_id(target_id)
+        check("cheksiz qiymat 0", refreshed.settings.daily_limit_override == 0)
+
+        # Faqat DB qiymatini emas, haqiqiy quota tekshiruvini ham tasdiqlaymiz —
+        # aynan shu yo'l orqali `translate.py` limitni qo'llaydi. Usage'ni
+        # ataylab DEFAULT'dan oshiramiz, aks holda "allowed=True" tasodifan
+        # ham chiqishi mumkin edi.
+        quota = QuotaService(session, redis=None)
+        await quota.usage.increment(target_id, translations=settings.DAILY_TRANSLATION_LIMIT)
+        await session.commit()
+        status = await quota.check_translation(
+            target_id, limit_override=refreshed.settings.daily_limit_override
+        )
+        check(
+            "admin panelidan qo'yilgan 0-limit haqiqatan cheksiz",
+            status.allowed,
+            f"used={status.used}, limit={status.limit}",
+        )
+
+        ok, msg = await service.clear_user_limit(admin_id, target_id)
+        check("limit tozalanadi", ok, msg)
+        refreshed = await repo.get_by_id(target_id)
+        check(
+            "override NULL",
+            refreshed.settings.daily_limit_override is None,
+        )
+
+        ok, msg = await service.ban_user(admin_id, target_id)
+        check("ban qilinadi", ok, msg)
+        refreshed = await repo.get_by_id(target_id)
+        check("status banned", refreshed.status == "banned")
+
+        # Qayta ban — rad.
+        ok, _ = await service.ban_user(admin_id, target_id)
+        check("qayta ban rad etiladi", not ok)
+
+        ok, msg = await service.unban_user(admin_id, target_id)
+        check("unban qilinadi", ok, msg)
+        refreshed = await repo.get_by_id(target_id)
+        check("status active", refreshed.status == "active")
+
+        # Adminni ban qilib bo'lmasligi kerak.
+        await repo.set_role(admin_id, "admin")
+        await session.commit()
+        ok, _ = await service.ban_user(admin_id, admin_id)
+        check("admin ban qilinmaydi", not ok)
+
+        card = await service.format_user_card(await repo.get_by_id(target_id))
+        check("kartochkada telegram id bor", str(target_tg) in card)
+        check("kartochkada holat bor", "Holat:" in card)
+
+        actions = (
+            await session.execute(
+                select(func.count(AdminAction.id)).where(
+                    AdminAction.admin_id == admin_id
+                )
+            )
+        ).scalar_one()
+        check("audit yozuvlari bor", actions >= 4, f"{actions} ta")
+
+        # Tozalash
+        from bot.database.models import DailyUsage
+
+        await session.execute(
+            delete(AdminAction).where(AdminAction.admin_id.in_([admin_id, target_id]))
+        )
+        await session.execute(delete(DailyUsage).where(DailyUsage.user_id.in_([admin_id, target_id])))
+        await session.execute(delete(UserSettings).where(UserSettings.user_id.in_([admin_id, target_id])))
+        await session.execute(delete(User).where(User.id.in_([admin_id, target_id])))
+        await session.commit()
 
 
 async def test_translation() -> None:
@@ -1006,6 +1149,7 @@ async def main() -> None:
     user_id = await test_user_flow()
     await test_interface_lang_resolution()
     await test_quota(user_id)
+    await test_admin_users()
     result = await test_translation()
     await test_translation_record(user_id, result)
     await test_events(user_id)

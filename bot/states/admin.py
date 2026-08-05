@@ -9,3 +9,5 @@ class AdminStates(StatesGroup):
     waiting_broadcast_mode = State()
     waiting_broadcast_message = State()
     waiting_broadcast_cancel_id = State()
+    waiting_user_query = State()
+    waiting_user_limit = State()

@@ -27,6 +27,7 @@ va 155,000+ tarjima bazasini meros qilib oladi.
 - Statistika: userlar, tarjimalar, xato ulushi, ommabop yo'nalishlar
 - Xabar tarqatish (forward/copy, progress, bekor qilish)
 - Majburiy obuna kanallarini boshqarish
+- Foydalanuvchi qidirish, kunlik limit, ban/unban
 
 **Ichkarida**
 - Har bir harakat `events` jadvaliga yoziladi — kelajakda ML/tahlil uchun

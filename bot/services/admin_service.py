@@ -16,17 +16,21 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 
-from bot.database.models import User, Channel
+from bot.config.settings import settings
+from bot.database.models import AdminAction, Channel, User
 from bot.database.repositories.user_repository import UserRepository
 from bot.database.repositories.channel_repository import ChannelRepository
 from bot.database.repositories.broadcast_repository import BroadcastRepository
 from bot.database.repositories.translation_repository import TranslationRepository
+from bot.database.repositories.usage_repository import UsageRepository
 from bot.services.broadcast import (
     DEFAULT_CONCURRENCY,
     DEFAULT_RATE_PER_SEC,
     RateLimiter,
     is_permanently_unreachable,
 )
+from bot.utils.formatters import format_datetime
+from bot.utils.text import html_escape
 
 
 logger = logging.getLogger(__name__)
@@ -35,13 +39,33 @@ logger = logging.getLogger(__name__)
 class AdminService:
     """Business logic for admin panel"""
 
-    def __init__(self, session: AsyncSession, bot: Bot):
+    def __init__(self, session: AsyncSession, bot: Bot | None = None):
         self.session = session
         self.bot = bot
         self.user_repo = UserRepository(session)
         self.channel_repo = ChannelRepository(session)
         self.broadcast_repo = BroadcastRepository(session)
         self.translation_repo = TranslationRepository(session)
+        self.usage_repo = UsageRepository(session)
+
+    async def log_action(
+        self,
+        admin_id: int,
+        action: str,
+        *,
+        target_type: str | None = None,
+        target_id: str | int | None = None,
+        payload: dict | None = None,
+    ) -> None:
+        self.session.add(
+            AdminAction(
+                admin_id=admin_id,
+                action=action,
+                target_type=target_type,
+                target_id=str(target_id) if target_id is not None else None,
+                payload=payload or {},
+            )
+        )
 
     async def _fetch_chat_via_http(self, chat_id: str) -> tuple[bool, dict | str]:
         """Fallback for Telegram API schema changes that aiogram can't decode yet."""
@@ -458,3 +482,176 @@ class AdminService:
 
     async def request_broadcast_cancel(self, broadcast_id: int) -> bool:
         return await self.broadcast_repo.request_cancel(broadcast_id)
+
+    # ── Foydalanuvchi boshqaruvi ───────────────────────────────
+
+    STATUS_LABELS = {
+        "active": "Aktiv",
+        "blocked_bot": "Botni bloklagan",
+        "banned": "Taqiqlangan",
+        "deleted": "O'chirilgan / yetib bo'lmas",
+    }
+
+    async def find_users(self, raw_query: str) -> list[User]:
+        """Telegram ID, ichki ID yoki @username bo'yicha qidiradi."""
+        query = (raw_query or "").strip()
+        if not query:
+            return []
+
+        digit_part = query.lstrip("@")
+        if digit_part.lstrip("-").isdigit():
+            number = int(digit_part)
+            # Avval telegram_id (admin odatda shuni yuboradi), keyin ichki id.
+            by_tg = await self.user_repo.get_by_telegram_id(number)
+            if by_tg:
+                return [by_tg]
+            by_id = await self.user_repo.get_by_id(number)
+            return [by_id] if by_id else []
+
+        return await self.user_repo.find_by_username(query)
+
+    async def format_user_card(self, user: User) -> str:
+        """Admin uchun foydalanuvchi kartochkasi (HTML)."""
+        settings_row = user.settings
+        override = settings_row.daily_limit_override if settings_row else None
+        if override is None:
+            limit_text = f"{settings.DAILY_TRANSLATION_LIMIT} (standart)"
+        elif override <= 0:
+            limit_text = "cheksiz"
+        else:
+            limit_text = f"{override} (alohida)"
+
+        usage = await self.usage_repo.get(user.id)
+        used_today = usage.translations_count if usage else 0
+        tts_today = usage.tts_count if usage else 0
+
+        username = f"@{html_escape(user.username)}" if user.username else "—"
+        name_parts = [user.first_name or "", user.last_name or ""]
+        name = html_escape(" ".join(p for p in name_parts if p).strip() or "—")
+        status = self.STATUS_LABELS.get(user.status, user.status)
+        premium = "ha" if user.is_premium else "yo'q"
+        source = html_escape(user.source) if user.source else "—"
+        ui_lang = (settings_row.interface_lang if settings_row else None) or "—"
+        direction = (
+            f"{settings_row.source_lang} → {settings_row.target_lang}"
+            if settings_row
+            else "—"
+        )
+
+        return (
+            "👤 <b>Foydalanuvchi</b>\n\n"
+            f"🆔 DB: <code>{user.id}</code>\n"
+            f"📱 TG: <code>{user.telegram_id}</code>\n"
+            f"👤 {name} · {username}\n"
+            f"🏷 Rol: <b>{user.role}</b>\n"
+            f"📊 Holat: <b>{status}</b>\n"
+            f"⭐ Premium: {premium}\n"
+            f"🗣 Interfeys: {ui_lang}\n"
+            f"🌐 Yo'nalish: {direction}\n"
+            f"📈 Bugun: {used_today} tarjima · {tts_today} ovoz\n"
+            f"🔢 Kunlik limit: <b>{limit_text}</b>\n"
+            f"🔗 Manba: {source}\n"
+            f"🕐 Ko'rilgan: {format_datetime(user.last_seen_at)}\n"
+            f"📅 Ro'yxat: {format_datetime(user.created_at)}"
+        )
+
+    def _protected_user(self, user: User) -> bool:
+        """Admin/owner yoki env dagi adminlarni tasodifan taqiqlash mumkin emas."""
+        if user.role in ("admin", "owner"):
+            return True
+        return user.telegram_id in settings.ADMIN_USER_IDS
+
+    async def ban_user(self, admin_id: int, target_user_id: int) -> tuple[bool, str]:
+        user = await self.user_repo.get_by_id(target_user_id)
+        if not user:
+            return False, "Foydalanuvchi topilmadi."
+        if self._protected_user(user):
+            return False, "Admin yoki owner ni taqiqlab bo'lmaydi."
+        if user.status == "banned":
+            return False, "Foydalanuvchi allaqachon taqiqlangan."
+
+        await self.user_repo.set_status(user.id, "banned")
+        await self.log_action(
+            admin_id,
+            "user.ban",
+            target_type="user",
+            target_id=user.id,
+            payload={"telegram_id": user.telegram_id, "prev_status": user.status},
+        )
+        await self.session.commit()
+        return True, f"🚫 Taqiqlandi: <code>{user.telegram_id}</code>"
+
+    async def unban_user(self, admin_id: int, target_user_id: int) -> tuple[bool, str]:
+        user = await self.user_repo.get_by_id(target_user_id)
+        if not user:
+            return False, "Foydalanuvchi topilmadi."
+        if user.status != "banned":
+            return False, (
+                f"Foydalanuvchi taqiqlangan emas (hozirgi holat: "
+                f"{self.STATUS_LABELS.get(user.status, user.status)})."
+            )
+
+        await self.user_repo.set_status(user.id, "active")
+        await self.log_action(
+            admin_id,
+            "user.unban",
+            target_type="user",
+            target_id=user.id,
+            payload={"telegram_id": user.telegram_id},
+        )
+        await self.session.commit()
+        return True, f"✅ Taqiq olindi: <code>{user.telegram_id}</code>"
+
+    async def set_user_limit(
+        self, admin_id: int, target_user_id: int, limit: int
+    ) -> tuple[bool, str]:
+        if limit < 0:
+            return False, "Limit manfiy bo'lishi mumkin emas. Cheksiz uchun 0 yuboring."
+        if limit > 1_000_000:
+            return False, "Limit juda katta (maks. 1 000 000)."
+
+        user = await self.user_repo.get_by_id(target_user_id)
+        if not user:
+            return False, "Foydalanuvchi topilmadi."
+        if user.settings is None:
+            return False, "Foydalanuvchi sozlamalari topilmadi."
+
+        await self.user_repo.set_daily_limit_override(user.id, limit)
+        await self.log_action(
+            admin_id,
+            "user.set_limit",
+            target_type="user",
+            target_id=user.id,
+            payload={"telegram_id": user.telegram_id, "limit": limit},
+        )
+        await self.session.commit()
+
+        label = "cheksiz" if limit <= 0 else str(limit)
+        return True, (
+            f"🔢 Limit yangilandi: <code>{user.telegram_id}</code> → "
+            f"<b>{label}</b>"
+        )
+
+    async def clear_user_limit(
+        self, admin_id: int, target_user_id: int
+    ) -> tuple[bool, str]:
+        user = await self.user_repo.get_by_id(target_user_id)
+        if not user:
+            return False, "Foydalanuvchi topilmadi."
+        if user.settings is None:
+            return False, "Foydalanuvchi sozlamalari topilmadi."
+
+        prev = user.settings.daily_limit_override
+        await self.user_repo.set_daily_limit_override(user.id, None)
+        await self.log_action(
+            admin_id,
+            "user.clear_limit",
+            target_type="user",
+            target_id=user.id,
+            payload={"telegram_id": user.telegram_id, "prev_limit": prev},
+        )
+        await self.session.commit()
+        return True, (
+            f"♻️ Limit tozalandi: <code>{user.telegram_id}</code> → "
+            f"standart ({settings.DAILY_TRANSLATION_LIMIT})"
+        )

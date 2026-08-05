@@ -7,6 +7,7 @@ ishlaydi va obuna bo'lmagan foydalanuvchini to'xtatadi.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Awaitable, Callable, Dict
 
 from aiogram import BaseMiddleware
@@ -22,6 +23,7 @@ logger = logging.getLogger(__name__)
 # Obunadan qat'i nazar o'tishi kerak bo'lgan update'lar.
 ALLOWED_COMMANDS = ("/start", "/help")
 ALLOWED_CALLBACKS = ("check_subscription",)
+_HTML_TAG = re.compile(r"<[^>]+>")
 
 
 class SubscriptionMiddleware(BaseMiddleware):
@@ -35,11 +37,31 @@ class SubscriptionMiddleware(BaseMiddleware):
         if user is None:
             return await handler(event, data)
 
-        # Adminlarga majburiy obuna qo'llanmaydi.
         tg_user = data.get("event_from_user")
-        if user.role in ("admin", "owner") or (
+        is_admin = user.role in ("admin", "owner") or (
             tg_user and tg_user.id in settings.ADMIN_USER_IDS
-        ):
+        )
+
+        # Admin tomonidan taqiqlangan — tarjima va boshqa oqimlar yopiq.
+        # Env/admin rollari o'tadi (o'zini yoki boshqa adminni taqiqlash xatosidan
+        # qutulish va panel ishlashi uchun).
+        if user.status == "banned" and not is_admin:
+            t = data.get("t")
+            ban_text = (
+                t.BANNED.format(admin=settings.ADMIN_USERNAME)
+                if t is not None
+                else "🚫 Hisobingiz bloklangan."
+            )
+            if isinstance(event, Message):
+                await event.answer(ban_text)
+            elif isinstance(event, CallbackQuery):
+                # Alert HTML ni render qilmaydi; uzunlik 200 belgidan oshmasin.
+                plain = _HTML_TAG.sub("", ban_text)
+                await event.answer(plain[:200], show_alert=True)
+            return
+
+        # Adminlarga majburiy obuna qo'llanmaydi.
+        if is_admin:
             return await handler(event, data)
 
         if isinstance(event, Message):
