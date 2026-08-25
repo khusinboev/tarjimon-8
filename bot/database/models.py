@@ -448,11 +448,19 @@ class Channel(Base):
 
 
 BROADCAST_MODES = ("copy", "forward")
-# `cancel_requested` — bekor qilish so'ralgan, lekin sikl hali tugamagan.
-# Bu haqiqiy oraliq holat: sikl uni har iteratsiyada tekshiradi.
+# `*_requested` — admin signalni bazaga yozdi, lekin ishlab turgan
+# background vazifa hali buni ko'rmagan (u har ~2-3 soniyada tekshiradi).
+# `paused` — vazifa signalni ko'rib, kursorini saqlab, o'zini toza
+# to'xtatdi; qayta boshlash uchun YANGI background vazifa kerak bo'ladi
+# (eskisi tugagan). Bot restart bo'lsa `running`/`pause_requested`/
+# `cancel_requested` holatidagi qatorlar ishga tushishda `paused`ga
+# o'tkaziladi — ularni "hali ketyapti" deb hisoblashning iloji yo'q,
+# chunki ularni yuritayotgan vazifa jarayon bilan birga o'lgan.
 BROADCAST_STATUSES = (
     "created",
     "running",
+    "pause_requested",
+    "paused",
     "cancel_requested",
     "cancelled",
     "completed",
@@ -470,9 +478,28 @@ class Broadcast(Base):
     content_preview = Column(Text)
     status = Column(String(20), default="created", server_default=sql_text("'created'"), nullable=False, index=True)
 
+    # Manba xabar — bazaga yoziladi, `Message` obyektiga emas, chunki
+    # pauzadan keyingi YANGI background vazifa yoki bot restartidan keyingi
+    # tiklash paytida asl `Message` allaqachon yo'q bo'ladi.
+    src_chat_id = Column(BigInteger)
+    src_message_id = Column(BigInteger)
+
+    # Oxirgi qayta ishlangan `users.id` — davom ettirish shu yerdan
+    # boshlanadi. `users.id` tabiiy o'suvchi kursor: tarqatish davomida
+    # qo'shilgan yangi user doim bundan katta, ya'ni alohida sinxronlashsiz
+    # ham qamrab olinadi.
+    cursor_user_id = Column(BigInteger)
+    # Faqat HAQIQATAN yuborilayotgan vaqt (navbat/pauza emas) — tezlik va
+    # qolgan-vaqt hisobi shundan olinadi.
+    active_seconds = Column(Integer, default=0, server_default=sql_text("0"), nullable=False)
+
     total_targets = Column(Integer, default=0, server_default=sql_text("0"), nullable=False)
     success_count = Column(Integer, default=0, server_default=sql_text("0"), nullable=False)
     failed_count = Column(Integer, default=0, server_default=sql_text("0"), nullable=False)
+
+    # Fatal xato tafsiloti (masalan "xabar matni bo'sh") — nega to'xtaganini
+    # tushuntiradi, faqat `status='failed'` bo'lganda to'ldiriladi.
+    error = Column(Text)
 
     created_at = _created_at()
     started_at = Column(DateTime(timezone=True))

@@ -10,12 +10,22 @@ class BroadcastRepository:
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    async def create_broadcast(self, created_by: int, mode: str, content_preview: str | None, total_targets: int) -> Broadcast:
+    async def create_broadcast(
+        self,
+        created_by: int,
+        mode: str,
+        content_preview: str | None,
+        total_targets: int,
+        src_chat_id: int,
+        src_message_id: int,
+    ) -> Broadcast:
         broadcast = Broadcast(
             created_by=created_by,
             mode=mode,
             content_preview=content_preview,
             total_targets=total_targets,
+            src_chat_id=src_chat_id,
+            src_message_id=src_message_id,
             status="running",
             started_at=utcnow(),
         )
@@ -34,7 +44,10 @@ class BroadcastRepository:
         self.session.add(delivery)
         # No commit here — caller commits in batches
 
-    async def finish_broadcast(self, broadcast_id: int, success_count: int, failed_count: int) -> None:
+    async def finish_broadcast(
+        self, broadcast_id: int, success_count: int, failed_count: int,
+        *, active_seconds: int = 0,
+    ) -> None:
         await self.session.execute(
             update(Broadcast)
             .where(Broadcast.id == broadcast_id)
@@ -42,18 +55,24 @@ class BroadcastRepository:
                 status="completed",
                 success_count=success_count,
                 failed_count=failed_count,
+                active_seconds=active_seconds,
                 finished_at=utcnow(),
             )
         )
         await self.session.commit()
 
-    async def fail_broadcast(self, broadcast_id: int, failed_count: int) -> None:
+    async def fail_broadcast(
+        self, broadcast_id: int, failed_count: int, *, error: str | None = None,
+        active_seconds: int = 0,
+    ) -> None:
         await self.session.execute(
             update(Broadcast)
             .where(Broadcast.id == broadcast_id)
             .values(
                 status="failed",
                 failed_count=failed_count,
+                active_seconds=active_seconds,
+                error=error,
                 finished_at=utcnow(),
             )
         )
@@ -65,16 +84,131 @@ class BroadcastRepository:
         )
         return result.scalar_one_or_none()
 
+    async def get(self, broadcast_id: int) -> Broadcast | None:
+        return await self.session.get(Broadcast, broadcast_id)
+
+    async def get_active(self) -> Broadcast | None:
+        """Hozir ketayotgan yoki pauzadagi yagona tarqatish (bo'lsa).
+
+        Bir vaqtda faqat bitta faol tarqatishga ruxsat beriladi (yangisini
+        boshlashdan oldin tekshiriladi) — shuning uchun bu yerda ko'plik
+        emas, bitta natija kutiladi.
+        """
+        result = await self.session.execute(
+            select(Broadcast)
+            .where(
+                Broadcast.status.in_(
+                    ("running", "pause_requested", "paused", "cancel_requested")
+                )
+            )
+            .order_by(Broadcast.id.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
     async def request_cancel(self, broadcast_id: int) -> bool:
+        """Ishlab turgan tarqatishni bekor qilishni so'raydi (signal).
+
+        Pauzadagi tarqatishda ishlab turgan vazifa yo'q — signalni ko'radigan
+        hech kim yo'q, shuning uchun darhol `cancelled` qilinadi.
+        """
+        result = await self.session.execute(
+            update(Broadcast)
+            .where(Broadcast.id == broadcast_id, Broadcast.status == "paused")
+            .values(status="cancelled", finished_at=utcnow())
+        )
+        if (result.rowcount or 0) == 0:
+            result = await self.session.execute(
+                update(Broadcast)
+                .where(
+                    Broadcast.id == broadcast_id,
+                    Broadcast.status.in_(("running", "pause_requested")),
+                )
+                .values(status="cancel_requested")
+            )
+        await self.session.commit()
+        return (result.rowcount or 0) > 0
+
+    async def request_pause(self, broadcast_id: int) -> bool:
         result = await self.session.execute(
             update(Broadcast)
             .where(Broadcast.id == broadcast_id, Broadcast.status == "running")
-            .values(status="cancel_requested")
+            .values(status="pause_requested")
         )
         await self.session.commit()
         return (result.rowcount or 0) > 0
 
-    async def mark_cancelled(self, broadcast_id: int, success_count: int, failed_count: int) -> None:
+    async def mark_paused(
+        self, broadcast_id: int, *, cursor_user_id: int | None, active_seconds: int,
+        success_count: int, failed_count: int,
+    ) -> None:
+        """Background vazifa pauza so'rovini ko'rib, o'zini to'xtatganda chaqiradi."""
+        await self.session.execute(
+            update(Broadcast)
+            .where(Broadcast.id == broadcast_id)
+            .values(
+                status="paused",
+                cursor_user_id=cursor_user_id,
+                active_seconds=active_seconds,
+                success_count=success_count,
+                failed_count=failed_count,
+            )
+        )
+        await self.session.commit()
+
+    async def resume(self, broadcast_id: int) -> bool:
+        """`paused` -> `running`. Chaqiruvchi shundan keyin YANGI background
+        vazifa boshlashi kerak — eskisi pauzada tugagan edi."""
+        result = await self.session.execute(
+            update(Broadcast)
+            .where(Broadcast.id == broadcast_id, Broadcast.status == "paused")
+            .values(status="running")
+        )
+        await self.session.commit()
+        return (result.rowcount or 0) > 0
+
+    async def checkpoint(
+        self, broadcast_id: int, *, cursor_user_id: int | None, active_seconds: int,
+        success_count: int, failed_count: int, total_targets: int,
+    ) -> None:
+        """Davriy oraliq saqlash — jarayon o'lsa ham oxirgi shu nuqtadan
+        davom etadi (pauza qilinganda emas, muntazam)."""
+        await self.session.execute(
+            update(Broadcast)
+            .where(Broadcast.id == broadcast_id)
+            .values(
+                cursor_user_id=cursor_user_id,
+                active_seconds=active_seconds,
+                success_count=success_count,
+                failed_count=failed_count,
+                total_targets=total_targets,
+            )
+        )
+        await self.session.commit()
+
+    async def recover_interrupted(self) -> list[int]:
+        """Bot ishga tushganda chaqiriladi: `running`/`pause_requested`/
+        `cancel_requested` holatidagi qatorlarni yuritayotgan vazifa jarayon
+        bilan birga o'lgan — ularni `paused`ga o'tkazadi (kursor saqlanadi,
+        admin "▶️ Davom ettirish" bilan qayta boshlaydi).
+
+        `(bo'sh bo'lmasa) o'zgartirilgan ID'lar ro'yxati` — ishga tushish
+        logiga yozish uchun.
+        """
+        result = await self.session.execute(
+            update(Broadcast)
+            .where(Broadcast.status.in_(("running", "pause_requested", "cancel_requested")))
+            .values(status="paused")
+            .returning(Broadcast.id)
+        )
+        ids = [row[0] for row in result.all()]
+        await self.session.commit()
+        return ids
+
+    async def mark_cancelled(
+        self, broadcast_id: int, success_count: int, failed_count: int,
+        *, active_seconds: int = 0,
+    ) -> None:
         await self.session.execute(
             update(Broadcast)
             .where(Broadcast.id == broadcast_id)
@@ -82,69 +216,21 @@ class BroadcastRepository:
                 status="cancelled",
                 success_count=success_count,
                 failed_count=failed_count,
+                active_seconds=active_seconds,
                 finished_at=utcnow(),
             )
         )
         await self.session.commit()
 
-    async def get_running_broadcasts(self) -> list[Broadcast]:
+    async def recent(self, limit: int = 10) -> list[Broadcast]:
+        """Tugagan (yoki bekor qilingan) so'nggi tarqatishlar — tarix uchun."""
         result = await self.session.execute(
             select(Broadcast)
-            .where(Broadcast.status.in_(["running", "cancel_requested"]))
-            .order_by(Broadcast.created_at.desc())
+            .where(Broadcast.status.in_(("completed", "cancelled", "failed")))
+            .order_by(Broadcast.id.desc())
+            .limit(limit)
         )
         return list(result.scalars().all())
-
-    async def live_stats(self) -> list[dict]:
-        """Faqat hozir ishlab turgan tarqatishlar.
-
-        Tugagan tarqatishlar ko'rsatilmaydi — admin uchun muhim savol
-        "hozir nima bo'lyapti", tarix emas.
-
-        Hisob `broadcast_deliveries` dan olinadi, `broadcasts.success_count`
-        dan emas: u faqat tarqatish tugagach yoziladi, ya'ni jarayon davomida
-        nol bo'lib turardi.
-        """
-        rows = await self.session.execute(
-            select(
-                Broadcast.id,
-                Broadcast.status,
-                Broadcast.total_targets,
-                Broadcast.content_preview,
-                Broadcast.started_at,
-                Broadcast.finished_at,
-                func.count(BroadcastDelivery.id)
-                .filter(BroadcastDelivery.status == "delivered")
-                .label("delivered"),
-                func.count(BroadcastDelivery.id)
-                .filter(BroadcastDelivery.status == "failed")
-                .label("failed"),
-            )
-            .outerjoin(BroadcastDelivery, BroadcastDelivery.broadcast_id == Broadcast.id)
-            .group_by(
-                Broadcast.id,
-                Broadcast.status,
-                Broadcast.total_targets,
-                Broadcast.content_preview,
-                Broadcast.started_at,
-                Broadcast.finished_at,
-            )
-            .where(Broadcast.status.in_(("running", "cancel_requested")))
-            .order_by(Broadcast.id.desc())
-        )
-        return [
-            {
-                "id": r.id,
-                "status": r.status,
-                "total": r.total_targets,
-                "preview": r.content_preview,
-                "started_at": r.started_at,
-                "finished_at": r.finished_at,
-                "delivered": r.delivered,
-                "failed": r.failed,
-            }
-            for r in rows.all()
-        ]
 
     async def failure_reasons(self, broadcast_id: int, limit: int = 5) -> list[tuple[str, int]]:
         rows = await self.session.execute(

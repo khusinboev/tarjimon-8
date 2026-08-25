@@ -1,14 +1,11 @@
 import asyncio
 import logging
 from datetime import datetime
-from typing import Optional, Awaitable, Callable
+from typing import Optional
 import aiohttp
 from aiogram import Bot
-from aiogram.types import Message
 from aiogram.exceptions import (
-    TelegramForbiddenError,
     TelegramBadRequest,
-    TelegramRetryAfter,
     TelegramAPIError,
     ClientDecodeError,
 )
@@ -17,18 +14,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 
 from bot.config.settings import settings
-from bot.database.models import AdminAction, Channel, User
+from bot.database.models import AdminAction, Broadcast, Channel, User
 from bot.database.repositories.user_repository import UserRepository
 from bot.database.repositories.channel_repository import ChannelRepository
 from bot.database.repositories.broadcast_repository import BroadcastRepository
 from bot.database.repositories.translation_repository import TranslationRepository
 from bot.database.repositories.usage_repository import UsageRepository
-from bot.services.broadcast import (
-    DEFAULT_CONCURRENCY,
-    DEFAULT_RATE_PER_SEC,
-    RateLimiter,
-    is_permanently_unreachable,
-)
 from bot.services.events import utcnow
 from bot.services.system_config import get_effective_limits
 from bot.utils.formatters import format_datetime
@@ -300,189 +291,66 @@ class AdminService:
         await self.session.commit()
         return True, "Kanal muvaffaqiyatli o'chirildi."
 
-    async def run_broadcast(
-        self,
-        admin_id: int,
-        source_message: Message,
-        mode: str,
-        progress_callback: Optional[Callable[[int, int, int, int], Awaitable[None]]] = None,
-    ) -> dict:
-        """Xabarni barcha aktiv foydalanuvchilarga tarqatadi.
+    async def send_broadcast_test(
+        self, chat_id: int, mode: str, src_chat_id: int, src_message_id: int
+    ) -> tuple[bool, str]:
+        """Yakuniy tasdiqdan OLDIN — xabarni faqat shu (odatda admin)
+        chatiga yuborib ko'radi.
 
-        Tezlik ikki mexanizm bilan boshqariladi (batafsil: services/broadcast.py):
-        semafor tarmoq kutishini yashiradi, `RateLimiter` esa Telegram'ga
-        ketadigan chaqiruvlar oqimini tekis ushlab turadi. Ketma-ket yuborishda
-        tezlik ~5/sek bilan cheklangan edi; bu yerda ~15/sek.
+        Xabarning o'zi buzuq bo'lsa (bo'sh, buzuq HTML, o'chirilgan media)
+        shu yerda ko'rinadi — real foydalanuvchilarga urinishdan oldin,
+        hech kimga bekorga xato ketmaydi.
         """
+        try:
+            if mode == "forward":
+                await self.bot.forward_message(
+                    chat_id=chat_id, from_chat_id=src_chat_id, message_id=src_message_id
+                )
+            else:
+                await self.bot.copy_message(
+                    chat_id=chat_id, from_chat_id=src_chat_id, message_id=src_message_id
+                )
+            return True, "✅ Sinov yuborildi."
+        except Exception as exc:  # noqa: BLE001 — adminga xom xatoni ko'rsatamiz
+            return False, f"❌ Sinov muvaffaqiyatsiz: {str(exc)[:300]}"
+
+    async def start_broadcast(
+        self, admin_id: int, src_chat_id: int, src_message_id: int,
+        mode: str, content_preview: Optional[str],
+    ) -> Broadcast:
+        """Tarqatish yozuvini yaratadi. Haqiqiy yuborish bu yerda EMAS —
+        chaqiruvchi `bot/services/broadcast_runner.start()` bilan fon
+        vazifasini ishga tushiradi, aks holda adminning o'zi tarqatish
+        tugaguncha bandlashib qolardi (aiogram FSM qulfi)."""
         if mode not in {"copy", "forward"}:
             raise ValueError("mode 'copy' yoki 'forward' bo'lishi kerak")
 
-        # `(user_id, telegram_id)` juftliklari: birinchisi FK uchun, ikkinchisi
-        # Telegram API uchun. Sxemada FK'lar `users.id` ga qaraydi.
-        targets = await self.user_repo.iter_broadcast_targets(exclude_user_id=admin_id)
-        preview = (source_message.text or source_message.caption or "<media>")[:500]
-        broadcast = await self.broadcast_repo.create_broadcast(
+        total = await self.user_repo.count_broadcast_targets(exclude_user_id=admin_id)
+        return await self.broadcast_repo.create_broadcast(
             created_by=admin_id,
             mode=mode,
-            content_preview=preview,
-            total_targets=len(targets),
+            content_preview=content_preview,
+            total_targets=total,
+            src_chat_id=src_chat_id,
+            src_message_id=src_message_id,
         )
 
-        total = len(targets)
-        limiter = RateLimiter(DEFAULT_RATE_PER_SEC)
-        semaphore = asyncio.Semaphore(DEFAULT_CONCURRENCY)
+    async def get_active_broadcast(self) -> Optional[Broadcast]:
+        return await self.broadcast_repo.get_active()
 
-        success = 0
-        failed = 0
-        blocked = 0
-        unreachable = 0
-        recovered = 0
-        failures: list[tuple[int, str]] = []
-        cancelled = False
+    async def get_broadcast(self, broadcast_id: int) -> Optional[Broadcast]:
+        return await self.broadcast_repo.get(broadcast_id)
 
-        async def deliver(telegram_id: int) -> tuple[bool, Optional[str]]:
-            """Telegram'ga yuboradi. `(yetdimi, xato_matni)` qaytaradi.
+    async def broadcast_history(self, limit: int = 10) -> list[Broadcast]:
+        return await self.broadcast_repo.recent(limit=limit)
 
-            Bazaga ataylab tegmaydi. `AsyncSession` parallel ishlatishga
-            xavfsiz emas: bir nechta korutina bitta sessiyada `execute()`
-            chaqirsa sessiya holati buziladi. Shuning uchun yozishni
-            chaqiruvchi batch tugagach ketma-ket bajaradi.
-            """
-            async with semaphore:
-                error_text: Optional[str] = None
+    async def pause_broadcast(self, broadcast_id: int) -> bool:
+        return await self.broadcast_repo.request_pause(broadcast_id)
 
-                for attempt in range(3):
-                    await limiter.wait()
-                    try:
-                        if mode == "forward":
-                            await self.bot.forward_message(
-                                chat_id=telegram_id,
-                                from_chat_id=source_message.chat.id,
-                                message_id=source_message.message_id,
-                            )
-                        else:
-                            await self.bot.copy_message(
-                                chat_id=telegram_id,
-                                from_chat_id=source_message.chat.id,
-                                message_id=source_message.message_id,
-                            )
-                        return True, None
-                    except TelegramRetryAfter as exc:
-                        wait = max(int(getattr(exc, "retry_after", 1)), 1)
-                        # Limitga bitta so'rov tegsa qolgani ham tegadi —
-                        # barcha yuboruvchilarni birga kechiktiramiz, aks holda
-                        # flood-wait cho'zilib ketardi.
-                        limiter.pause(wait + 0.5)
-                        await asyncio.sleep(wait)
-                    except TelegramForbiddenError:
-                        # Botni bloklagan yoki akkauntni o'chirgan.
-                        return False, "forbidden"
-                    except TelegramBadRequest as exc:
-                        # Chat topilmadi va shunga o'xshash qaytarib bo'lmaydigan
-                        # xatolar — qayta urinish foydasiz.
-                        return False, str(exc)[:200]
-                    except TelegramAPIError as exc:
-                        error_text = str(exc)[:200]
-                        await asyncio.sleep(1 + attempt)
+    async def resume_broadcast(self, broadcast_id: int) -> bool:
+        return await self.broadcast_repo.resume(broadcast_id)
 
-                return False, error_text or "noma'lum"
-
-        # Batch'lar: Telegram chaqiruvlari parallel, bazaga yozish va bekor
-        # qilish tekshiruvi batch oxirida ketma-ket.
-        batch_size = 50
-        for offset in range(0, total, batch_size):
-            status = await self.broadcast_repo.get_status(broadcast.id)
-            if status == "cancel_requested":
-                cancelled = True
-                break
-
-            batch = targets[offset : offset + batch_size]
-            results = await asyncio.gather(
-                *(deliver(tg_id) for _, tg_id in batch),
-                return_exceptions=True,
-            )
-
-            reached: list[int] = []
-
-            for (user_id, telegram_id), result in zip(batch, results):
-                if isinstance(result, BaseException):
-                    delivered, error_text = False, str(result)[:200]
-                else:
-                    delivered, error_text = result
-
-                if delivered:
-                    success += 1
-                    reached.append(user_id)
-                    await self.broadcast_repo.add_delivery(
-                        broadcast.id, user_id, "delivered"
-                    )
-                    continue
-
-                failed += 1
-                failures.append((telegram_id, error_text or "noma'lum"))
-                await self.broadcast_repo.add_delivery(
-                    broadcast.id, user_id, "failed", error_text
-                )
-
-                if error_text == "forbidden":
-                    # Bloklagan — qaytishi mumkin, `/start` da tiklanadi.
-                    await self.user_repo.mark_blocked(user_id)
-                    blocked += 1
-                elif is_permanently_unreachable(error_text):
-                    # Chat umuman yo'q — keyingi tarqatishlarga tushmasin.
-                    await self.user_repo.mark_unreachable(user_id)
-                    unreachable += 1
-
-            # Bloklagan deb belgilangan odamga xabar yetib borgan bo'lsa —
-            # u blokdan chiqargan. Telegram bu haqda xabar bermaydi, bilishning
-            # yagona yo'li shu. Bitta so'rov: allaqachon `active` bo'lganlarga
-            # ta'sir qilmaydi.
-            recovered += await self.user_repo.mark_many_unblocked(reached)
-
-            await self.session.commit()
-
-            if progress_callback:
-                await progress_callback(success + failed, total, success, failed)
-
-        processed = success + failed
-        await self.session.commit()
-
-        if cancelled:
-            await self.broadcast_repo.mark_cancelled(broadcast.id, success, failed)
-            status_label = "cancelled"
-        elif failed == total and total > 0:
-            await self.broadcast_repo.fail_broadcast(broadcast.id, failed)
-            status_label = "failed"
-        else:
-            await self.broadcast_repo.finish_broadcast(broadcast.id, success, failed)
-            status_label = "completed"
-
-        return {
-            "broadcast_id": broadcast.id,
-            "status": status_label,
-            "total": total,
-            "processed": processed,
-            "success": success,
-            "failed": failed,
-            "blocked": blocked,
-            "unreachable": unreachable,
-            "recovered": recovered,
-            "failures": failures,
-        }
-
-    async def get_running_broadcasts_text(self) -> str:
-        broadcasts = await self.broadcast_repo.get_running_broadcasts()
-        if not broadcasts:
-            return "Hozir aktiv broadcast yo'q."
-
-        lines = ["Aktiv broadcastlar:"]
-        for b in broadcasts:
-            lines.append(
-                f"ID: {b.id} | status: {b.status} | total: {b.total_targets} | success: {b.success_count} | failed: {b.failed_count}"
-            )
-        return "\n".join(lines)
-
-    async def request_broadcast_cancel(self, broadcast_id: int) -> bool:
+    async def cancel_broadcast(self, broadcast_id: int) -> bool:
         return await self.broadcast_repo.request_cancel(broadcast_id)
 
     # ── Foydalanuvchi boshqaruvi ───────────────────────────────

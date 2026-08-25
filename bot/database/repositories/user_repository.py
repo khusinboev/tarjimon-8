@@ -177,8 +177,8 @@ class UserRepository:
 
         `blocked_bot` dan farqi: bloklagan odam botni qayta ochsa holat
         tiklanadi, bu esa qaytmaydi (akkaunt o'chirilgan, id buzuq yoki
-        nishon o'zi bot). `iter_broadcast_targets` faqat `active` ni oladi,
-        ya'ni bunday yozuvlar keyingi tarqatishlarga umuman tushmaydi.
+        nishon o'zi bot). `deleted` `BROADCAST_STATUSES` da yo'q, ya'ni
+        bunday yozuvlar keyingi tarqatishlarga umuman tushmaydi.
         """
         await self.session.execute(
             update(User).where(User.id == user_id).values(status="deleted")
@@ -346,14 +346,35 @@ class UserRepository:
     #   `banned`  — biz o'zimiz taqiqlaganmiz.
     BROADCAST_STATUSES = ("active", "blocked_bot")
 
-    async def iter_broadcast_targets(
-        self, exclude_user_id: Optional[int] = None
+    async def count_broadcast_targets(self, exclude_user_id: Optional[int] = None) -> int:
+        """Taxminiy jami — tarqatish davomida yangi userlar qo'shilgani uchun
+        aniq son emas, faqat boshlang'ich baho (progress % shuning uchun
+        davriy ravishda qayta hisoblanadi)."""
+        query = select(func.count(User.id)).where(User.status.in_(self.BROADCAST_STATUSES))
+        if exclude_user_id is not None:
+            query = query.where(User.id != exclude_user_id)
+        return (await self.session.execute(query)).scalar_one()
+
+    async def fetch_broadcast_batch(
+        self,
+        *,
+        after_id: Optional[int],
+        limit: int,
+        exclude_user_id: Optional[int] = None,
     ) -> List[Tuple[int, int]]:
-        """Xabar tarqatish uchun `(user_id, telegram_id)` ro'yxati."""
+        """`(user_id, telegram_id)` — `after_id` dan keyingi, `id` bo'yicha.
+
+        `users.id` — avtomatik ortib boruvchi PK, ya'ni tabiiy kursor:
+        tarqatish davomida qo'shilgan yangi user doim `after_id`dan katta
+        bo'ladi va keyingi chaqiruvda o'zi qamrab olinadi — alohida
+        "yangi userlarni sinxronlash" bosqichi kerak emas.
+        """
         query = select(User.id, User.telegram_id).where(
             User.status.in_(self.BROADCAST_STATUSES)
         )
+        if after_id is not None:
+            query = query.where(User.id > after_id)
         if exclude_user_id is not None:
             query = query.where(User.id != exclude_user_id)
-        result = await self.session.execute(query.order_by(User.id))
+        result = await self.session.execute(query.order_by(User.id).limit(limit))
         return [(row[0], row[1]) for row in result.all()]

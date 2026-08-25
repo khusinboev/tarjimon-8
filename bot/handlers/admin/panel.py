@@ -1,27 +1,30 @@
-from aiogram import Router, F
+from aiogram import Bot, Router, F
 import logging
 import re
+from typing import Awaitable, Callable
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
-from aiogram.types import BufferedInputFile, CallbackQuery, Message
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.types import Message
 from sqlalchemy import select
 
 from bot.config.settings import settings
 from bot.database.models import SystemSettings
-from bot.database.repositories.broadcast_repository import BroadcastRepository
 from bot.database.session import AsyncSessionLocal
 from bot.keyboards.admin import (
     admin_main_keyboard,
     admin_channels_keyboard,
     admin_broadcast_keyboard,
+    broadcast_active_keyboard,
+    broadcast_test_confirm_keyboard,
+    broadcast_peak_confirm_keyboard,
     admin_users_keyboard,
     admin_user_actions_keyboard,
     admin_global_limits_keyboard,
-    broadcast_confirm_keyboard,
     back_keyboard,
 )
+from bot.services import broadcast_runner
 from bot.services.admin_service import AdminService
+from bot.services.broadcast_progress import render_card, render_history_line
 from bot.services.stats import StatsService, render as render_stats
 from bot.services.events import utcnow
 from bot.services.system_config import get_effective_limits, set_limit as set_system_limit
@@ -30,9 +33,6 @@ from bot.states.admin import AdminStates
 
 router = Router()
 logger = logging.getLogger(__name__)
-
-# Cho'qqi soatda tasdiq kutayotgan tarqatishlar: admin_id -> (mode, chat_id, message_id)
-_pending_broadcasts: dict[int, tuple[str, int, int]] = {}
 
 
 def is_admin(user_id: int) -> bool:
@@ -52,6 +52,17 @@ async def go_back(message: Message, state: FSMContext):
     current = await state.get_state()
     data = await state.get_data()
     target_id = data.get("target_user_id")
+
+    # Tarqatish sehrgari → reklama menyusi (faol tarqatish bo'lsa — kartasi)
+    broadcast_wizard_states = (
+        AdminStates.waiting_broadcast_message.state,
+        AdminStates.waiting_broadcast_test_confirm.state,
+        AdminStates.waiting_broadcast_peak_confirm.state,
+    )
+    if current in broadcast_wizard_states:
+        await state.clear()
+        await _show_broadcast_menu(message)
+        return
 
     # Umumiy limit kiritish → umumiy limitlar menyusi
     global_limit_states = (
@@ -348,77 +359,76 @@ async def channel_list(message: Message):
     await message.answer(text, reply_markup=admin_channels_keyboard())
 
 
+async def _show_broadcast_menu(message: Message) -> None:
+    """Faol (yoki pauzadagi) tarqatish bo'lsa — kartasi; bo'lmasa yangisini
+    boshlash menyusi. Faqat bitta faol tarqatishga ruxsat berilgani uchun
+    bu yerda tanlash kerak emas."""
+    async with AsyncSessionLocal() as session:
+        active = await AdminService(session).get_active_broadcast()
+
+    if active is None:
+        await message.answer("📤 Reklama bo'limi", reply_markup=admin_broadcast_keyboard())
+        return
+
+    await message.answer(render_card(active), reply_markup=broadcast_active_keyboard(active.status))
+
+
 @router.message(F.text == "📤 Reklama", F.from_user.func(lambda u: u and is_admin(u.id)))
-async def broadcast_menu(message: Message):
-    await message.answer("Reklama bo'limi", reply_markup=admin_broadcast_keyboard())
+async def broadcast_menu(message: Message, state: FSMContext):
+    await state.clear()
+    await _show_broadcast_menu(message)
 
 
-@router.message(F.text == "📊 Holat", F.from_user.func(lambda u: u and is_admin(u.id)))
-async def broadcast_stats(message: Message, session):
-    """Hozir ishlab turgan tarqatishlar holati.
+@router.message(F.text == "🔄 Yangilash", F.from_user.func(lambda u: u and is_admin(u.id)))
+async def broadcast_refresh(message: Message):
+    await _show_broadcast_menu(message)
 
-    Tugaganlari ko'rsatilmaydi — muhim savol "hozir nima bo'lyapti".
-    Skript orqali ishga tushirilgan tarqatishlar ham shu jadvallarga
-    yozgani uchun ular ham ko'rinadi.
-    """
-    repo = BroadcastRepository(session)
-    rows = await repo.live_stats()
 
-    if not rows:
+@router.message(F.text == "🗂 Tarix", F.from_user.func(lambda u: u and is_admin(u.id)))
+async def broadcast_history_view(message: Message):
+    async with AsyncSessionLocal() as session:
+        items = await AdminService(session).broadcast_history(limit=10)
+
+    if not items:
+        await message.answer("🗂 Tarix bo'sh.", reply_markup=admin_broadcast_keyboard())
+        return
+
+    text = "🗂 <b>Oxirgi tarqatishlar</b>\n\n" + "\n\n".join(
+        render_history_line(bc) for bc in items
+    )
+    await message.answer(text, reply_markup=admin_broadcast_keyboard())
+
+
+async def _start_wizard(message: Message, state: FSMContext, *, mode: str) -> None:
+    async with AsyncSessionLocal() as session:
+        active = await AdminService(session).get_active_broadcast()
+    if active is not None:
         await message.answer(
-            "💤 Hozir ishlab turgan tarqatish yo'q.",
-            reply_markup=admin_broadcast_keyboard(),
+            "⚠️ Hozir allaqachon bitta tarqatish faol — avval shuni yakunlang "
+            "(bir vaqtda faqat bitta tarqatish bo'lishi mumkin).",
+            reply_markup=broadcast_active_keyboard(active.status),
         )
         return
 
-    lines = []
-    for row in rows:
-        processed = row["delivered"] + row["failed"]
-        total = row["total"] or 0
-        percent = (processed / total * 100) if total else 0.0
-        icon = "⏸" if row["status"] == "cancel_requested" else "🔄"
-
-        lines.append(f"{icon} <b>Tarqatish #{row['id']}</b>")
-        if row["status"] == "cancel_requested":
-            lines.append("   <i>to'xtatish so'ralgan — joriy batch tugaydi</i>")
-        lines.append("")
-        lines.append(f"   📊 {processed:,} / {total:,}  ({percent:.1f}%)".replace(",", " "))
-        lines.append(f"   ✅ Yetdi: <b>{row['delivered']:,}</b>".replace(",", " "))
-        lines.append(f"   ❌ Yetmadi: <b>{row['failed']:,}</b>".replace(",", " "))
-
-        if row["started_at"] and processed:
-            elapsed = (utcnow() - row["started_at"]).total_seconds()
-            speed = processed / elapsed if elapsed > 0 else 0
-            if speed > 0:
-                remaining = (total - processed) / speed
-                lines.append(
-                    f"   ⚡️ {speed:.1f}/sek · qoldi ~{remaining / 60:.0f} daqiqa"
-                )
-
-        if row["failed"]:
-            reasons = await repo.failure_reasons(row["id"], limit=3)
-            lines.append("")
-            lines.append("   <i>Xato sabablari:</i>")
-            for reason, count in reasons:
-                lines.append(f"   • {reason} — {count:,}".replace(",", " "))
-
-        lines.append("")
-
-    await message.answer("\n".join(lines), reply_markup=admin_broadcast_keyboard())
+    await state.clear()
+    await state.update_data(broadcast_mode=mode)
+    await state.set_state(AdminStates.waiting_broadcast_message)
+    prompt = (
+        "Forward qilinadigan xabarni yuboring."
+        if mode == "forward"
+        else "Yuboriladigan xabarni yuboring."
+    )
+    await message.answer(prompt, reply_markup=back_keyboard())
 
 
 @router.message(F.text == "📨 Forward xabar yuborish", F.from_user.func(lambda u: u and is_admin(u.id)))
 async def broadcast_forward_start(message: Message, state: FSMContext):
-    await state.update_data(broadcast_mode="forward")
-    await state.set_state(AdminStates.waiting_broadcast_message)
-    await message.answer("Forward qilinadigan xabarni yuboring.", reply_markup=back_keyboard())
+    await _start_wizard(message, state, mode="forward")
 
 
 @router.message(F.text == "📬 Oddiy xabar yuborish", F.from_user.func(lambda u: u and is_admin(u.id)))
 async def broadcast_copy_start(message: Message, state: FSMContext):
-    await state.update_data(broadcast_mode="copy")
-    await state.set_state(AdminStates.waiting_broadcast_message)
-    await message.answer("Yuboriladigan xabarni yuboring.", reply_markup=back_keyboard())
+    await _start_wizard(message, state, mode="copy")
 
 
 # Foydalanuvchi oqimi eng yuqori soatlar (Asia/Tashkent = UTC+5).
@@ -432,66 +442,16 @@ def _is_peak_hour() -> bool:
     return tashkent_hour in PEAK_HOURS_TASHKENT
 
 
-async def _do_broadcast(message: Message, mode: str, admin_user) -> None:
-    """Tarqatishni bajaradi va hisobot beradi."""
-    progress_message = await message.answer("📤 Yuborish boshlandi...")
-
-    async def progress_callback(processed: int, total: int, success: int, failed: int):
-        percent = (processed / total * 100) if total else 0.0
-        try:
-            await progress_message.edit_text(
-                "📤 <b>Tarqatilmoqda...</b>\n\n"
-                f"📊 {processed:,} / {total:,}  ({percent:.1f}%)\n"
-                f"✅ Yetdi: {success:,}\n"
-                f"❌ Yetmadi: {failed:,}".replace(",", " ")
-            )
-        except TelegramBadRequest:
-            # Xabar o'zgarmagan yoki tahrirlab bo'lmaydi — zararsiz.
-            pass
-
-    async with AsyncSessionLocal() as session:
-        service = AdminService(session, message.bot)
-        result = await service.run_broadcast(
-            admin_id=admin_user.id,
-            source_message=message,
-            mode=mode,
-            progress_callback=progress_callback,
-        )
-
-    icon = {"completed": "✅", "cancelled": "⛔", "failed": "🚨"}.get(result["status"], "•")
-    await message.answer(
-        (
-            f"{icon} <b>Tarqatish yakunlandi</b>\n\n"
-            f"🆔 #{result['broadcast_id']} · {result['status']}\n"
-            f"📊 {result['processed']:,} / {result['total']:,}\n"
-            f"✅ Yetdi: <b>{result['success']:,}</b>\n"
-            f"❌ Yetmadi: <b>{result['failed']:,}</b>\n"
-            f"🚫 Bloklagan: {result.get('blocked', 0):,}\n"
-            f"♻️ Qaytgan: {result.get('recovered', 0):,}\n"
-            f"⚫️ Yetib bo'lmas: {result.get('unreachable', 0):,}"
-        ).replace(",", " "),
-        reply_markup=admin_broadcast_keyboard(),
-    )
-
-    # Xato bo'lgan foydalanuvchilar ro'yxati fayl bo'lib keladi — keyin
-    # tekshirish yoki qayta urinish uchun.
-    failures = result.get("failures") or []
-    if failures:
-        body = "\n".join(f"{tg_id}\t{err}" for tg_id, err in failures)
-        await message.answer_document(
-            BufferedInputFile(
-                body.encode("utf-8"),
-                filename=f"xato_{result['broadcast_id']}.txt",
-            ),
-            caption=f"❌ Yetmagan {len(failures):,} foydalanuvchi".replace(",", " "),
-        )
-
-
 @router.message(AdminStates.waiting_broadcast_message, F.from_user.func(lambda u: u and is_admin(u.id)))
-async def broadcast_send(message: Message, state: FSMContext, user):
+async def broadcast_receive_message(message: Message, state: FSMContext, user):
+    """Xabar qabul qilinishi bilan — DARHOL faqat adminga sinov yuboriladi.
+
+    Xabarning o'zi buzuq bo'lsa (bo'sh, o'chirilgan media, noto'g'ri HTML)
+    shu yerda ko'rinadi — 37 ming real foydalanuvchiga urinishdan oldin,
+    hech kimga bekorga xato ketmaydi.
+    """
     data = await state.get_data()
     mode = data.get("broadcast_mode")
-
     if mode not in {"copy", "forward"}:
         await state.clear()
         await message.answer(
@@ -500,76 +460,217 @@ async def broadcast_send(message: Message, state: FSMContext, user):
         )
         return
 
-    await state.clear()
+    src_chat_id = message.chat.id
+    src_message_id = message.message_id
+    preview = (message.text or message.caption or "<media>")[:500]
 
+    async with AsyncSessionLocal() as session:
+        service = AdminService(session, message.bot)
+        ok, result_text = await service.send_broadcast_test(
+            src_chat_id, mode, src_chat_id, src_message_id
+        )
+        if not ok:
+            await message.answer(
+                f"{result_text}\n\nBoshqa xabar yuboring yoki orqaga qayting.",
+                reply_markup=back_keyboard(),
+            )
+            return
+        total = await service.user_repo.count_broadcast_targets(exclude_user_id=user.id)
+
+    await state.update_data(
+        src_chat_id=src_chat_id, src_message_id=src_message_id, preview=preview,
+    )
+    await state.set_state(AdminStates.waiting_broadcast_test_confirm)
+    await message.answer(
+        f"{result_text}\n\n"
+        "👆 Yuqorida — hammaga aynan shu ko'rinishda ketadi.\n"
+        f"📦 Taxminan <b>{total:,}</b> foydalanuvchiga yuboriladi.".replace(",", " ")
+        + "\n\nDavom etamizmi?",
+        reply_markup=broadcast_test_confirm_keyboard(),
+    )
+
+
+@router.message(
+    AdminStates.waiting_broadcast_test_confirm, F.text == "🔁 Boshqa xabar",
+    F.from_user.func(lambda u: u and is_admin(u.id)),
+)
+async def broadcast_retry_message(message: Message, state: FSMContext):
+    data = await state.get_data()
+    mode = data.get("broadcast_mode")
+    await state.set_state(AdminStates.waiting_broadcast_message)
+    prompt = (
+        "Forward qilinadigan xabarni yuboring."
+        if mode == "forward"
+        else "Yuboriladigan xabarni yuboring."
+    )
+    await message.answer(prompt, reply_markup=back_keyboard())
+
+
+@router.message(
+    AdminStates.waiting_broadcast_test_confirm, F.text == "🚀 Ha, hammaga yuborilsin",
+    F.from_user.func(lambda u: u and is_admin(u.id)),
+)
+async def broadcast_confirm_send(message: Message, state: FSMContext, user):
     if _is_peak_hour():
-        # Xabarni keyin ham topish uchun id'sini saqlaymiz.
-        _pending_broadcasts[message.from_user.id] = (mode, message.chat.id, message.message_id)
+        await state.set_state(AdminStates.waiting_broadcast_peak_confirm)
         await message.answer(
             "🕗 <b>Hozir eng band vaqt</b> (18:00–23:00).\n\n"
-            "Tarqatish jonli so'rovlarga xalaqit berishi mumkin. Davom etamizmi?",
-            reply_markup=broadcast_confirm_keyboard(),
+            "Tarqatish jonli so'rovlarga xalaqit berishi mumkin. Baribir yuboramizmi?",
+            reply_markup=broadcast_peak_confirm_keyboard(),
+        )
+        return
+    await _launch_broadcast(message, state, user)
+
+
+@router.message(
+    AdminStates.waiting_broadcast_peak_confirm, F.text == "✅ Ha, baribir yubor",
+    F.from_user.func(lambda u: u and is_admin(u.id)),
+)
+async def broadcast_peak_confirmed(message: Message, state: FSMContext, user):
+    await _launch_broadcast(message, state, user)
+
+
+@router.message(
+    AdminStates.waiting_broadcast_peak_confirm, F.text == "⛔ Bekor qilish",
+    F.from_user.func(lambda u: u and is_admin(u.id)),
+)
+async def broadcast_peak_cancelled(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("Bekor qilindi.", reply_markup=admin_broadcast_keyboard())
+
+
+def _make_finish_notifier(bot: Bot, admin_chat_id: int) -> Callable[[int, bool], Awaitable[None]]:
+    """Tarqatish TUGAGANDA (pauza/bekor/yakun/xato) adminga bitta xabar
+    yuboradi — u boshqa ish bilan band bo'lsa ham natijadan xabardor bo'ladi.
+    Oraliq checkpoint'larda chaqirilmaydi (`finished=False` — e'tiborsiz)."""
+
+    async def notify(broadcast_id: int, finished: bool) -> None:
+        if not finished:
+            return
+        async with AsyncSessionLocal() as session:
+            bc = await AdminService(session).get_broadcast(broadcast_id)
+        if bc is None:
+            return
+        try:
+            await bot.send_message(
+                admin_chat_id,
+                "🔔 " + render_card(bc),
+                reply_markup=broadcast_active_keyboard(bc.status),
+            )
+        except Exception:
+            logger.warning("Tarqatish #%s haqida adminga xabar berib bo'lmadi", broadcast_id)
+
+    return notify
+
+
+async def _launch_broadcast(message: Message, state: FSMContext, user) -> None:
+    data = await state.get_data()
+    mode = data.get("broadcast_mode")
+    src_chat_id = data.get("src_chat_id")
+    src_message_id = data.get("src_message_id")
+    preview = data.get("preview")
+    await state.clear()
+
+    if mode not in {"copy", "forward"} or src_chat_id is None or src_message_id is None:
+        await message.answer(
+            "Ma'lumot yo'qolgan, qaytadan boshlang.", reply_markup=admin_broadcast_keyboard()
         )
         return
 
-    await _do_broadcast(message, mode, user)
-
-
-@router.callback_query(F.data == "bc:confirm", F.from_user.func(lambda u: u and is_admin(u.id)))
-async def broadcast_confirm(call: CallbackQuery, user):
-    pending = _pending_broadcasts.pop(call.from_user.id, None)
-    await call.answer()
-    if not pending:
-        await call.message.edit_text("Tasdiq muddati o'tgan. Xabarni qaytadan yuboring.")
-        return
-
-    mode, chat_id, message_id = pending
-    await call.message.edit_text("✅ Tasdiqlandi.")
-
-    # Asl xabarni qayta yuklab olamiz — `copy_message` uchun manba kerak.
-    source = await call.bot.forward_message(
-        chat_id=chat_id, from_chat_id=chat_id, message_id=message_id
-    )
-    await _do_broadcast(source, mode, user)
-
-
-@router.callback_query(F.data == "bc:cancel", F.from_user.func(lambda u: u and is_admin(u.id)))
-async def broadcast_confirm_cancel(call: CallbackQuery):
-    _pending_broadcasts.pop(call.from_user.id, None)
-    await call.answer()
-    await call.message.edit_text("⛔ Bekor qilindi.")
-
-
-@router.message(F.text == "⛔ To'xtatish", F.from_user.func(lambda u: u and is_admin(u.id)))
-async def broadcast_cancel_start(message: Message, state: FSMContext):
     async with AsyncSessionLocal() as session:
         service = AdminService(session, message.bot)
-        text = await service.get_running_broadcasts_text()
+        active = await service.get_active_broadcast()
+        if active is not None:
+            await message.answer(
+                "⚠️ Boshqa tarqatish allaqachon boshlangan.",
+                reply_markup=broadcast_active_keyboard(active.status),
+            )
+            return
+        broadcast = await service.start_broadcast(
+            admin_id=user.id,
+            src_chat_id=src_chat_id,
+            src_message_id=src_message_id,
+            mode=mode,
+            content_preview=preview,
+        )
 
-    await state.set_state(AdminStates.waiting_broadcast_cancel_id)
+    notify = _make_finish_notifier(message.bot, message.chat.id)
+    broadcast_runner.start(message.bot, broadcast.id, progress_notify=notify)
+
     await message.answer(
-        f"{text}\n\nTo'xtatish uchun broadcast ID yuboring.",
-        reply_markup=back_keyboard(),
+        f"🚀 <b>Tarqatish #{broadcast.id} boshlandi.</b>\n\n"
+        "Boshqa ishlaringizni davom ettirishingiz mumkin — bu yerga "
+        "qaytmasdan ham tarqatish davom etadi. Tugagach xabar beraman, "
+        "yoki istalgan payt \"📤 Reklama\"dan holatni ko'rishingiz mumkin.",
+        reply_markup=broadcast_active_keyboard("running"),
     )
 
 
-@router.message(AdminStates.waiting_broadcast_cancel_id, F.from_user.func(lambda u: u and is_admin(u.id)))
-async def broadcast_cancel_finish(message: Message, state: FSMContext):
-    try:
-        broadcast_id = int((message.text or "").strip())
-    except ValueError:
-        await message.answer("Iltimos, numeric broadcast ID yuboring.", reply_markup=back_keyboard())
+@router.message(F.text == "⏸ Pauza", F.from_user.func(lambda u: u and is_admin(u.id)))
+async def broadcast_pause(message: Message):
+    async with AsyncSessionLocal() as session:
+        service = AdminService(session)
+        active = await service.get_active_broadcast()
+        if active is None or active.status != "running":
+            await message.answer(
+                "Hozir ishlab turgan tarqatish topilmadi.", reply_markup=admin_broadcast_keyboard()
+            )
+            return
+        await service.pause_broadcast(active.id)
+
+    await message.answer(
+        "⏸ Pauza so'raldi — joriy yuborishlar tugagach bir necha soniyada to'xtaydi.",
+        reply_markup=broadcast_active_keyboard("pause_requested"),
+    )
+
+
+@router.message(F.text == "▶️ Davom ettirish", F.from_user.func(lambda u: u and is_admin(u.id)))
+async def broadcast_resume(message: Message):
+    async with AsyncSessionLocal() as session:
+        service = AdminService(session)
+        active = await service.get_active_broadcast()
+        if active is None or active.status != "paused":
+            await message.answer(
+                "Pauzadagi tarqatish topilmadi.", reply_markup=admin_broadcast_keyboard()
+            )
+            return
+        ok = await service.resume_broadcast(active.id)
+        broadcast_id = active.id
+
+    if not ok:
+        await message.answer("Holat o'zgardi, qayta urining.", reply_markup=admin_broadcast_keyboard())
         return
 
-    async with AsyncSessionLocal() as session:
-        service = AdminService(session, message.bot)
-        cancelled = await service.request_broadcast_cancel(broadcast_id)
+    notify = _make_finish_notifier(message.bot, message.chat.id)
+    broadcast_runner.start(message.bot, broadcast_id, progress_notify=notify)
+    await message.answer("▶️ Davom etmoqda.", reply_markup=broadcast_active_keyboard("running"))
 
-    await state.clear()
-    if cancelled:
-        await message.answer("Bekor qilish so'rovi yuborildi. Yuborish sikli yaqin daqiqalarda to'xtaydi.", reply_markup=admin_broadcast_keyboard())
+
+@router.message(F.text == "⛔ Bekor qilish", F.from_user.func(lambda u: u and is_admin(u.id)))
+async def broadcast_cancel(message: Message):
+    async with AsyncSessionLocal() as session:
+        service = AdminService(session)
+        active = await service.get_active_broadcast()
+        if active is None:
+            await message.answer(
+                "Faol tarqatish topilmadi.", reply_markup=admin_broadcast_keyboard()
+            )
+            return
+        was_paused = active.status == "paused"
+        ok = await service.cancel_broadcast(active.id)
+
+    if not ok:
+        await message.answer("Holat o'zgardi, qayta urining.", reply_markup=admin_broadcast_keyboard())
+        return
+
+    if was_paused:
+        # Pauzada ishlab turgan vazifa yo'q — bekor qilish darhol yakunlandi.
+        await message.answer("⛔ Bekor qilindi.", reply_markup=admin_broadcast_keyboard())
     else:
-        await message.answer("Running holatdagi shu ID topilmadi.", reply_markup=admin_broadcast_keyboard())
+        await message.answer(
+            "⛔ Bekor qilish so'raldi — bir necha soniyada to'xtaydi.",
+            reply_markup=broadcast_active_keyboard("cancel_requested"),
+        )
 
 
 # ── Foydalanuvchilar ─────────────────────────────────────────

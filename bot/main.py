@@ -13,7 +13,8 @@ from aiogram.fsm.storage.redis import RedisStorage
 
 from bot.config.settings import settings
 from bot.database.redis import get_redis
-from bot.database.session import init_db
+from bot.database.repositories.broadcast_repository import BroadcastRepository
+from bot.database.session import AsyncSessionLocal, init_db
 from bot.handlers.admin import panel
 from bot.handlers.user import common, donate, languages, start, subscription
 from bot.handlers.user import support, translate, tts
@@ -51,9 +52,28 @@ async def connect_redis():
         return None
 
 
+async def recover_interrupted_broadcasts() -> None:
+    """Tarqatishni yuritayotgan fon vazifasi jarayon bilan birga o'ladi
+    (alohida worker xizmati yo'q) — bot qayta ishga tushganda `running`/
+    `pause_requested`/`cancel_requested` holatidagi qatorlar aslida hech
+    kim yuritmayotgan "yolg'on jonli" holat bo'lib qoladi. Ularni `paused`ga
+    o'tkazamiz — admin "▶️ Davom ettirish" bilan kursordan qayta boshlaydi,
+    hech narsa yo'qolmaydi.
+    """
+    async with AsyncSessionLocal() as session:
+        ids = await BroadcastRepository(session).recover_interrupted()
+    if ids:
+        logger.warning(
+            "Bot restart: %s ta tarqatish 'paused'ga o'tkazildi (#%s) — "
+            "admin davom ettirishi kerak",
+            len(ids), ", ".join(str(i) for i in ids),
+        )
+
+
 async def main() -> None:
     logger.info("Ma'lumotlar bazasi tekshirilmoqda...")
     await init_db()
+    await recover_interrupted_broadcasts()
 
     redis = await connect_redis()
 

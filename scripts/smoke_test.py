@@ -1248,6 +1248,183 @@ async def test_broadcast() -> None:
         check(f"vaqtinchalik: {text!r:34}", not is_permanently_unreachable(text))
 
 
+async def test_broadcast_resumable() -> None:
+    """Tarqatish: xato tasnifi (manager-bot dan moslashtirilgan), watermark
+    kursor, va pauza/davom/bekor holat mashinasi (`broadcast_repository.py`).
+
+    manager-bot (github.com/khusinboev/manager-bot) o'rganib olingan —
+    tarjimon-8 bitta jarayon ichida moslashtirdi (alohida worker emas).
+    """
+    print("\n[14b] Tarqatish — davom ettiriladigan quvur")
+    from collections import deque
+
+    from aiogram.exceptions import (
+        TelegramBadRequest,
+        TelegramForbiddenError,
+        TelegramNetworkError,
+        TelegramRetryAfter,
+        TelegramServerError,
+    )
+    from sqlalchemy import delete
+
+    from bot.database.models import Broadcast, User, UserSettings
+    from bot.database.repositories.broadcast_repository import BroadcastRepository
+    from bot.services.broadcast_errors import Kind, classify
+    from bot.services.broadcast_runner import _advance_watermark
+
+    # ── Xato tasnifi ──
+    cls = classify(TelegramForbiddenError(method=None, message="Forbidden: bot was blocked by the user"))
+    check("bloklagan -> passiv, qayta urinilmaydi", cls.passivate and not cls.retriable and cls.kind == Kind.BLOCKED)
+
+    cls = classify(TelegramBadRequest(method=None, message="Bad Request: chat not found"))
+    check("chat topilmadi -> passiv", cls.passivate and cls.kind == Kind.CHAT_NOT_FOUND)
+
+    cls = classify(TelegramRetryAfter(method=None, message="Too Many Requests", retry_after=7))
+    check(
+        "429 -> vaqtinchalik, retry_after saqlanadi",
+        cls.retriable and not cls.passivate and cls.retry_after == 7,
+    )
+
+    cls = classify(TelegramNetworkError(method=None, message="Connection reset"))
+    check("tarmoq xatosi -> vaqtinchalik, passiv emas", cls.retriable and not cls.passivate)
+
+    cls = classify(TelegramServerError(method=None, message="Internal Server Error"))
+    check("Telegram 5xx -> vaqtinchalik", cls.retriable and not cls.passivate)
+
+    # Xabarning O'ZIGA tegishli — hamma qabul qiluvchida takrorlanadi, shuning
+    # uchun `fatal=True` (butun tarqatishni to'xtatadi), lekin passiv EMAS
+    # (qabul qiluvchining aybi emas).
+    cls = classify(TelegramBadRequest(method=None, message="Bad Request: message text is empty"))
+    check(
+        "bo'sh xabar -> fatal, passiv emas",
+        cls.fatal and not cls.passivate and cls.kind == Kind.BAD_MESSAGE,
+    )
+    cls = classify(TelegramBadRequest(method=None, message="Bad Request: message to copy not found"))
+    check("manba xabar yo'q -> fatal", cls.fatal and cls.kind == Kind.BAD_SOURCE)
+
+    # Tanilmagan BadRequest — shubha bo'lganda ZARARSIZ tomonga: na passiv,
+    # na fatal. Noto'g'ri tasnif minglab userni yoki butun tarqatishni
+    # bekorga qurbon qiladi.
+    cls = classify(TelegramBadRequest(method=None, message="Bad Request: something totally new"))
+    check("noma'lum BadRequest -> na passiv, na fatal", not cls.passivate and not cls.fatal)
+
+    # ── Watermark kursor: tartibsiz tugagan natijalar oraliqni tashlab
+    # ketmasligi kerak ──
+    order = deque([10, 20, 30, 40])
+    done: set[int] = set()
+    cursor = None
+
+    done.add(20)  # 20 tugadi, lekin 10 hali yo'q -> kursor SILJIMAYDI
+    cursor = _advance_watermark(order, done, cursor)
+    check("o'rtadagi tugallanmagan kursorni to'xtatadi", cursor is None, f"cursor={cursor}")
+
+    done.add(10)  # endi 10 ham tugadi -> 10 VA 20 uzluksiz, kursor 20 ga o'tadi
+    cursor = _advance_watermark(order, done, cursor)
+    check("uzluksiz prefiks kursorni siljitadi", cursor == 20, f"cursor={cursor}")
+    check("faqat tugallangan boshi olib tashlanadi", list(order) == [30, 40], str(list(order)))
+
+    done.add(40)  # 40 tugadi, lekin 30 hali yo'q -> kursor 20 da qoladi
+    cursor = _advance_watermark(order, done, cursor)
+    check("keyingi bo'shliqda ham to'xtaydi", cursor == 20, f"cursor={cursor}")
+
+    # ── BroadcastRepository: holat mashinasi ──
+    async with AsyncSessionLocal() as session:
+        repo = BroadcastRepository(session)
+        repo_user = UserRepository(session)
+        admin, _ = await repo_user.get_or_create(TEST_TELEGRAM_ID + 96, first_name="BcastAdmin")
+        await session.commit()
+
+        bc = await repo.create_broadcast(
+            created_by=admin.id, mode="copy", content_preview="test",
+            total_targets=100, src_chat_id=admin.telegram_id, src_message_id=1,
+        )
+        check("yaratilganda running", bc.status == "running")
+
+        active = await repo.get_active()
+        check("get_active topadi", active is not None and active.id == bc.id)
+
+        ok = await repo.request_pause(bc.id)
+        check("pauza so'raladi (running -> pause_requested)", ok)
+        status = await repo.get_status(bc.id)
+        check("holat pause_requested", status == "pause_requested")
+
+        await repo.mark_paused(
+            bc.id, cursor_user_id=42, active_seconds=17, success_count=5, failed_count=1,
+        )
+        paused = await repo.get(bc.id)
+        check(
+            "pauzada kursor/hisob saqlanadi",
+            paused.status == "paused" and paused.cursor_user_id == 42
+            and paused.active_seconds == 17 and paused.success_count == 5,
+        )
+
+        ok = await repo.resume(bc.id)
+        check("davom ettirish (paused -> running)", ok and (await repo.get_status(bc.id)) == "running")
+
+        # Pauzada bekor qilish — ishlab turgan vazifa yo'q, DARHOL yakunlanadi
+        # (signal emas, chunki uni ko'radigan hech kim yo'q).
+        await repo.request_pause(bc.id)
+        await repo.mark_paused(bc.id, cursor_user_id=42, active_seconds=17, success_count=5, failed_count=1)
+        cancel_ok = await repo.request_cancel(bc.id)
+        check(
+            "pauzadan bekor qilish darhol yakunlanadi",
+            cancel_ok and (await repo.get_status(bc.id)) == "cancelled",
+        )
+
+        # Restart tiklashi: "running" holatida qolgan qator (jarayon o'lgan)
+        # `paused`ga o'tishi kerak.
+        stuck = await repo.create_broadcast(
+            created_by=admin.id, mode="copy", content_preview="stuck",
+            total_targets=10, src_chat_id=admin.telegram_id, src_message_id=2,
+        )
+        recovered_ids = await repo.recover_interrupted()
+        check("restart tiklashi 'running'ni ko'radi", stuck.id in recovered_ids, str(recovered_ids))
+        check(
+            "tiklangandan keyin paused",
+            (await repo.get_status(stuck.id)) == "paused",
+        )
+
+        await session.execute(delete(Broadcast).where(Broadcast.created_by == admin.id))
+        await session.execute(delete(UserSettings).where(UserSettings.user_id == admin.id))
+        await session.execute(delete(User).where(User.id == admin.id))
+        await session.commit()
+
+    # ── UserRepository: kursor-asosidagi sahifalash, yangi user qamrab olinadi ──
+    async with AsyncSessionLocal() as session:
+        repo_user = UserRepository(session)
+        u1, _ = await repo_user.get_or_create(TEST_TELEGRAM_ID + 97, first_name="B1")
+        u2, _ = await repo_user.get_or_create(TEST_TELEGRAM_ID + 98, first_name="B2")
+        await session.commit()
+
+        batch = await repo_user.fetch_broadcast_batch(after_id=u1.id - 1, limit=1)
+        check(
+            "kursor bittadan qaytaradi",
+            len(batch) == 1 and batch[0][0] == u1.id,
+            str(batch),
+        )
+
+        batch2 = await repo_user.fetch_broadcast_batch(after_id=u1.id, limit=50)
+        ids_in_batch2 = [uid for uid, _ in batch2]
+        check("kursordan keyingi user qamrab olinadi", u2.id in ids_in_batch2)
+
+        # Tarqatish "davomida" qo'shilgan yangi user — kursordan katta `id`
+        # olgani uchun keyingi chaqiruvda AVTOMATIK qamrab olinadi, alohida
+        # sinxronlash kerak emas.
+        u3, _ = await repo_user.get_or_create(TEST_TELEGRAM_ID + 99, first_name="B3")
+        await session.commit()
+        batch3 = await repo_user.fetch_broadcast_batch(after_id=u2.id, limit=50)
+        check(
+            "tarqatish davomida qo'shilgan user avtomatik qamrab olinadi",
+            u3.id in [uid for uid, _ in batch3],
+        )
+
+        await session.execute(
+            delete(UserSettings).where(UserSettings.user_id.in_([u1.id, u2.id, u3.id]))
+        )
+        await session.execute(delete(User).where(User.id.in_([u1.id, u2.id, u3.id])))
+        await session.commit()
+
+
 async def test_stats() -> None:
     """Statistika: ma'lumot yig'iladi va Telegram chegarasiga sig'adi."""
     print("\n[15] Statistika")
@@ -1630,6 +1807,7 @@ async def main() -> None:
     await test_support()
     await test_donate(user_id)
     await test_broadcast()
+    await test_broadcast_resumable()
     await test_stats()
     await test_support_thread_lookup()
     await test_support_thread_lazy_load()
