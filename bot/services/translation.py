@@ -28,6 +28,30 @@ class TranslationError(Exception):
         super().__init__(message or code)
 
 
+# Google'ning translate.google.com sahifasi band/bloklangan bo'lsa, o'zining
+# umumiy HTML xato sahifasini (masalan "Error 500 (Server Error)!!1...") qaytaradi
+# — `deep-translator` buni HECH QANDAY ISTISNOSIZ, oddiy matn sifatida
+# qaytaradi. Tekshirmasa, bu matn haqiqiy tarjima sifatida foydalanuvchiga
+# yuboriladi (2026-08-24/25 dagi voqeada shu tarzda 71 ta foydalanuvchiga
+# xato sahifa matni "tarjima" deb yuborilgan edi). Ikkala Google xato
+# sahifasida ham (404, 500, ...) bir xil bo'lgan iboralar — ishonchli belgi.
+#
+# Diqqat: Google'ning sahifasi apostrofni tipografik ko'rinishda (’, U+2019)
+# ishlatadi, oddiy ASCII (') emas — birinchi urinishda aynan shu farq
+# tekshiruvni sindirgan edi (haqiqiy javob bilan qo'lda tasdiqlanmaguncha
+# sezilmagan). Shuning uchun solishtirishdan oldin normallashtiramiz.
+_GOOGLE_ERROR_MARKERS = (
+    "that's an error",
+    "that's all we know",
+    "there was an error. please try again later",
+)
+
+
+def _looks_like_google_error_page(text: str) -> bool:
+    normalized = text.lower().replace("’", "'").replace("‘", "'")
+    return any(marker in normalized for marker in _GOOGLE_ERROR_MARKERS)
+
+
 @dataclass(slots=True)
 class TranslationResult:
     text: str
@@ -58,6 +82,13 @@ class DeepTranslatorProvider:
     # deep-translator kutayotgan kodlar bizning kodlarimizdan farq qiladigan joylar.
     CODE_MAP = {"zh": "zh-CN"}
 
+    # Google vaqtincha band/bloklagan holatlar odatda bir necha soniyada
+    # o'tib ketadi (2026-08-24/25 voqeasida qo'lda tekshirilganda ~5 urinishdan
+    # 1 tasi darhol muvaffaqiyatli bo'lgan) — shuning uchun qayta urinish
+    # ko'p hollarda foydalanuvchiga xato ko'rsatishning oldini oladi.
+    MAX_ATTEMPTS = 3
+    RETRY_DELAY = 0.6  # soniya
+
     def __init__(self, timeout: int):
         self.timeout = timeout
 
@@ -67,6 +98,37 @@ class DeepTranslatorProvider:
     def supports(self, code: str) -> bool:
         return True
 
+    def _translate_piece(self, translator, piece: str) -> str:
+        """Bitta bo'lakni tarjima qiladi va Google'ning xato sahifasini
+        haqiqiy tarjima deb qabul qilmaydi (izoh: yuqorida `_looks_like_google_error_page`).
+
+        Ikkala nosozlik turi ham (istisno bilan yiqilish VA sukut bo'yicha
+        xato sahifa qaytarish) qayta urinishga o'tkaziladi — sababi bir xil
+        (Google band/bloklagan), demak davolash ham bir xil.
+        """
+        last_error: Exception = TranslationError("provider_error", "Noma'lum xato")
+        for attempt in range(self.MAX_ATTEMPTS):
+            try:
+                result = translator.translate(piece)
+            except Exception as exc:
+                last_error = exc
+                result = None
+            else:
+                if result is None:
+                    last_error = TranslationError("empty_result", "Provayder bo'sh javob qaytardi")
+                elif _looks_like_google_error_page(result):
+                    last_error = TranslationError(
+                        "provider_blocked",
+                        "Google xato sahifasini qaytardi (band/bloklangan bo'lishi mumkin)",
+                    )
+                else:
+                    return result
+
+            if attempt < self.MAX_ATTEMPTS - 1:
+                time.sleep(self.RETRY_DELAY)
+
+        raise last_error
+
     def _translate_sync(self, text: str, source: str, target: str) -> str:
         from deep_translator import GoogleTranslator
 
@@ -74,14 +136,7 @@ class DeepTranslatorProvider:
 
         # Provayderning belgi limiti — uzun matn bo'laklab yuboriladi.
         pieces = chunk(text, 4500)
-        out = []
-        for piece in pieces:
-            result = translator.translate(piece)
-            # Ishlab turgan botdagi `'NoneType' has no attribute 'lower'` xatosining
-            # sababi shu: provayder ba'zan None qaytaradi va uni tekshirilmagan.
-            if result is None:
-                raise TranslationError("empty_result", "Provayder bo'sh javob qaytardi")
-            out.append(result)
+        out = [self._translate_piece(translator, piece) for piece in pieces]
         return "\n".join(out) if len(out) > 1 else out[0]
 
     async def translate(self, text: str, source: str, target: str) -> str:

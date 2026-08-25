@@ -800,6 +800,30 @@ async def test_admin_users() -> None:
 
 async def test_translation() -> None:
     print("\n[7] Tarjima (tarmoq talab qiladi)")
+
+    # Regressiya: Google'ning xato sahifasi aniqlanishi kerak — birinchi
+    # urinishda apostrof ASCII (') bilan yozilgan edi, Google esa
+    # tipografik (’, U+2019) ishlatadi, shuning uchun tekshiruv HECH NARSANI
+    # ushlamagan edi (qo'lda real javob bilan tasdiqlanmaguncha sezilmadi).
+    from bot.services.translation import _looks_like_google_error_page
+
+    real_google_500 = (
+        "Error 500 (Server Error)!!1500.That’s an error."
+        "There was an error. Please try again later.That’s all we know."
+    )
+    check(
+        "Google xato sahifasi (tipografik apostrof) aniqlanadi",
+        _looks_like_google_error_page(real_google_500),
+    )
+    check(
+        "Google xato sahifasi (oddiy ASCII apostrof) aniqlanadi",
+        _looks_like_google_error_page(real_google_500.replace("’", "'")),
+    )
+    check(
+        "haqiqiy tarjima xato deb hisoblanmaydi",
+        not _looks_like_google_error_page("Hello World"),
+    )
+
     service = TranslationService(redis=None)
     try:
         result = await service.translate("Salom dunyo", "auto", "en")
