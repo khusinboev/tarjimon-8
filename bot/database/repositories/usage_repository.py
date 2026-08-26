@@ -4,6 +4,7 @@ from typing import Optional
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.util import identity_key
 
 from bot.database.models import DailyUsage
 from bot.services.events import utcnow
@@ -25,6 +26,24 @@ class UsageRepository:
     def today() -> date_type:
         # Limit UTC kuni bo'yicha — server va bazada bir xil mantiq.
         return utcnow().date()
+
+    def _expire_cached_row(self, user_id: int, day: date_type) -> None:
+        """Faqat AYNAN shu (user_id, day) uchun keshlangan `DailyUsage`
+        obyektini (agar bor bo'lsa) eskirgan deb belgilaydi.
+
+        `session.expire_all()` EMAS — u BUTUN sessiyadagi hamma obyektni
+        (masalan shu so'rovda allaqachon yuklangan `User`/`UserSettings`)
+        ham eskirtirib qo'yardi. Keyin ularning oddiy atributiga (masalan
+        `user.id`) sinxron kirish yashirin qayta yuklashga urinib,
+        `MissingGreenlet` xatosi bilan BUTUN so'rovni yiqitardi — bu
+        production'da haqiqatan sodir bo'ldi (qo'lda tuzatilgan, saboq
+        sifatida qoldirilmoqda: hech qachon `expire_all()`ni maqsadli
+        `expire(instance)` o'rniga ishlatmang).
+        """
+        key = identity_key(DailyUsage, (user_id, day))
+        instance = self.session.identity_map.get(key)
+        if instance is not None:
+            self.session.expire(instance)
 
     async def get(self, user_id: int, day: Optional[date_type] = None) -> Optional[DailyUsage]:
         result = await self.session.execute(
@@ -104,17 +123,13 @@ class UsageRepository:
         muvaffaqiyatsiz urinish ham kvotadan yeb qo'yadi (avvalgi
         xulq-atvor: faqat muvaffaqiyatli urinish sarflanardi).
 
-        `session.expire_all()` — bu yerdagi xom (dialektga xos `ON
-        CONFLICT`) UPSERT ORM unit-of-work'dan chetlab o'tadi. SQLAlchemy
-        2.0'ning ORM-DML RETURNING sinxronizatsiyasi FAQAT haqiqiy INSERT
-        qilingan (conflict bo'lmagan) obyektlarni to'ldiradi — conflict
-        paytida UPDATE qilingan qatorlar uchun sessiyada ALLAQACHON
-        yuklangan obyekt ESKI qiymat bilan qolib ketaveradi (qo'lda
-        tekshirilgan: `.returning(DailyUsage)`ning o'zi YETARLI emas edi).
-        `expire_all()` — keyingi HAR QANDAY `.get()` chaqiruvi bazadan
-        qayta o'qishini kafolatlaydi (`AsyncSessionLocal`
-        `expire_on_commit=False` bilan sozlangani uchun commit buni
-        avtomatik qilmaydi).
+        Sessiyada shu (user_id, day) uchun avvalroq yuklangan `DailyUsage`
+        obyekti bo'lsa — u shu yerdagi xom (dialektga xos `ON CONFLICT`)
+        UPSERT'dan keyin ESKI qiymat bilan qolib ketardi (SQLAlchemy 2.0
+        ORM-DML RETURNING sinxronizatsiyasi faqat haqiqiy INSERT qilingan,
+        conflict bo'lmagan obyektlarni to'ldiradi). Shuning uchun
+        `_expire_cached_row()` bilan MAQSADLI ravishda (butun sessiyani
+        emas, faqat shu bitta obyektni) eskirtiramiz.
         """
         assert field in _COUNT_FIELDS
         day = day or self.today()
@@ -135,7 +150,7 @@ class UsageRepository:
         )
         result = await self.session.execute(stmt)
         reserved = result.first() is not None
-        self.session.expire_all()
+        self._expire_cached_row(user_id, day)
         return reserved
 
     async def release(
@@ -144,9 +159,7 @@ class UsageRepository:
         """`try_reserve()`ni ortga qaytaradi — tashqi chaqiruv muvaffaqiyatsiz
         bo'lganda. `GREATEST(0, ...)` — hech qachon manfiyga tushmasin.
 
-        `session.expire_all()` haqida — `try_reserve()`dagi izohga qarang:
-        shu bo'lmasa, sessiyada avvalroq o'qilgan `DailyUsage` obyekti
-        eskirgan (kamaytirilmagan) qiymat bilan qolib ketardi.
+        `_expire_cached_row()` haqida — `try_reserve()`dagi izohga qarang.
         """
         assert field in _COUNT_FIELDS
         day = day or self.today()
@@ -164,4 +177,4 @@ class UsageRepository:
             )
         )
         await self.session.execute(stmt)
-        self.session.expire_all()
+        self._expire_cached_row(user_id, day)
