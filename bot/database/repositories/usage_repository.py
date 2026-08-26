@@ -91,6 +91,16 @@ class UsageRepository:
         bo'lsa, `release()` bilan ortga qaytarishi kerak — aks holda
         muvaffaqiyatsiz urinish ham kvotadan yeb qo'yadi (avvalgi
         xulq-atvor: faqat muvaffaqiyatli urinish sarflanardi).
+
+        `.returning(DailyUsage)` — ATAYLAB TO'LIQ ORM obyekti (faqat bitta
+        ustun emas): SQLAlchemy 2.0 ORM-yoqilgan DML RETURNING shu orqali
+        sessiya identity map'idagi (agar bor bo'lsa) obyektni YANGILAYDI.
+        Aks holda, agar shu foydalanuvchi uchun qator avvalroq `get()`
+        bilan o'qilgan bo'lsa, keyingi `get()` chaqiruvi ESKI (keshlangan)
+        qiymatlarni qaytarardi — chunki bu yerdagi xom UPSERT ORM
+        unit-of-work'dan chetlab o'tadi (`AsyncSessionLocal`
+        `expire_on_commit=False` bilan sozlangan, ya'ni commit ham buni
+        avtomatik tuzatmaydi).
         """
         assert field in _COUNT_FIELDS
         day = day or self.today()
@@ -107,7 +117,7 @@ class UsageRepository:
                 },
                 where=(count_col < limit),
             )
-            .returning(DailyUsage.user_id)
+            .returning(DailyUsage)
         )
         result = await self.session.execute(stmt)
         return result.first() is not None
@@ -116,11 +126,16 @@ class UsageRepository:
         self, user_id: int, field: str, *, chars: int = 0, day: Optional[date_type] = None,
     ) -> None:
         """`try_reserve()`ni ortga qaytaradi — tashqi chaqiruv muvaffaqiyatsiz
-        bo'lganda. `GREATEST(0, ...)` — hech qachon manfiyga tushmasin."""
+        bo'lganda. `GREATEST(0, ...)` — hech qachon manfiyga tushmasin.
+
+        `.returning(DailyUsage)` haqida — `try_reserve()`dagi izohga qarang:
+        shu bo'lmasa, sessiyada avvalroq o'qilgan `DailyUsage` obyekti
+        eskirgan (kamaytirilmagan) qiymat bilan qolib ketardi.
+        """
         assert field in _COUNT_FIELDS
         day = day or self.today()
         count_col = getattr(DailyUsage, field)
-        await self.session.execute(
+        stmt = (
             pg_insert(DailyUsage)
             .values(user_id=user_id, date=day)
             .on_conflict_do_update(
@@ -131,4 +146,7 @@ class UsageRepository:
                     "updated_at": utcnow(),
                 },
             )
+            .returning(DailyUsage)
         )
+        result = await self.session.execute(stmt)
+        result.all()  # natija ISTE'MOL qilinadi — shundagina ORM identity map yangilanishi kafolatlanadi.

@@ -49,10 +49,16 @@ def check(label: str, condition: bool, detail: str = "") -> None:
 async def test_text_utils() -> None:
     print("\n[1] Matn yordamchilari")
     h1 = content_hash("Salom  Dunyo", "auto", "en")
-    h2 = content_hash("salom dunyo", "auto", "en")
-    check("normallashtirish keshni birlashtiradi", h1 == h2)
+    h2 = content_hash("Salom Dunyo", "auto", "en")
+    check("bo'shliqlar normallashtirilib keshni birlashtiradi", h1 == h2)
 
-    h3 = content_hash("salom dunyo", "auto", "ru")
+    # Registr ENDI keshni birlashtirmaydi — avvalgi xato "US" (mamlakat)
+    # va "us" (olmosh) kabi turli matnlarni bitta keshga tushirib, turli
+    # foydalanuvchilarga bir-birining noto'g'ri tarjimasini qaytarardi.
+    h_case = content_hash("salom dunyo", "auto", "en")
+    check("registr keshni ENDI birlashtirmaydi (tuzatilgan xato)", h1 != h_case)
+
+    h3 = content_hash("Salom Dunyo", "auto", "ru")
     check("til juftligi hashga kiradi", h1 != h3)
 
     parts = chunk("Bir gap. " * 200, 500)
@@ -1858,7 +1864,13 @@ async def test_support_parsing() -> None:
     )
     check(
         "izohdan ham ajratiladi",
-        _extract_target_id(SimpleNamespace(text=None, caption="\U0001f194 123456789")) == 123456789,
+        _extract_target_id(
+            SimpleNamespace(text=None, caption="\U0001f4ac Suhbat davomi\n\U0001f194 123456789")
+        ) == 123456789,
+    )
+    check(
+        "sarlavha belgisisiz ID e'tiborsiz qoldiriladi (donat/admin panel bilan chalkashmasin)",
+        _extract_target_id(SimpleNamespace(text="\U0001f194 999999999", caption=None)) is None,
     )
     check(
         "oddiy matnda ID yo'q",
