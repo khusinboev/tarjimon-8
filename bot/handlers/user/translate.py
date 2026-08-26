@@ -16,6 +16,7 @@ from bot.database.repositories.language_repository import LanguageRepository
 from bot.database.repositories.translation_repository import TranslationRepository
 from bot.keyboards.user import quota_exceeded_keyboard, translation_actions
 from bot.locales import MENU_BUTTONS
+from bot.services.admin_alerts import alert_admins_once
 from bot.services.events import EventService, EventType
 from bot.services.ocr import OcrError, extract_text
 from bot.services.quota import QuotaService, resolve_limit_override
@@ -142,7 +143,7 @@ async def _translate(
             translation_id=previous.id, user_id=user.id, signal="retranslated"
         )
 
-    service = TranslationService(redis)
+    service = TranslationService(redis, bot=message.bot)
     await message.bot.send_chat_action(message.chat.id, "typing")
 
     try:
@@ -364,6 +365,13 @@ async def handle_photo(
             session_id=session_id,
             error_code=exc.code,
         )
+        if exc.code == "quota_exhausted":
+            await alert_admins_once(
+                message.bot, redis, "ocr_quota_exhausted",
+                "⚠️ <b>OCR.Space</b>ning barcha kalitlari bu oy bepul hajmidan "
+                "oshdi — rasmdan tarjima Vision sozlanmagan bo'lsa ishlamay "
+                "qolishi mumkin.",
+            )
         text = t.IMAGE_OCR_UNAVAILABLE if exc.code == "not_configured" else t.IMAGE_OCR_FAILED
         await message.answer(text)
         return

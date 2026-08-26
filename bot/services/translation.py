@@ -26,9 +26,11 @@ import time
 from dataclasses import dataclass
 from typing import Optional, Protocol
 
+from aiogram import Bot
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config.settings import settings
+from bot.services.admin_alerts import alert_admins_once
 from bot.services.translation_providers import (
     CHEAP_PROVIDER_CONFIG,
     FREE_TIER_PROVIDER_CONFIG,
@@ -204,7 +206,7 @@ def detect_language(text: str) -> Optional[str]:
 
 
 class TranslationService:
-    def __init__(self, redis=None):
+    def __init__(self, redis=None, bot: Optional[Bot] = None):
         provider_cls = PROVIDERS.get(settings.TRANSLATION_PROVIDER)
         if provider_cls is None:
             raise ValueError(f"Noma'lum tarjima provayderi: {settings.TRANSLATION_PROVIDER}")
@@ -212,6 +214,10 @@ class TranslationService:
         # xato bersa shunga qaytiladi.
         self.deep_provider: TranslationProvider = provider_cls(settings.TRANSLATION_TIMEOUT)
         self.redis = redis
+        # Faqat kvota/limit ogohlantirishlarini adminga yuborish uchun —
+        # tarjimaning o'ziga ta'siri yo'q, `bot=None` bo'lsa ogohlantirish
+        # jim o'tkaziladi (`alert_admins_once`).
+        self.bot = bot
 
     async def _cache_get(self, key: str) -> Optional[str]:
         if not self.redis:
@@ -247,7 +253,16 @@ class TranslationService:
             picked = await pick_key(session, name, keys, cfg["free_limit"]())
             if picked is not None:
                 index, api_key = picked
-                candidates.append((name, index, api_key))
+            else:
+                label = "Google Translate" if name == "google_translate" else "Azure Translator"
+                await alert_admins_once(
+                    self.bot, self.redis, f"quota_exhausted:{name}",
+                    f"⚠️ <b>{label}</b>ning barcha kalitlari bu oy bepul hajmidan "
+                    "oshdi — endi keyingi bosqichga (Gemini yoki bepul zaxira) "
+                    "o'tilmoqda.",
+                )
+                continue
+            candidates.append((name, index, api_key))
         random.shuffle(candidates)
         return candidates
 
@@ -279,16 +294,32 @@ class TranslationService:
                 logger.warning("%s (kalit #%s) ishlamadi: %s", name, index, exc)
                 continue
 
-        for name, index, api_key in self._pick_cheap_tier_candidates():
+        cheap_candidates = self._pick_cheap_tier_candidates()
+        last_cheap_error: Optional[str] = None
+        for name, index, api_key in cheap_candidates:
             try:
                 call = CHEAP_PROVIDER_CONFIG[name]["call"]
                 translated = await call(text, source, target, api_key)
                 if translated and translated.strip():
                     return translated, name, index
+                last_cheap_error = "bo'sh javob qaytardi"
                 logger.warning("%s (kalit #%s) bo'sh javob qaytardi", name, index)
             except Exception as exc:
+                last_cheap_error = str(exc)
                 logger.warning("%s (kalit #%s) ishlamadi: %s", name, index, exc)
                 continue
+
+        # 2-daraja sozlangan edi (kalitlari bor), lekin BARCHA kalitlari
+        # ishlamadi — bu tasodifiy bitta xato emas, e'tibor talab qiladi
+        # (masalan kvota/RPM chegarasi yoki kalit bekor qilingan).
+        if cheap_candidates and last_cheap_error is not None:
+            provider_label = cheap_candidates[0][0]
+            await alert_admins_once(
+                self.bot, self.redis, f"cheap_tier_failed:{provider_label}",
+                f"🚨 <b>{provider_label}</b> orqali tarjima ishlamayapti — "
+                f"barcha kalitlar xato qaytardi. Oxirgi xato: {last_cheap_error}\n"
+                "Hozircha bepul (ishonchsiz) zaxiraga tushilmoqda.",
+            )
 
         translated = await self.deep_provider.translate(text, source, target)
         return translated, self.deep_provider.name, None
