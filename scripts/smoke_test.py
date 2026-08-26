@@ -853,14 +853,15 @@ async def test_translation() -> None:
 
 
 async def test_translation_providers() -> None:
-    """Google Translate / Azure Translator: ko'p kalitli tanlov, tasodifiy
-    almashish, ikkalasi ham yo'q/tugagan/xato bo'lsa bepul provayderga
-    (`deep_translator`) qaytish.
+    """Uch darajali provayder zanjiri: 1) Google/Azure — ko'p kalitli
+    tanlov, tasodifiy almashish, bepul hajmi tugasa chetlanadi; 2) Gemini —
+    1-daraja tugagach/yo'q bo'lsa, hajm kuzatilmasdan tasodifiy kalit bilan;
+    3) ikkalasi ham yo'q/tugagan/xato bo'lsa `deep_translator`ga qaytish.
 
     OCR.Space ko'p kalitli navbati bilan bir xil naqsh (`bot/services/ocr.py`),
-    faqat so'rov soni emas, BELGI soni bo'yicha hisoblanadi.
+    faqat so'rov soni emas, BELGI soni bo'yicha hisoblanadi (faqat 1-daraja).
     """
-    print("\n[7b] Tarjima — ko'p provayderli tasodifiy tanlov")
+    print("\n[7b] Tarjima — ko'p darajali provayder zanjiri")
     from sqlalchemy import delete
 
     from bot.database.models import Translation, User, UserSettings
@@ -869,9 +870,11 @@ async def test_translation_providers() -> None:
 
     original_google_keys = settings.GOOGLE_TRANSLATE_API_KEYS_RAW
     original_azure_keys = settings.AZURE_TRANSLATOR_KEYS_RAW
+    original_gemini_keys = settings.GEMINI_API_KEYS_RAW
     original_usage_fn = tp.provider_key_usage
-    original_google_call = tp.PAID_PROVIDER_CONFIG["google_translate"]["call"]
-    original_azure_call = tp.PAID_PROVIDER_CONFIG["azure_translator"]["call"]
+    original_google_call = tp.FREE_TIER_PROVIDER_CONFIG["google_translate"]["call"]
+    original_azure_call = tp.FREE_TIER_PROVIDER_CONFIG["azure_translator"]["call"]
+    original_gemini_call = tp.CHEAP_PROVIDER_CONFIG["gemini"]["call"]
 
     usage_by_provider: dict[str, dict[int, int]] = {}
 
@@ -887,22 +890,30 @@ async def test_translation_providers() -> None:
     async def fake_google_fails(_text, _source, _target, _api_key) -> str:
         raise RuntimeError("test xatosi")
 
+    async def fake_gemini(_text, _source, _target, api_key) -> str:
+        return f"gemini:{api_key}"
+
+    async def fake_gemini_fails(_text, _source, _target, _api_key) -> str:
+        raise RuntimeError("test xatosi")
+
     tp.provider_key_usage = fake_usage
-    tp.PAID_PROVIDER_CONFIG["google_translate"]["call"] = fake_google
-    tp.PAID_PROVIDER_CONFIG["azure_translator"]["call"] = fake_azure
+    tp.FREE_TIER_PROVIDER_CONFIG["google_translate"]["call"] = fake_google
+    tp.FREE_TIER_PROVIDER_CONFIG["azure_translator"]["call"] = fake_azure
+    tp.CHEAP_PROVIDER_CONFIG["gemini"]["call"] = fake_gemini
     service = TranslationService(redis=None)
 
     try:
         async with AsyncSessionLocal() as session:
             settings.GOOGLE_TRANSLATE_API_KEYS_RAW = ""
             settings.AZURE_TRANSLATOR_KEYS_RAW = ""
-            candidates = await service._pick_paid_candidates(session)
+            settings.GEMINI_API_KEYS_RAW = ""
+            candidates = await service._pick_free_tier_candidates(session)
             check("kalit yo'q -> nomzod yo'q", candidates == [])
 
             settings.GOOGLE_TRANSLATE_API_KEYS_RAW = "gkey1,gkey2"
             settings.AZURE_TRANSLATOR_KEYS_RAW = "akey1"
             usage_by_provider.clear()
-            candidates = await service._pick_paid_candidates(session)
+            candidates = await service._pick_free_tier_candidates(session)
             names = {c[0] for c in candidates}
             check(
                 "ikkalasi ham nomzod (tekin hajmda)",
@@ -915,7 +926,7 @@ async def test_translation_providers() -> None:
             usage_by_provider["google_translate"] = {
                 0: settings.GOOGLE_TRANSLATE_FREE_MONTHLY_CHARS
             }
-            candidates = await service._pick_paid_candidates(session)
+            candidates = await service._pick_free_tier_candidates(session)
             google_pick = next(c for c in candidates if c[0] == "google_translate")
             check("bepul hajmi tugagan kalit chetlanadi", google_pick[1] == 1, str(google_pick))
 
@@ -924,27 +935,55 @@ async def test_translation_providers() -> None:
                 1: settings.GOOGLE_TRANSLATE_FREE_MONTHLY_CHARS,
             }
             usage_by_provider["azure_translator"] = {0: settings.AZURE_TRANSLATOR_FREE_MONTHLY_CHARS}
-            candidates = await service._pick_paid_candidates(session)
+            candidates = await service._pick_free_tier_candidates(session)
             check("hamma kalit tugagan -> nomzod yo'q", candidates == [])
 
-            # `deep_translator` haqiqiy tarmoq chaqiruvi qiladi — Google
-            # o'zi vaqti-vaqti bilan band/bloklangan bo'lishi mumkin
-            # (2026-08-24/25 voqeasi). Bu holatda `TranslationError`
-            # ko'tariladi — bu ham TO'G'RI xulq (fallback chaqirilgani
-            # isbotlangan), shuning uchun smoke_test'ni yiqitmaydi.
+            # 1-daraja (Google/Azure) tugagan, Gemini ham sozlanmagan — endi
+            # `deep_translator` haqiqiy tarmoq chaqiruvi qiladi. Google o'zi
+            # vaqti-vaqti bilan band/bloklangan bo'lishi mumkin (2026-08-24/25
+            # voqeasi) — bu holatda `TranslationError` ko'tariladi, bu ham
+            # TO'G'RI xulq (fallback chaqirilgani isbotlangan), shuning uchun
+            # smoke_test'ni yiqitmaydi.
             try:
                 _, provider_name, _ = await service._dispatch(session, "salom", "auto", "en")
                 check(
-                    "hamma pullik tugagan -> bepul provayderga (haqiqiy chaqiruv)",
+                    "hamma pullik tugagan, Gemini yo'q -> bepul provayderga (haqiqiy chaqiruv)",
                     provider_name == "deep_translator",
                     provider_name,
                 )
             except TranslationError as exc:
                 check(
-                    "hamma pullik tugagan -> bepul provayderga urinildi (u xato qaytardi)",
+                    "hamma pullik tugagan, Gemini yo'q -> bepul provayderga urinildi (u xato qaytardi)",
                     True,
                     f"deep_translator ham hozir ishlamadi: {exc.code}",
                 )
+
+            # 2-daraja: 1-daraja hali tugagan holatda Gemini sozlansa, shu ishlatiladi.
+            settings.GEMINI_API_KEYS_RAW = "gemkey1"
+            text_out, provider_name, key_index = await service._dispatch(session, "salom", "auto", "en")
+            check(
+                "1-daraja tugagan, Gemini sozlangan -> Gemini ishlatiladi",
+                provider_name == "gemini" and key_index == 0 and text_out == "gemini:gemkey1",
+                f"{provider_name}, {key_index}, {text_out}",
+            )
+
+            # Gemini ham ishlamasa (xato) -> oxirgi zaxira `deep_translator`ga o'tadi.
+            tp.CHEAP_PROVIDER_CONFIG["gemini"]["call"] = fake_gemini_fails
+            try:
+                _, provider_name, _ = await service._dispatch(session, "salom", "auto", "en")
+                check(
+                    "Gemini ham ishlamasa -> bepul provayderga (haqiqiy chaqiruv)",
+                    provider_name == "deep_translator",
+                    provider_name,
+                )
+            except TranslationError as exc:
+                check(
+                    "Gemini ham ishlamasa -> bepul provayderga urinildi (u xato qaytardi)",
+                    True,
+                    f"deep_translator ham hozir ishlamadi: {exc.code}",
+                )
+            tp.CHEAP_PROVIDER_CONFIG["gemini"]["call"] = fake_gemini
+            settings.GEMINI_API_KEYS_RAW = ""
 
             usage_by_provider["azure_translator"] = {}
             text_out, provider_name, key_index = await service._dispatch(session, "salom", "auto", "en")
@@ -955,7 +994,7 @@ async def test_translation_providers() -> None:
             )
 
             usage_by_provider.clear()
-            tp.PAID_PROVIDER_CONFIG["google_translate"]["call"] = fake_google_fails
+            tp.FREE_TIER_PROVIDER_CONFIG["google_translate"]["call"] = fake_google_fails
             seen = set()
             for _ in range(5):
                 _, provider_name, _ = await service._dispatch(session, "salom", "auto", "en")
@@ -968,9 +1007,11 @@ async def test_translation_providers() -> None:
     finally:
         settings.GOOGLE_TRANSLATE_API_KEYS_RAW = original_google_keys
         settings.AZURE_TRANSLATOR_KEYS_RAW = original_azure_keys
+        settings.GEMINI_API_KEYS_RAW = original_gemini_keys
         tp.provider_key_usage = original_usage_fn
-        tp.PAID_PROVIDER_CONFIG["google_translate"]["call"] = original_google_call
-        tp.PAID_PROVIDER_CONFIG["azure_translator"]["call"] = original_azure_call
+        tp.FREE_TIER_PROVIDER_CONFIG["google_translate"]["call"] = original_google_call
+        tp.FREE_TIER_PROVIDER_CONFIG["azure_translator"]["call"] = original_azure_call
+        tp.CHEAP_PROVIDER_CONFIG["gemini"]["call"] = original_gemini_call
 
     # ── provider_key_usage: haqiqiy SUM so'rovi (xato hisoblanmasligi kerak) ──
     async with AsyncSessionLocal() as session:

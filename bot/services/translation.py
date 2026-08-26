@@ -1,14 +1,20 @@
-"""Tarjima servisi.
+"""Tarjima servisi — uch DARAJALI (tiered) provayder zanjiri.
 
-Uchta provayder: `deep-translator` (bepul, lekin Google veb-sahifasini
-scraping qilgani uchun ishonchsiz), Google Cloud Translation va Azure
-Translator (ikkalasi ham pullik, rasmiy API). Har bir so'rovda pullik
-provayderlar orasidan TASODIFIY tanlanadi (hali bepul oylik hajmidan
-oshmagan bo'lsa) — batafsil: `bot/services/translation_providers.py`.
-Ikkalasi ham yo'q/tugagan/xato bersa `deep_translator`ga qaytiladi.
+1-daraja: Google Cloud Translation / Azure Translator — bepul oylik BELGI
+hajmi hali tugamagan bo'lsa, ular orasidan TASODIFIY tanlanadi (rasmiy API,
+pullik, lekin bepul hajmi bor).
 
-Baza sxemasida `provider`/`provider_model`/`provider_key_index` ustunlari
-allaqachon bor.
+2-daraja: Gemini — 1-daraja tugagan/yo'q bo'lsa ishlatiladi. Cloud
+Translation'dan ~40-150 barobar arzon, lekin cheklovi hajm emas so'rov
+tezligi (RPM/RPD) bo'lgani uchun oylik hisob shart emas — kalitlar orasida
+oddiy tasodifiy tanlov.
+
+3-daraja: `deep_translator` — bepul, lekin Google veb-sahifasini scraping
+qilgani uchun ishonchsiz oxirgi zaxira. Yuqoridagi ikkala daraja ham
+yo'q/tugagan/xato bersa shunga qaytiladi.
+
+Batafsil: `bot/services/translation_providers.py`. Baza sxemasida
+`provider`/`provider_model`/`provider_key_index` ustunlari allaqachon bor.
 """
 
 from __future__ import annotations
@@ -23,7 +29,11 @@ from typing import Optional, Protocol
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config.settings import settings
-from bot.services.translation_providers import PAID_PROVIDER_CONFIG, pick_key
+from bot.services.translation_providers import (
+    CHEAP_PROVIDER_CONFIG,
+    FREE_TIER_PROVIDER_CONFIG,
+    pick_key,
+)
 from bot.utils.text import chunk, content_hash, normalize
 
 logger = logging.getLogger(__name__)
@@ -223,14 +233,14 @@ class TranslationService:
         except Exception:
             pass
 
-    async def _pick_paid_candidates(
+    async def _pick_free_tier_candidates(
         self, session: AsyncSession
     ) -> list[tuple[str, int, str]]:
-        """Hali bepul oylik hajmidan oshmagan provayder+kalit variantlari,
-        tasodifiy tartibda (har so'rovda qaysi biri sinab ko'rilishi
-        tasodifiy — talab shunday: "toki limiti tugagunicha random")."""
+        """Hali bepul oylik hajmidan oshmagan 1-daraja provayder+kalit
+        variantlari, tasodifiy tartibda (har so'rovda qaysi biri sinab
+        ko'rilishi tasodifiy — talab shunday: "toki limiti tugagunicha random")."""
         candidates: list[tuple[str, int, str]] = []
-        for name, cfg in PAID_PROVIDER_CONFIG.items():
+        for name, cfg in FREE_TIER_PROVIDER_CONFIG.items():
             keys = cfg["keys"]()
             if not keys:
                 continue
@@ -241,15 +251,37 @@ class TranslationService:
         random.shuffle(candidates)
         return candidates
 
+    def _pick_cheap_tier_candidates(self) -> list[tuple[str, int, str]]:
+        """2-daraja (Gemini va h.k.) — hajm kuzatilmaydi, faqat sozlangan
+        kalitlar orasida tasodifiy tartib."""
+        candidates: list[tuple[str, int, str]] = []
+        for name, cfg in CHEAP_PROVIDER_CONFIG.items():
+            keys = cfg["keys"]()
+            for index, api_key in enumerate(keys):
+                candidates.append((name, index, api_key))
+        random.shuffle(candidates)
+        return candidates
+
     async def _dispatch(
         self, session: AsyncSession, text: str, source: str, target: str
     ) -> tuple[str, str, Optional[int]]:
-        """Tasodifiy tanlangan pullik provayderni sinaydi, muvaffaqiyatsiz
-        bo'lsa keyingisiga, ikkalasi ham bo'lmasa/ishlamasa bepul
-        (`deep_translator`) provayderga o'tadi."""
-        for name, index, api_key in await self._pick_paid_candidates(session):
+        """Uch daraja: 1) Google/Azure (bepul hajmi tugamagan bo'lsa,
+        tasodifiy), 2) Gemini (arzon, tasodifiy kalit), 3) `deep_translator`
+        (oxirgi, bepul-lekin-ishonchsiz zaxira)."""
+        for name, index, api_key in await self._pick_free_tier_candidates(session):
             try:
-                call = PAID_PROVIDER_CONFIG[name]["call"]
+                call = FREE_TIER_PROVIDER_CONFIG[name]["call"]
+                translated = await call(text, source, target, api_key)
+                if translated and translated.strip():
+                    return translated, name, index
+                logger.warning("%s (kalit #%s) bo'sh javob qaytardi", name, index)
+            except Exception as exc:
+                logger.warning("%s (kalit #%s) ishlamadi: %s", name, index, exc)
+                continue
+
+        for name, index, api_key in self._pick_cheap_tier_candidates():
+            try:
+                call = CHEAP_PROVIDER_CONFIG[name]["call"]
                 translated = await call(text, source, target, api_key)
                 if translated and translated.strip():
                     return translated, name, index

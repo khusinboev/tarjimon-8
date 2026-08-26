@@ -113,6 +113,25 @@ class Settings(BaseSettings):
     def AZURE_TRANSLATOR_KEYS(self) -> List[str]:
         return [k.strip() for k in self.AZURE_TRANSLATOR_KEYS_RAW.split(",") if k.strip()]
 
+    # Gemini (LLM orqali tarjima) — Google/Azure'ning BEPUL hajmi tugagach
+    # ishlatiladigan ARZON ikkinchi daraja (Google Cloud Translation'dan
+    # taxminan 40-150 barobar arzon). Google AI Studio'dan olinadi
+    # (https://aistudio.google.com/apikey) — Cloud Translation kalitidan
+    # BUTUNLAY BOSHQA narsa, garchi ikkalasi ham Google bo'lsa ham.
+    #
+    # Google/Azure'dan farqi: oylik BELGI hajmi emas, balki so'rov TEZLIGI
+    # (RPM/RPD) bilan cheklanadi — shuning uchun kalitlar orasida oylik
+    # hisob emas, oddiy tasodifiy tanlov bilan yuklama taqsimlanadi.
+    GEMINI_API_KEYS_RAW: str = Field(default="", alias="GEMINI_API_KEYS")
+    # "latest" taxallusi — Google model nomini eskirtirib qo'ysa ham
+    # (masalan "gemini-2.5-flash-lite" o'rniga "gemini-3.5-flash-lite")
+    # kodni qo'lda yangilash shart bo'lmasin deb.
+    GEMINI_MODEL: str = Field(default="gemini-flash-lite-latest")
+
+    @property
+    def GEMINI_API_KEYS(self) -> List[str]:
+        return [k.strip() for k in self.GEMINI_API_KEYS_RAW.split(",") if k.strip()]
+
     # ── TTS ───────────────────────────────────────────────────
     TTS_PROVIDER: str = Field(default="edge")
     TTS_MAX_CHARS: int = Field(default=1000)

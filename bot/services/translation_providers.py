@@ -1,19 +1,26 @@
-"""Google Translate va Azure Translator — pullik tarjima provayderlari.
+"""Google Translate, Azure Translator, Gemini — pullik tarjima provayderlari.
 
-Ikkalasi ham oddiy REST orqali (`aiohttp` bilan), `ocr.py`dagi bilan bir xil
+Barchasi oddiy REST orqali (`aiohttp` bilan), `ocr.py`dagi bilan bir xil
 uslubda — SDK yoki service-account fayli kerak emas, faqat API kalit
 (Azure uchun mintaqa ham, `settings.AZURE_TRANSLATOR_REGION`).
 
-Bir nechta kalit sozlansa, har biri ALOHIDA hisob/loyihaga tegishli deb
-faraz qilinadi — har birining o'z oylik bepul BELGI hajmi bo'ladi, shuning
-uchun eng kam ishlatilgan (hali bepul hajmidan oshmagan) kalit tanlanadi.
-Bu `bot/services/ocr.py`dagi ko'p kalitli navbat bilan bir xil naqsh, faqat
-so'rov SONI emas, BELGI SONI bo'yicha hisoblanadi (chunki Google/Azure
-tarjima xizmatlari belgi bo'yicha to'laydi).
+**1-daraja — Google/Azure (bepul hajmi kuzatiladi).** Bir nechta kalit
+sozlansa, har biri ALOHIDA hisob/loyihaga tegishli deb faraz qilinadi — har
+birining o'z oylik bepul BELGI hajmi bo'ladi, shuning uchun eng kam
+ishlatilgan (hali bepul hajmidan oshmagan) kalit tanlanadi (`ocr.py`dagi
+ko'p kalitli navbat bilan bir xil naqsh, faqat so'rov SONI emas, BELGI
+SONI bo'yicha).
+
+**2-daraja — Gemini (arzon, hajm kuzatilmaydi).** Google/Azure'ning
+BEPUL hajmi tugagach ishlatiladi — Cloud Translation'dan ~40-150 barobar
+arzon (LLM narxlash siyosati tufayli), shuning uchun oylik hisob shart
+emas: cheklovi BELGI hajmi emas, so'rov TEZLIGI (RPM/RPD), shu sababli
+kalitlar orasida oddiy tasodifiy tanlov bilan yuklama taqsimlanadi.
 """
 
 from __future__ import annotations
 
+import random
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -129,10 +136,52 @@ async def call_azure(text: str, source: str, target: str, api_key: str) -> str:
     return translations[0].get("text", "")
 
 
+GEMINI_URL_TEMPLATE = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+
+_GEMINI_PROMPT = (
+    "You are a translation engine embedded in a Telegram bot. Translate the "
+    "text below from {source} to {target}. Reply with ONLY the raw translated "
+    "text — no quotes, no markdown, no explanation, no commentary, nothing "
+    "else before or after it.\n\nText:\n{text}"
+)
+
+
+async def call_gemini(text: str, source: str, target: str, api_key: str) -> str:
+    """Gemini (LLM) orqali tarjima — alohida tarjima API emas, shuning uchun
+    aniq prompt bilan faqat xom tarjimani qaytarishga majburlaymiz."""
+    url = GEMINI_URL_TEMPLATE.format(model=settings.GEMINI_MODEL)
+    source_label = "the auto-detected source language" if source == "auto" else source
+    prompt = _GEMINI_PROMPT.format(source=source_label, target=target, text=text)
+    payload = {"contents": [{"parts": [{"text": prompt}]}]}
+
+    timeout = aiohttp.ClientTimeout(total=TIMEOUT)
+    async with aiohttp.ClientSession(timeout=timeout) as client:
+        async with client.post(f"{url}?key={api_key}", json=payload) as response:
+            data = await response.json(content_type=None)
+
+    if isinstance(data, dict) and "error" in data:
+        raise RuntimeError(str((data["error"] or {}).get("message", "Gemini xatosi")))
+
+    candidates = (data or {}).get("candidates") or []
+    if not candidates:
+        raise RuntimeError("Gemini bo'sh javob qaytardi (xavfsizlik filtri bo'lishi mumkin)")
+
+    # `STOP` — normal yakun. Boshqa sabab (masalan `SAFETY`, `MAX_TOKENS`) —
+    # tarjima chiqmagan, keyingi provayderga o'tish kerak.
+    finish_reason = candidates[0].get("finishReason")
+    if finish_reason not in (None, "STOP"):
+        raise RuntimeError(f"Gemini tarjima qilmadi ({finish_reason})")
+
+    parts = (candidates[0].get("content") or {}).get("parts") or []
+    if not parts:
+        raise RuntimeError("Gemini bo'sh javob qaytardi")
+    return (parts[0].get("text") or "").strip()
+
+
+# ── 1-daraja: bepul hajmi kuzatiladigan provayderlar ──────────────────
 # Provayder nomi -> (kalitlar ro'yxati, oylik bepul belgi hajmi, chaqiruv
-# funksiyasi). `translation.py` shu ro'yxatni aylanib, tasodifiy tanlaydi.
-# Yangi pullik provayder qo'shish uchun shu yerga bitta yozuv yetarli.
-PAID_PROVIDER_CONFIG: dict[str, dict] = {
+# funksiyasi). `translation.py` bularni bepul hajmi tugamagunicha ishlatadi.
+FREE_TIER_PROVIDER_CONFIG: dict[str, dict] = {
     "google_translate": {
         "keys": lambda: settings.GOOGLE_TRANSLATE_KEYS,
         "free_limit": lambda: settings.GOOGLE_TRANSLATE_FREE_MONTHLY_CHARS,
@@ -142,5 +191,15 @@ PAID_PROVIDER_CONFIG: dict[str, dict] = {
         "keys": lambda: settings.AZURE_TRANSLATOR_KEYS,
         "free_limit": lambda: settings.AZURE_TRANSLATOR_FREE_MONTHLY_CHARS,
         "call": call_azure,
+    },
+}
+
+# ── 2-daraja: arzon, hajmi kuzatilmaydigan provayder(lar) ─────────────
+# 1-daraja tugagach/yo'q bo'lsa shu ishlatiladi. Hozircha faqat Gemini,
+# lekin kelajakda boshqa arzon LLM qo'shilsa shu yerga qo'shiladi.
+CHEAP_PROVIDER_CONFIG: dict[str, dict] = {
+    "gemini": {
+        "keys": lambda: settings.GEMINI_API_KEYS,
+        "call": call_gemini,
     },
 }
