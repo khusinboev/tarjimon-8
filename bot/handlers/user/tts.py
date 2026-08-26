@@ -46,10 +46,26 @@ async def send_voice(
     """
     quota = QuotaService(session, redis)
 
+    # Uzunlik — eng arzon tekshiruv, kvota band qilishdan OLDIN (aks holda
+    # juda uzun matn kvotadan bir joy band qilib, hech qachon
+    # ishlatilmagan/qaytarilmagan holda qolardi).
+    if len(text) > settings.TTS_MAX_CHARS:
+        await events.log(
+            EventType.TTS_FAILED,
+            user_id=user.id,
+            session_id=session_id,
+            translation_id=translation_id,
+            error_code="too_long",
+        )
+        await message.answer(t.TTS_TOO_LONG.format(limit=settings.TTS_MAX_CHARS))
+        return False
+
     # Ustunlik: admin rol > qo'lda qo'yilgan override > VIP (translate.py
     # dagi bilan bir xil mantiq — `resolve_limit_override` markazlashtiradi).
-    limit_override = resolve_limit_override(user, kind="tts")
-    status = await quota.check_tts(user.id, limit_override=limit_override)
+    # ATOMIK band qilinadi (TOCTOU'siz) — muvaffaqiyatsiz bo'lsa pastda
+    # (`TtsError`) ortga qaytariladi.
+    limit_override = resolve_limit_override(user, kind="tts", vip_value=0)
+    status = await quota.try_reserve_tts(user.id, limit_override=limit_override)
     if not status.allowed:
         await events.log(
             EventType.TTS_QUOTA_EXCEEDED,
@@ -61,10 +77,6 @@ async def send_voice(
             t.TTS_QUOTA_EXCEEDED.format(limit=status.limit),
             reply_markup=quota_exceeded_keyboard(t),
         )
-        return False
-
-    if len(text) > settings.TTS_MAX_CHARS:
-        await message.answer(t.TTS_TOO_LONG.format(limit=settings.TTS_MAX_CHARS))
         return False
 
     service = TtsService(redis)
@@ -83,7 +95,8 @@ async def send_voice(
     if cached_file_id:
         try:
             await message.answer_voice(cached_file_id)
-            await quota.consume_tts(user.id)
+            # Kvota allaqachon yuqorida band qilingan — qo'shimcha oshirish
+            # shart emas.
             await events.log(
                 EventType.TTS_SUCCEEDED,
                 user_id=user.id,
@@ -102,6 +115,12 @@ async def send_voice(
     try:
         result = await service.synthesize(text, voice)
     except TtsError as exc:
+        # Band qilingan joy ortga qaytariladi — muvaffaqiyatsiz urinish
+        # kvotadan sarflanmasligi kerak (kesh file_id ishlamay qolib,
+        # qayta generatsiya qilinayotgan bo'lsa ham xavotir yo'q — bitta
+        # reservatsiya ustida ikkalasi ham ishlaydi, ikki marta band
+        # qilinmagan).
+        await quota.release_tts(user.id)
         session.add(
             TtsRequest(
                 user_id=user.id,
@@ -149,7 +168,7 @@ async def send_voice(
         )
     )
 
-    await quota.consume_tts(user.id)
+    # Kvota allaqachon yuqorida band qilingan.
 
     if translation_id is not None:
         # Ovoz eshitish — musbat sifat signali.

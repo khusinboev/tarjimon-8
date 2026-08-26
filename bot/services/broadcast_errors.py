@@ -104,6 +104,16 @@ _PASSIVE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"chat not found", re.I), Kind.CHAT_NOT_FOUND),
     (re.compile(r"user not found", re.I), Kind.CHAT_NOT_FOUND),
     (re.compile(r"peer_id_invalid", re.I), Kind.CHAT_NOT_FOUND),
+    # DIQQAT: shu uchtasi ilgari faqat `broadcast.py`dagi (jonli quvurda
+    # ISHLATILMAYDIGAN, faqat `scripts/mark_unreachable.py` va
+    # `broadcast_relaunch.py` kabi alohida skriptlarda ishlatiladigan)
+    # `PERMANENT_ERROR_MARKERS`da bor edi — jonli tarqatish esa bunday
+    # nishonlarni "noma'lum xato" deb har safar qayta-qayta urinib
+    # turardi. Ikkala ro'yxat qo'lda sinxron saqlanishi kerak — yangi
+    # "doimiy o'chirilgan" belgisi topilsa, ikkalasiga ham qo'shing.
+    (re.compile(r"user_bot_to_bot_disabled", re.I), Kind.CHAT_NOT_FOUND),
+    (re.compile(r"chat_id is empty", re.I), Kind.CHAT_NOT_FOUND),
+    (re.compile(r"bot can'?t initiate conversation", re.I), Kind.CHAT_NOT_FOUND),
 )
 
 

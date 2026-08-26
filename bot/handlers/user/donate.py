@@ -29,6 +29,7 @@ from bot.database.models import Donation, User
 from bot.database.repositories.user_repository import UserRepository
 from bot.keyboards.user import cancel_menu, donate_amounts, main_menu
 from bot.locales import CANCEL_BUTTONS, DONATE_BUTTONS, RESERVED_BUTTONS
+from bot.services.admin_alerts import alert_admins_once
 from bot.services.events import EventService, EventType, utcnow
 from bot.states.support import DonateStates
 from bot.utils.formatters import format_datetime
@@ -285,6 +286,7 @@ async def on_paid(
     events: EventService,
     session_id,
     t: ModuleType,
+    redis=None,
 ) -> None:
     payment = message.successful_payment
     stars = payment.total_amount
@@ -303,13 +305,35 @@ async def on_paid(
 
     try:
         await session.flush()
-    except IntegrityError:
-        # Telegram bir to'lov haqida takroriy xabar yuborishi mumkin —
-        # `telegram_payment_charge_id` unikal, ikkinchi yozuv shu yerda
-        # to'xtaydi. Foydalanuvchiga baribir rahmat aytamiz.
+    except IntegrityError as exc:
         await session.rollback()
-        logger.info(
-            "Takroriy to'lov xabari: %s", payment.telegram_payment_charge_id
+        # Faqat AYNAN `telegram_payment_charge_id` unikal cheklovi bo'lsa —
+        # bu Telegram bir to'lov haqida takroriy xabar yuborgani (kutilgan
+        # holat). Boshqa IntegrityError (masalan FK/enum muammosi) BUTUNLAY
+        # boshqa, haqiqiy xato — uni ham "takroriy to'lov" deb yashirish
+        # noto'g'ri bo'lardi (xato yashirinib, hech kim bilmay qolardi).
+        if "donations_telegram_payment_charge_id_key" in str(exc.orig):
+            logger.info(
+                "Takroriy to'lov xabari: %s", payment.telegram_payment_charge_id
+            )
+            await message.answer(
+                t.DONATE_THANKS.format(stars=stars), reply_markup=main_menu(t)
+            )
+            return
+        logger.exception(
+            "To'lovni yozishda kutilmagan DB xatosi (charge_id=%s)",
+            payment.telegram_payment_charge_id,
+        )
+        # Pul Telegram tomonidan ALLAQACHON yechilgan — foydalanuvchiga
+        # "xato" deyish noto'g'ri (u pulini yo'qotdi deb o'ylaydi), lekin
+        # yozuv bazaga tushmadi va VIP berilmadi — admin buni qo'lda
+        # tuzatishi kerak, shuning uchun xabar beriladi.
+        await alert_admins_once(
+            message.bot, redis, "donation_db_error",
+            "🚨 <b>To'lov yozilmadi (DB xatosi)</b>\n\n"
+            f"👤 {user.telegram_id} · {stars} ⭐\n"
+            f"charge_id: <code>{payment.telegram_payment_charge_id}</code>\n"
+            "Foydalanuvchining puli yechilgan, lekin yozuv/VIP qo'lda tekshirilishi kerak.",
         )
         await message.answer(
             t.DONATE_THANKS.format(stars=stars), reply_markup=main_menu(t)

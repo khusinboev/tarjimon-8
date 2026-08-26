@@ -321,7 +321,20 @@ class TranslationService:
                 "Hozircha bepul (ishonchsiz) zaxiraga tushilmoqda.",
             )
 
-        translated = await self.deep_provider.translate(text, source, target)
+        try:
+            translated = await self.deep_provider.translate(text, source, target)
+        except TranslationError as exc:
+            # Oxirgi (3-daraja) zaxira ham ishlamadi — tarjima UMUMAN
+            # ishlamayapti, foydalanuvchiga xato ko'rsatilishidan oldin
+            # adminga xabar berish kerak (aks holda buni faqat shikoyatdan
+            # bilib qolamiz).
+            await alert_admins_once(
+                self.bot, self.redis, "all_tiers_down",
+                "🆘 <b>Tarjima BUTUNLAY ishlamayapti</b> — barcha uch daraja "
+                f"(Google/Azure, Gemini, deep_translator) xato qaytardi. "
+                f"Oxirgi xato: {exc.code} — {exc}",
+            )
+            raise
         return translated, self.deep_provider.name, None
 
     async def translate(
@@ -339,12 +352,18 @@ class TranslationService:
 
         cached = await self._cache_get(key)
         if cached is not None:
+            # Latency har ikkala yo'lda (kesh/haqiqiy chaqiruv) BIR XIL
+            # nuqtada o'lchanadi — til aniqlashdan OLDIN — aks holda
+            # kesh-hit va kesh-miss latency'lari turli narsani anglatib,
+            # dashboard'larni chalg'itardi.
+            latency_ms = int((time.perf_counter() - started) * 1000)
+            detected = await asyncio.to_thread(detect_language, text) if source == "auto" else source
             return TranslationResult(
                 text=cached,
-                source_lang_detected=detect_language(text) if source == "auto" else source,
+                source_lang_detected=detected,
                 provider="cache",
                 provider_model=None,
-                latency_ms=int((time.perf_counter() - started) * 1000),
+                latency_ms=latency_ms,
                 cache_hit=True,
             )
 
@@ -355,10 +374,13 @@ class TranslationService:
             raise TranslationError("empty_result", "Provayder bo'sh javob qaytardi")
 
         await self._cache_set(key, translated)
+        # `py3langid.classify` CPU-bog'liq (sync) — event loop'ni
+        # bloklamasin deb alohida oqimda ishga tushiriladi.
+        detected = await asyncio.to_thread(detect_language, text) if source == "auto" else source
 
         return TranslationResult(
             text=translated,
-            source_lang_detected=detect_language(text) if source == "auto" else source,
+            source_lang_detected=detected,
             provider=provider_name,
             provider_model=None,
             provider_key_index=key_index,

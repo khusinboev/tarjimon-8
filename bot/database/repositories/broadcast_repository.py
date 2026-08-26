@@ -1,4 +1,5 @@
 from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from bot.database.models import Broadcast, BroadcastDelivery
 from bot.services.events import utcnow
@@ -18,7 +19,14 @@ class BroadcastRepository:
         total_targets: int,
         src_chat_id: int,
         src_message_id: int,
-    ) -> Broadcast:
+    ) -> Broadcast | None:
+        """`None` — DB darajasidagi "bitta faol tarqatish" cheklovi
+        (`ux_broadcasts_single_active`, migratsiya 015) buzilgan: boshqa
+        tarqatish orada (deyarli bir vaqtda) allaqachon ishga tushib
+        ulgurgan. Chaqiruvchi oldindan `get_active()` bilan tekshiradi,
+        lekin ikki tekshiruv orasida RACE bo'lishi mumkin — shu holat
+        uchun DB o'zi kafolat beradi, kod esa faqat aniq xato ko'rsatadi.
+        """
         broadcast = Broadcast(
             created_by=created_by,
             mode=mode,
@@ -30,7 +38,11 @@ class BroadcastRepository:
             started_at=utcnow(),
         )
         self.session.add(broadcast)
-        await self.session.commit()
+        try:
+            await self.session.commit()
+        except IntegrityError:
+            await self.session.rollback()
+            return None
         await self.session.refresh(broadcast)
         return broadcast
 

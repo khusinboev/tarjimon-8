@@ -156,9 +156,13 @@ class Settings(BaseSettings):
     # Telegram Stars hammaga qulay emas (mintaqaviy cheklovlar, Stars sotib
     # olish kerak). Karta — O'zbekistondagi foydalanuvchilar uchun oddiyroq yo'l.
     # Bo'sh qoldirilsa karta tugmasi umuman ko'rsatilmaydi.
-    DONATE_CARD_VISA: str = Field(default="4413 5976 0130 3496")
-    DONATE_CARD_UZCARD: str = Field(default="6262 7300 1554 9852")
-    DONATE_CARD_HOLDER: str = Field(default="Ho'sinboyev Adhambek")
+    #
+    # DIQQAT: haqiqiy karta raqami/ism FAQAT `.env` orqali beriladi — bu
+    # yerda sukut qiymat sifatida YOZILMAYDI (moliyaviy ma'lumot git
+    # tarixida abadiy qolib ketmasligi uchun).
+    DONATE_CARD_VISA: str = Field(default="")
+    DONATE_CARD_UZCARD: str = Field(default="")
+    DONATE_CARD_HOLDER: str = Field(default="")
 
     @property
     def HAS_DONATE_CARDS(self) -> bool:

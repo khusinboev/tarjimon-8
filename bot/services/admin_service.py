@@ -239,6 +239,13 @@ class AdminService:
                 added_by=added_by,
                 is_active=True,
             )
+            await self.log_action(
+                added_by,
+                "channel.add",
+                target_type="channel",
+                target_id=chat_id,
+                payload={"username": normalized_username, "title": channel_title},
+            )
         except IntegrityError:
             await self.session.rollback()
             return False, "Bu kanal (yoki username) allaqachon mavjud."
@@ -246,6 +253,7 @@ class AdminService:
             await self.session.rollback()
             logger.exception("Unexpected DB error while creating channel %s", chat_id)
             return False, "Kanalni saqlashda kutilmagan xatolik yuz berdi."
+        await self.session.commit()
         return True, f"Kanal qo'shildi: {channel_title} | Tugma: {raw_button_text}"
 
     async def list_channels_text(self) -> str:
@@ -264,14 +272,18 @@ class AdminService:
             )
         return "\n".join(lines)
 
-    async def remove_channel(self, raw_channel: str) -> tuple[bool, str]:
+    async def remove_channel(self, raw_channel: str, *, removed_by: Optional[int] = None) -> tuple[bool, str]:
         value = raw_channel.strip()
 
         chat_id: Optional[int] = None
         if value.startswith("@"):
             username = value[1:]
+            # `ilike()` emas — Telegram usernameda `_` bo'lishi mumkin, u
+            # esa LIKE'da "istalgan bitta belgi" degani, boshqa kanalga
+            # tegishli bo'lib qolishi mumkin edi (channel_repository.py
+            # bilan bir xil tuzatish).
             result = await self.session.execute(
-                select(Channel).where(Channel.channel_username.ilike(username))
+                select(Channel).where(func.lower(Channel.channel_username) == username.lower())
             )
             channel = result.scalar_one_or_none()
         else:
@@ -287,7 +299,17 @@ class AdminService:
         if not channel:
             return False, "Bunday kanal topilmadi."
 
+        channel_id_for_log = channel.channel_id
+        channel_username_for_log = channel.channel_username
         await self.session.delete(channel)
+        if removed_by is not None:
+            await self.log_action(
+                removed_by,
+                "channel.remove",
+                target_type="channel",
+                target_id=channel_id_for_log,
+                payload={"username": channel_username_for_log},
+            )
         await self.session.commit()
         return True, "Kanal muvaffaqiyatli o'chirildi."
 
@@ -317,7 +339,7 @@ class AdminService:
     async def start_broadcast(
         self, admin_id: int, src_chat_id: int, src_message_id: int,
         mode: str, content_preview: Optional[str],
-    ) -> Broadcast:
+    ) -> Optional[Broadcast]:
         """Tarqatish yozuvini yaratadi. Haqiqiy yuborish bu yerda EMAS —
         chaqiruvchi `bot/services/broadcast_runner.start()` bilan fon
         vazifasini ishga tushiradi, aks holda adminning o'zi tarqatish

@@ -42,8 +42,16 @@ logger = logging.getLogger(__name__)
 
 FETCH_BATCH = 200
 SEND_ATTEMPTS = 2
-CHECKPOINT_EVERY_RESULTS = 20
-CHECKPOINT_INTERVAL_SECONDS = 5.0
+# Har bir yuborishda checkpoint qilish DB yozuvini portlatardi — shuning
+# uchun bir nechtadan keyin saqlanadi. DIQQAT: bu ataylab qabul qilingan
+# muvozanat — cho'kish (crash) checkpoint oralig'ida sodir bo'lsa, so'nggi
+# checkpointdan keyin YUBORILGAN (lekin hali yozilmagan) qabul qiluvchilar
+# tiklashda QAYTA xabar olishi mumkin (bounded, kamdan-kam holat — "exactly
+# once" emas, "at-least-once" kafolati). 20/5s (~1.3s'da 20 ta, 15/sek
+# tezlikda) oldin edi — 10/3s'ga qisqartirildi, DB yukini sezilarli
+# oshirmasdan oynani deyarli 2 barobar kamaytiradi.
+CHECKPOINT_EVERY_RESULTS = 10
+CHECKPOINT_INTERVAL_SECONDS = 3.0
 CONTROL_CHECK_INTERVAL_SECONDS = 2.0
 
 ProgressNotify = Callable[[int, bool], Awaitable[None]]
@@ -57,6 +65,24 @@ _active_tasks: dict[int, asyncio.Task] = {}
 def is_running(broadcast_id: int) -> bool:
     task = _active_tasks.get(broadcast_id)
     return task is not None and not task.done()
+
+
+def _unregister(broadcast_id: int, task: Optional[asyncio.Task]) -> None:
+    """Faqat AYNAN shu `task` hali ro'yxatda bo'lsa olib tashlaydi.
+
+    `_run()` pauza/bekor qilinganda DB holatini yozgach o'zini DARHOL
+    (hali to'liq qaytmasdan) ro'yxatdan chiqaradi — aks holda "davom
+    ettirish" xuddi shu daqiqada bosilsa, `is_running()` hali ESKI
+    vazifani "ishlamoqda" deb ko'rib, YANGI vazifa boshlanmay, tarqatish
+    "running" holatida ABADIY osilib qolishi mumkin edi (hech kim uni
+    qayta ishga tushirmaguncha, faqat bot restart tiklaydi). Lekin shu
+    vaqt oralig'ida yangi vazifa allaqachon ro'yxatga yozilib ulgurgan
+    bo'lishi mumkin — shuning uchun identifikatorga emas, AYNAN shu
+    `task` obyektiga tekshiramiz, aks holda eski vazifaning yakuniy
+    tozalashi yangi vazifaning yozuvini bekor qilib qo'yardi.
+    """
+    if task is not None and _active_tasks.get(broadcast_id) is task:
+        del _active_tasks[broadcast_id]
 
 
 def start(bot: Bot, broadcast_id: int, progress_notify: Optional[ProgressNotify] = None) -> None:
@@ -82,12 +108,33 @@ async def _guarded_run(
         except Exception:
             logger.exception("Tarqatish #%s xato holatini yozib ham bo'lmadi", broadcast_id)
     finally:
-        _active_tasks.pop(broadcast_id, None)
+        _unregister(broadcast_id, asyncio.current_task())
 
 
 async def _run(
     bot: Bot, broadcast_id: int, progress_notify: Optional[ProgressNotify]
 ) -> None:
+    async def notify_safe(finished: bool) -> None:
+        """`progress_notify`ni xato ko'tarmaydigan qilib chaqiradi.
+
+        DB holati (`mark_paused`/`mark_cancelled`/`finish_broadcast`/
+        `fail_broadcast`) BU chaqiruvdan OLDIN allaqachon commit qilingan
+        bo'ladi — agar notifikatsiya (masalan admin sessiyasi/DB o'qishi)
+        xato bersa va bu yerda ushlanmasa, `_guarded_run`ning umumiy
+        except bloki uni ushlab, ALLAQACHON to'g'ri yakunlangan
+        tarqatishni "failed" deb QAYTA YOZIB QO'YARDI (haqiqiy natijani
+        yo'qotib).
+        """
+        if not progress_notify:
+            return
+        try:
+            await progress_notify(broadcast_id, finished)
+        except Exception:
+            logger.exception(
+                "Tarqatish #%s progress_notify xato berdi (DB holati allaqachon yozilgan, ta'sir qilmaydi)",
+                broadcast_id,
+            )
+
     async with AsyncSessionLocal() as session:
         repo = BroadcastRepository(session)
         user_repo = UserRepository(session)
@@ -146,6 +193,12 @@ async def _run(
                             )
                         return user_id, True, None
                     except TelegramRetryAfter as exc:
+                        # Klassifikatsiyani saqlab qo'yamiz — agar QOLGAN
+                        # urinishlar HAM shu bilan tugasa (SEND_ATTEMPTS
+                        # tugab ketsa), `last_cls` `None` bo'lib qolmasin:
+                        # aks holda haqiqiy sabab "noma'lum xato" deb
+                        # yozilib, flood-wait diagnostikasi yo'qolardi.
+                        last_cls = classify(exc)
                         wait = max(int(getattr(exc, "retry_after", 1)), 1)
                         # Limitga bitta so'rov tegsa qolgani ham tegadi —
                         # barcha yuboruvchilarni birga kechiktiramiz.
@@ -223,8 +276,11 @@ async def _run(
                             success_count=success,
                             failed_count=failed,
                         )
-                    if progress_notify:
-                        await progress_notify(broadcast_id, True)
+                    # DB holati yozilgach DARHOL ro'yxatdan chiqariladi —
+                    # "davom ettirish" shu zahoti bosilsa ham yangi vazifa
+                    # to'sqinliksiz boshlansin (izoh: `_unregister`).
+                    _unregister(broadcast_id, asyncio.current_task())
+                    await notify_safe(True)
                     return
 
             if not buffer and not exhausted:
@@ -261,8 +317,7 @@ async def _run(
                 await repo.fail_broadcast(
                     broadcast_id, failed, error=fatal, active_seconds=elapsed_active()
                 )
-                if progress_notify:
-                    await progress_notify(broadcast_id, True)
+                await notify_safe(True)
                 return
 
             due_by_count = results_since_checkpoint >= CHECKPOINT_EVERY_RESULTS
@@ -279,15 +334,13 @@ async def _run(
                 )
                 last_checkpoint = now
                 results_since_checkpoint = 0
-                if progress_notify:
-                    await progress_notify(broadcast_id, False)
+                await notify_safe(False)
 
         await session.commit()
         await repo.finish_broadcast(
             broadcast_id, success, failed, active_seconds=elapsed_active()
         )
-        if progress_notify:
-            await progress_notify(broadcast_id, True)
+        await notify_safe(True)
 
 
 def _advance_watermark(

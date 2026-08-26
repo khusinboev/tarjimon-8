@@ -37,6 +37,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config.settings import settings
 from bot.database.models import Translation
+from bot.utils.text import redact_secrets
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,10 @@ class OcrResult:
     text: str
     provider: str
     key_index: Optional[int] = None
+    # OCR.Space kalitlari shu oy tugab, Vision'ga sukut bo'yicha (jim)
+    # o'tilgan bo'lsa True — chaqiruvchi buni ko'rib adminni ogohlantirishi
+    # mumkin, aks holda OCR.Space tugagani hech qachon bilinmay qoladi.
+    ocrspace_quota_exhausted: bool = False
 
 
 def _month_start() -> datetime:
@@ -91,18 +96,24 @@ async def _call_ocrspace(image_bytes: bytes, api_key: str) -> str:
     form.add_field("file", image_bytes, filename="image.jpg", content_type="image/jpeg")
 
     timeout = aiohttp.ClientTimeout(total=OCR_TIMEOUT)
-    async with aiohttp.ClientSession(timeout=timeout) as client:
-        async with client.post(OCRSPACE_URL, data=form) as response:
-            data = await response.json(content_type=None)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as client:
+            async with client.post(OCRSPACE_URL, data=form) as response:
+                status = response.status
+                data = await response.json(content_type=None)
+    except aiohttp.ClientError as exc:
+        raise OcrError("network_error", str(exc)) from exc
 
     if not isinstance(data, dict):
-        raise OcrError("provider_error", "OCR.Space noto'g'ri javob qaytardi")
+        raise OcrError("provider_error", f"OCR.Space noto'g'ri javob qaytardi (HTTP {status})")
 
     if data.get("IsErroredOnProcessing"):
         message = data.get("ErrorMessage") or data.get("ErrorDetails") or "OCR.Space xatosi"
         if isinstance(message, list):
             message = "; ".join(str(m) for m in message)
         raise OcrError("provider_error", str(message))
+    if status >= 400:
+        raise OcrError("provider_error", f"OCR.Space HTTP {status}")
 
     results = data.get("ParsedResults") or []
     if not results:
@@ -121,12 +132,21 @@ async def _call_google_vision(image_bytes: bytes) -> str:
         ]
     }
     timeout = aiohttp.ClientTimeout(total=OCR_TIMEOUT)
-    async with aiohttp.ClientSession(timeout=timeout) as client:
-        async with client.post(url, json=payload) as response:
-            data = await response.json(content_type=None)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as client:
+            async with client.post(url, json=payload) as response:
+                status = response.status
+                data = await response.json(content_type=None)
+    except aiohttp.ClientError as exc:
+        # aiohttp'ning o'z istisnolari ba'zan to'liq so'rov URL'ini (kalit
+        # bilan, chunki Vision faqat query-parametr orqali autentifikatsiya
+        # qiladi) xato matniga qo'shadi — logga tushishidan oldin tozalanadi.
+        raise OcrError("network_error", redact_secrets(str(exc))) from exc
 
     responses = (data or {}).get("responses") or []
     if not responses:
+        if status >= 400:
+            raise OcrError("provider_error", f"Vision HTTP {status}")
         raise OcrError("provider_error", "Vision bo'sh javob qaytardi")
 
     first = responses[0]
@@ -180,10 +200,18 @@ async def extract_text(session: AsyncSession, image_bytes: bytes) -> OcrResult:
                 last_error = exc if isinstance(exc, OcrError) else OcrError("network_error", str(exc))
                 continue
 
+    # Kalitlar bor edi, lekin barchasi shu oy bepul hajmidan oshgani uchun
+    # hech biri sinalmadi (tarmoq xatosi bilan farqi shu) — Vision jim
+    # qoplab qo'ysa ham, chaqiruvchi buni bilishi kerak (pastda).
+    ocrspace_quota_exhausted = bool(ocrspace_keys) and not tried_ocrspace
+
     if vision_ready:
         try:
             text = await _call_google_vision(image_bytes)
-            return OcrResult(text=text, provider="google_vision", key_index=None)
+            return OcrResult(
+                text=text, provider="google_vision", key_index=None,
+                ocrspace_quota_exhausted=ocrspace_quota_exhausted,
+            )
         except Exception as exc:
             logger.warning("Google Vision ishlamadi: %s", exc)
             last_error = exc if isinstance(exc, OcrError) else OcrError("network_error", str(exc))

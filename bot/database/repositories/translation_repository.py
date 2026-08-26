@@ -65,12 +65,19 @@ class TranslationRepository:
     async def find_recent_by_hash(
         self, user_id: int, source_hash: str, *, within_seconds: int = 60
     ) -> Optional[Translation]:
-        """Yaqinda shu matn tarjima qilinganmi — `retranslated` signalini aniqlash uchun."""
+        """Yaqinda shu matn tarjima qilinganmi — `retranslated` signalini aniqlash uchun.
+
+        Faqat MUVAFFAQIYATLI urinishlar hisobga olinadi — aks holda xato/
+        timeout bo'lgan urinishdan keyingi oddiy muvaffaqiyatli qayta
+        urinish ham "foydalanuvchi natijadan qoniqmadi" deb noto'g'ri
+        belgilanib, sifat signalini buzardi.
+        """
         result = await self.session.execute(
             select(Translation)
             .where(
                 Translation.user_id == user_id,
                 Translation.source_hash == source_hash,
+                Translation.status == "success",
                 Translation.created_at >= utcnow() - timedelta(seconds=within_seconds),
             )
             .order_by(Translation.created_at.desc())

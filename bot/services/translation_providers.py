@@ -30,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config.settings import settings
 from bot.database.models import Translation
+from bot.utils.text import redact_secrets
 
 TIMEOUT = 15
 
@@ -92,14 +93,26 @@ async def call_google(text: str, source: str, target: str, api_key: str) -> str:
         payload["source"] = GOOGLE_CODE_MAP.get(source, source)
 
     timeout = aiohttp.ClientTimeout(total=TIMEOUT)
-    async with aiohttp.ClientSession(timeout=timeout) as client:
-        async with client.post(GOOGLE_URL, params={"key": api_key}, json=payload) as response:
-            data = await response.json(content_type=None)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as client:
+            async with client.post(GOOGLE_URL, params={"key": api_key}, json=payload) as response:
+                status = response.status
+                data = await response.json(content_type=None)
+    except aiohttp.ClientError as exc:
+        # aiohttp'ning o'z istisnolari ba'zan to'liq so'rov URL'ini (kalit
+        # bilan) xato matniga qo'shadi — logga tushishidan oldin tozalanadi.
+        raise RuntimeError(redact_secrets(str(exc))) from exc
 
     if not isinstance(data, dict):
-        raise RuntimeError("Google Translate noto'g'ri javob qaytardi")
+        # Status kod tekshiruvi — javob tanasi kutilgan shaklda bo'lmasa
+        # ham (masalan proksi/WAF xato sahifasi), HTTP xato darhol aniq
+        # ko'rinadi (aynan shu turdagi xato avgust 2026'dagi deep_translator
+        # voqeasiga sabab bo'lgan — u yerda esa JSON emas, HTML sahifa edi).
+        raise RuntimeError(f"Google Translate noto'g'ri javob qaytardi (HTTP {status})")
     if "error" in data:
         raise RuntimeError(str((data["error"] or {}).get("message", "Google Translate xatosi")))
+    if status >= 400:
+        raise RuntimeError(f"Google Translate HTTP {status}")
 
     translations = (data.get("data") or {}).get("translations") or []
     if not translations:
@@ -119,14 +132,20 @@ async def call_azure(text: str, source: str, target: str, api_key: str) -> str:
         headers["Ocp-Apim-Subscription-Region"] = settings.AZURE_TRANSLATOR_REGION
 
     timeout = aiohttp.ClientTimeout(total=TIMEOUT)
-    async with aiohttp.ClientSession(timeout=timeout) as client:
-        async with client.post(
-            AZURE_URL, params=params, headers=headers, json=[{"Text": text}]
-        ) as response:
-            data = await response.json(content_type=None)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as client:
+            async with client.post(
+                AZURE_URL, params=params, headers=headers, json=[{"Text": text}]
+            ) as response:
+                status = response.status
+                data = await response.json(content_type=None)
+    except aiohttp.ClientError as exc:
+        raise RuntimeError(redact_secrets(str(exc))) from exc
 
     if isinstance(data, dict) and "error" in data:
         raise RuntimeError(str((data["error"] or {}).get("message", "Azure Translator xatosi")))
+    if status >= 400:
+        raise RuntimeError(f"Azure Translator HTTP {status}")
     if not isinstance(data, list) or not data:
         raise RuntimeError("Azure Translator bo'sh javob qaytardi")
 
@@ -154,13 +173,23 @@ async def call_gemini(text: str, source: str, target: str, api_key: str) -> str:
     prompt = _GEMINI_PROMPT.format(source=source_label, target=target, text=text)
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
 
+    # Kalit URL query-parametrida emas, header'da — shunda tarmoq xatosi
+    # (aiohttp'ning o'z istisnosi) so'rov URL'ini qaytarsa ham kalit unda
+    # bo'lmaydi (Gemini REST API `x-goog-api-key`ni qo'llab-quvvatlaydi).
+    headers = {"x-goog-api-key": api_key}
     timeout = aiohttp.ClientTimeout(total=TIMEOUT)
-    async with aiohttp.ClientSession(timeout=timeout) as client:
-        async with client.post(f"{url}?key={api_key}", json=payload) as response:
-            data = await response.json(content_type=None)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as client:
+            async with client.post(url, json=payload, headers=headers) as response:
+                status = response.status
+                data = await response.json(content_type=None)
+    except aiohttp.ClientError as exc:
+        raise RuntimeError(redact_secrets(str(exc))) from exc
 
     if isinstance(data, dict) and "error" in data:
         raise RuntimeError(str((data["error"] or {}).get("message", "Gemini xatosi")))
+    if status >= 400:
+        raise RuntimeError(f"Gemini HTTP {status}")
 
     candidates = (data or {}).get("candidates") or []
     if not candidates:

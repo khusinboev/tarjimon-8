@@ -45,6 +45,7 @@ async def _translate(
     text: str,
     input_kind: str,
     manage_quota: bool = True,
+    manage_rate_limit: bool = True,
     ocr_provider: Optional[str] = None,
     ocr_key_index: Optional[int] = None,
 ) -> None:
@@ -56,6 +57,11 @@ async def _translate(
     OLDIN, chaqiruvchida allaqachon tekshirilgan va sarflangan (rasm limiti
     matn limitidan butunlay alohida hisoblanadi), shuning uchun bu yerda
     yana matn kvotasini tekshirish/sarflash noto'g'ri bo'lardi.
+
+    `manage_rate_limit=False` — xuddi shu sababdan rasm oqimi uchun: flood
+    himoyasi ham OCR chaqiruvidan OLDIN chaqiruvchida tekshiriladi (aks
+    holda bitta rasm 2 marta flood-limit sarflab, matn yuborgan
+    foydalanuvchiga nisbatan 2 barobar tezroq bloklanardi).
     """
     text = text.strip()
     if not text:
@@ -69,7 +75,7 @@ async def _translate(
     quota = QuotaService(session, redis)
 
     # 1. Flood himoyasi — bazaga tegmaydi, eng arzon tekshiruv birinchi.
-    if await quota.hit_rate_limit(user.id):
+    if manage_rate_limit and await quota.hit_rate_limit(user.id):
         await events.log(
             EventType.TRANSLATE_RATE_LIMITED,
             user_id=user.id,
@@ -103,9 +109,16 @@ async def _translate(
 
     # 4. Kunlik limit. Ustunlik: admin rol > qo'lda qo'yilgan override > VIP.
     # Rasm oqimida bu allaqachon chaqiruvchida tekshirilgan — takrorlanmaydi.
+    # ATOMIK band qilinadi (tekshirish+oshirish bitta so'rovda) — aks holda
+    # ikkita deyarli bir vaqtdagi so'rov (double-tap/skript) ikkalasi ham
+    # "hali limitdan oshmagan"ni ko'rib, limitni chetlab o'tishi mumkin edi.
+    # Muvaffaqiyatsiz bo'lsa (`except TranslationError` pastda) ortga
+    # qaytariladi (`release_translation`).
     if manage_quota:
-        limit_override = resolve_limit_override(user, kind="translation")
-        status = await quota.check_translation(user.id, limit_override=limit_override)
+        limit_override = resolve_limit_override(user, kind="translation", vip_value=0)
+        status = await quota.try_reserve_translation(
+            user.id, chars=len(text), limit_override=limit_override
+        )
         if not status.allowed:
             await events.log(
                 EventType.TRANSLATE_QUOTA_EXCEEDED,
@@ -149,6 +162,12 @@ async def _translate(
     try:
         result = await service.translate(session, text, source, target)
     except TranslationError as exc:
+        if manage_quota:
+            # Band qilingan joy (yuqorida `try_reserve_translation`) ortga
+            # qaytariladi — muvaffaqiyatsiz urinish kvotadan sarflanmasligi
+            # kerak (avvalgi xulq-atvor bilan bir xil: faqat muvaffaqiyatli
+            # urinish hisoblanadi).
+            await quota.release_translation(user.id, chars=len(text))
         # Muvaffaqiyatsiz urinish ham yoziladi — provayder sog'lig'ini kuzatish uchun.
         await repo.create(
             user_id=user.id,
@@ -205,8 +224,9 @@ async def _translate(
         cache_hit=result.cache_hit,
     )
 
-    if manage_quota:
-        await quota.consume_translation(user.id, chars=len(text))
+    # Kvota allaqachon yuqorida (`try_reserve_translation`) band qilingan —
+    # muvaffaqiyat bo'lgani uchun band qilingan joy shunday qoladi,
+    # qo'shimcha oshirish shart emas.
 
     # Referal bonusi: faqat yangi userning BIRINCHI muvaffaqiyatli tarjimasida
     # ishlaydi (`grant_referral_bonus` ichida bayroq bilan tekshiriladi).
@@ -328,7 +348,10 @@ async def handle_photo(
 
     limits = await get_effective_limits(session)
     limit_override = resolve_limit_override(user, kind="image", vip_value=limits.image_vip)
-    status = await quota.check_image(user.id, limit_override=limit_override)
+    # ATOMIK band qilinadi — TOCTOU'siz (izoh: `_translate`dagi matn
+    # limitining bir xil tuzatishi). OCR muvaffaqiyatsiz bo'lsa pastda
+    # ortga qaytariladi.
+    status = await quota.try_reserve_image(user.id, limit_override=limit_override)
     if not status.allowed:
         await events.log(
             EventType.IMAGE_QUOTA_EXCEEDED,
@@ -358,6 +381,10 @@ async def handle_photo(
     try:
         result = await extract_text(session, image_bytes)
     except OcrError as exc:
+        # OCR o'zi ishlamadi (hech narsa sarflanmadi) — band qilingan joy
+        # ortga qaytariladi, aks holda muvaffaqiyatsiz urinish ham rasm
+        # kvotasidan yeb qo'yardi.
+        await quota.release_image(user.id)
         await events.log(
             EventType.IMAGE_OCR_FAILED,
             user_id=user.id,
@@ -372,14 +399,31 @@ async def handle_photo(
                 "oshdi — rasmdan tarjima Vision sozlanmagan bo'lsa ishlamay "
                 "qolishi mumkin.",
             )
+        elif exc.code != "not_configured":
+            # "not_configured" — doimiy holat (OCR umuman sozlanmagan),
+            # alohida ogohlantirish shart emas. Boshqa har qanday xato —
+            # rasmdan tarjima BUTUNLAY ishlamayapti degani.
+            await alert_admins_once(
+                message.bot, redis, "ocr_all_failed",
+                f"🆘 <b>Rasmdan tarjima ishlamayapti</b> — oxirgi xato: "
+                f"{exc.code} — {exc}",
+            )
         text = t.IMAGE_OCR_UNAVAILABLE if exc.code == "not_configured" else t.IMAGE_OCR_FAILED
         await message.answer(text)
         return
 
-    # OCR chaqiruvi allaqachon amalga oshdi (pul/hajm sarflandi) — natija
-    # bo'sh bo'lsa ham kvota sarflanadi, aks holda bo'sh rasm yuborib
-    # cheksiz urinish mumkin bo'lardi.
-    await quota.consume_image(user.id)
+    if result.ocrspace_quota_exhausted:
+        await alert_admins_once(
+            message.bot, redis, "ocr_quota_exhausted",
+            "⚠️ <b>OCR.Space</b>ning barcha kalitlari bu oy bepul hajmidan "
+            "oshdi — hozircha Google Vision jim qoplab turibdi (bepul "
+            "hajmi kichikroq, keyin pullik bo'lishi mumkin).",
+        )
+
+    # OCR chaqiruvi allaqachon amalga oshdi (pul/hajm sarflandi) — kvota
+    # yuqorida band qilingan joy sifatida allaqachon sarflangan (natija
+    # bo'sh bo'lsa ham qaytarilmaydi, aks holda bo'sh rasm yuborib cheksiz
+    # urinish mumkin bo'lardi).
 
     if not result.text.strip():
         await events.log(
@@ -405,8 +449,8 @@ async def handle_photo(
     await _translate(
         message, session, user, events, session_id, t, redis,
         text=result.text, input_kind="photo",
-        manage_quota=False, ocr_provider=result.provider,
-        ocr_key_index=result.key_index,
+        manage_quota=False, manage_rate_limit=False,
+        ocr_provider=result.provider, ocr_key_index=result.key_index,
     )
 
 

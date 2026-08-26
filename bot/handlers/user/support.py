@@ -39,6 +39,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config.settings import settings
 from bot.database.models import User
+from bot.database.redis import atomic_rate_incr
 from bot.database.repositories.support_repository import SupportRepository
 from bot.keyboards.user import cancel_menu, main_menu
 from bot import locales
@@ -71,9 +72,10 @@ async def _rate_limited(
     cap = limit if limit is not None else settings.SUPPORT_RATE_LIMIT
     redis_key = f"{key}:{user_id}"
     try:
-        count = await redis.incr(redis_key)
-        if count == 1:
-            await redis.expire(redis_key, settings.SUPPORT_RATE_WINDOW)
+        # Atomik Lua skript orqali — alohida incr+expire orasida uzilib
+        # qolsa, kalit TTL'siz abadiy o'sib, foydalanuvchini doimiy
+        # bloklab qo'yishi mumkin edi (izoh: `atomic_rate_incr`).
+        count = await atomic_rate_incr(redis, redis_key, settings.SUPPORT_RATE_WINDOW)
         if count > cap:
             ttl = await redis.ttl(redis_key)
             return max(1, (ttl + 59) // 60) if ttl and ttl > 0 else 1
@@ -165,12 +167,30 @@ async def _deliver(message: Message, to_chat_id: int, header: str) -> tuple[int,
 # reply qilsa, unda sarlavha yo'q.
 _ID_PATTERN = re.compile(r"🆔\s*(\d{5,})")
 
+# `🆔` belgisi murojaat sarlavhasiga XOS EMAS — xuddi shu belgi donat
+# bildirishnomasida (`donate.py`, "⭐ Yangi homiylik") va admin panelidagi
+# foydalanuvchi kartasida ("🆔 DB: ...") ham ishlatiladi. Agar admin o'sha
+# xabarlardan biriga reply qilsa (masalan donor'ga "rahmat" deb yozsa),
+# `_ID_PATTERN` yolg'ondan mos kelib, xabar TASODIFIY boshqa foydalanuvchiga
+# "rasmiy murojaat javobi" sifatida ketib qolishi mumkin edi. Shuning uchun
+# faqat AYNAN shu ikki murojaat sarlavhasi (`_admin_view` dagi) mavjud
+# bo'lgandagina ID qidiriladi.
+_SUPPORT_HEADER_MARKERS = ("✉️ Yangi murojaat", "💬 Suhbat davomi")
+
 
 def _extract_target_id(message: Message | None) -> int | None:
-    """Reply qilingan xabardagi foydalanuvchi ID sini qaytaradi."""
+    """Reply qilingan xabardagi foydalanuvchi ID sini qaytaradi.
+
+    Faqat murojaat sarlavhasiga (`_admin_view`) mos matnlarda qidiriladi —
+    boshqa `🆔` ishlatadigan xabarlar (donat bildirishnomasi, admin
+    paneli) bilan chalkashmasin.
+    """
     if message is None:
         return None
-    found = _ID_PATTERN.search(message.text or message.caption or "")
+    text = message.text or message.caption or ""
+    if not any(marker in text for marker in _SUPPORT_HEADER_MARKERS):
+        return None
+    found = _ID_PATTERN.search(text)
     return int(found.group(1)) if found else None
 
 

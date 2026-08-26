@@ -276,8 +276,15 @@ class UserRepository:
         if days <= 0:
             return None
 
+        # `FOR UPDATE` — shu qatorni o'qib bo'lguncha boshqa tranzaksiya
+        # (masalan bir vaqtda ikkita donat/referal) kutib turadi, aks
+        # holda ikkalasi ham bir xil ESKI `premium_until`ni o'qib, ikkinchi
+        # UPDATE birinchisini "yeb qo'yardi" (lost update) — VIP kunlari
+        # sirli tarzda yo'qolib qolardi.
         result = await self.session.execute(
-            select(UserSettings.premium_until).where(UserSettings.user_id == user_id)
+            select(UserSettings.premium_until)
+            .where(UserSettings.user_id == user_id)
+            .with_for_update()
         )
         current = result.scalar_one_or_none()
 
@@ -292,12 +299,27 @@ class UserRepository:
         )
         return new_until
 
-    async def set_referral_bonus_granted(self, user_id: int) -> None:
-        await self.session.execute(
+    async def set_referral_bonus_granted(self, user_id: int) -> bool:
+        """Faqat hali `False` bo'lsa `True`ga o'zgartiradi — ATOMIK.
+
+        `WHERE referral_bonus_granted = false` shartli UPDATE: ikkita
+        deyarli bir vaqtdagi chaqiruvdan FAQAT BITTASI qator yangilaydi
+        (Postgres bu qatorni UPDATE paytida qulflaydi — ikkinchi UPDATE
+        birinchisi tugaguncha kutadi, keyin WHERE shartiga endi mos
+        kelmaydi). Qaytgan qiymat `False` bo'lsa — chaqiruvchi bonusni
+        BERMASLIGI kerak, chunki boshqa bir chaqiruv allaqachon bergan
+        (avvalgi versiyada shu tekshiruv sessiya ichidagi Python bayrog'iga
+        tayanardi — turli sessiyalar orasidagi RACE'ni ushlamasdi).
+        """
+        result = await self.session.execute(
             update(UserSettings)
-            .where(UserSettings.user_id == user_id)
+            .where(
+                UserSettings.user_id == user_id,
+                UserSettings.referral_bonus_granted.is_(False),
+            )
             .values(referral_bonus_granted=True)
         )
+        return result.rowcount > 0
 
     # ── Statistika ────────────────────────────────────────────
 

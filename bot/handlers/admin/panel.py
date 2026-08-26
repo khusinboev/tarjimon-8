@@ -36,6 +36,22 @@ logger = logging.getLogger(__name__)
 
 
 def is_admin(user_id: int) -> bool:
+    """Panel kirishi FAQAT `.env`dagi `ADMIN_USER_IDS`ga qaraladi.
+
+    DIQQAT: bu DB'dagi `User.role in ("admin", "owner")`dan MUSTAQIL —
+    o'sha rol faqat ban-immunitet/cheksiz kvota beradi (`quota.py`,
+    `subscription.py`), panelga kirish bermaydi. Ataylab shunday: panel
+    kirishi — ishonch chegarasi, u DB qatoridan (kimdir buzib kirsa
+    o'zgartirishi mumkin) emas, faqat serverga jismoniy/deploy kirish
+    huquqi bo'lgan kishi tahrirlaydigan `.env`dan kelishi kerak. Buni
+    async DB so'roviga aylantirish har bir admin-filtrlangan handlerda
+    HAR BIR xabar uchun so'rov qo'shardi — hozircha faqat bitta admin
+    bor va DB orqali `role='admin'` beradigan hech qanday in-app funksiya
+    yo'q, shuning uchun amaliy nomuvofiqlik yo'q. Ikkinchi admin DB
+    orqali (qo'lda SQL bilan) qo'shilsa, uni `ADMIN_USER_IDS`ga ham
+    qo'shishni unutmang — aks holda ular ban-immun/cheksiz bo'ladi-yu,
+    panelga kira olmaydi.
+    """
     return user_id in settings.ADMIN_USER_IDS
 
 
@@ -341,10 +357,10 @@ async def channel_remove_start(message: Message, state: FSMContext):
 
 
 @router.message(AdminStates.waiting_channel_remove, F.from_user.func(lambda u: u and is_admin(u.id)))
-async def channel_remove_finish(message: Message, state: FSMContext):
+async def channel_remove_finish(message: Message, state: FSMContext, user):
     async with AsyncSessionLocal() as session:
         service = AdminService(session, message.bot)
-        ok, result = await service.remove_channel(message.text or "")
+        ok, result = await service.remove_channel(message.text or "", removed_by=user.id)
 
     await state.clear()
     await message.answer(result, reply_markup=admin_channels_keyboard() if ok else back_keyboard())
@@ -593,6 +609,17 @@ async def _launch_broadcast(message: Message, state: FSMContext, user) -> None:
             mode=mode,
             content_preview=preview,
         )
+        if broadcast is None:
+            # Yuqoridagi tekshiruv bilan shu yer orasida (deyarli bir
+            # vaqtda, masalan ikki admin) boshqa tarqatish ulgurib
+            # boshlangan — DB darajasidagi cheklov (migratsiya 015) buni
+            # ushladi, ikkalasi ham ishga tushib ketishining oldini oldi.
+            active = await service.get_active_broadcast()
+            await message.answer(
+                "⚠️ Boshqa tarqatish deyarli bir vaqtda boshlanib ulgurdi.",
+                reply_markup=broadcast_active_keyboard(active.status if active else "running"),
+            )
+            return
 
     notify = _make_finish_notifier(message.bot, message.chat.id)
     broadcast_runner.start(message.bot, broadcast.id, progress_notify=notify)

@@ -48,11 +48,15 @@ async def grant_referral_bonus(
 
     repo = UserRepository(session)
 
-    # Bayroqni DARHOL qo'yamiz (bonus berilishidan oldin): agar foydalanuvchi
-    # ketma-ket bir necha xabar yuborsa (masalan tarjima navbatda turganda
-    # yana bittasini yuborsa), ikkinchi chaqiruv bu yerda to'xtaydi.
+    # Bayroqni DARHOL, ATOMIK ravishda qo'yamiz (bonus berilishidan oldin):
+    # agar foydalanuvchi deyarli bir vaqtda 2 ta xabar yuborsa (masalan
+    # tarjima navbatda turganda yana bittasini yuborsa — bu ikkita ALOHIDA
+    # DB sessiyasida ishlanadi), faqat BITTASI `True` natija oladi —
+    # ikkinchisi shu yerda to'xtaydi, referal bonusi 2 marta berilmaydi.
+    granted = await repo.set_referral_bonus_granted(user.id)
+    if not granted:
+        return
     user.settings.referral_bonus_granted = True
-    await repo.set_referral_bonus_granted(user.id)
 
     referrer = await repo.get_by_id(user.referred_by)
     if referrer is None:

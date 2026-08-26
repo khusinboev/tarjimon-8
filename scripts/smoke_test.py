@@ -205,18 +205,33 @@ async def test_quota(user_id: int) -> None:
     async with AsyncSessionLocal() as session:
         quota = QuotaService(session, redis=None)
 
-        status = await quota.check_translation(user_id)
-        check("boshlang'ich holat ruxsat", status.allowed and status.used == 0)
+        row = await quota.usage.get(user_id)
+        check("boshlang'ich holat bo'sh", row is None)
 
         for _ in range(3):
-            await quota.consume_translation(user_id, chars=10)
+            status = await quota.try_reserve_translation(user_id, chars=10)
+            check("band qilish muvaffaqiyatli", status.allowed, f"used={status.used}")
         await session.commit()
 
-        status = await quota.check_translation(user_id)
-        check("hisob oshdi", status.used == 3, f"used={status.used}")
+        row = await quota.usage.get(user_id)
+        check(
+            "hisob oshdi", row is not None and row.translations_count == 3,
+            f"used={row.translations_count if row else None}",
+        )
 
-        status = await quota.check_translation(user_id, limit_override=3)
-        check("limitga yetganda taqiqlanadi", not status.allowed)
+        status = await quota.try_reserve_translation(user_id, limit_override=3)
+        check(
+            "limitga yetganda taqiqlanadi", not status.allowed,
+            f"used={status.used}, limit={status.limit}",
+        )
+
+        # `release_translation` haqiqatan ortga qaytaradimi (TOCTOU tuzatishi
+        # bilan qo'shilgan yangi metod — muvaffaqiyatsiz urinish kvotani
+        # sarflamasligi kerak).
+        await quota.release_translation(user_id, chars=10)
+        await session.commit()
+        row = await quota.usage.get(user_id)
+        check("release hisobni kamaytiradi", row.translations_count == 2, f"used={row.translations_count}")
 
         # Regressiya: `limit = limit_override or DEFAULT` Python'da `0` ni
         # yolg'on qiymat deb hisoblab, har doim DEFAULT'ga (50) tushib
@@ -226,7 +241,7 @@ async def test_quota(user_id: int) -> None:
         # faqat shunda "0 = cheksiz" haqiqatan tekshiriladi.
         await quota.usage.increment(user_id, translations=settings.DAILY_TRANSLATION_LIMIT)
         await session.commit()
-        status = await quota.check_translation(user_id, limit_override=0)
+        status = await quota.try_reserve_translation(user_id, limit_override=0)
         check(
             "0 = cheksiz (usage DEFAULT'dan yuqori bo'lsa ham)",
             status.allowed,
@@ -234,7 +249,7 @@ async def test_quota(user_id: int) -> None:
         )
 
         # `None` — override yo'q, standart limit ishlaydi.
-        status = await quota.check_translation(user_id, limit_override=None)
+        status = await quota.try_reserve_translation(user_id, limit_override=None)
         check(
             "None = standart limit (cheksiz emas)",
             not status.allowed,
@@ -265,21 +280,21 @@ async def test_premium_and_referral() -> None:
         # 1. Hech narsa yo'q -> None (chaqiruvchi standart limitni qo'llaydi).
         check(
             "override yo'q -> None",
-            resolve_limit_override(user, kind="translation") is None,
+            resolve_limit_override(user, kind="translation", vip_value=0) is None,
         )
 
         # 2. Faol VIP -> 0 (cheksiz).
         user.settings.premium_until = utcnow() + timedelta(days=1)
         check(
             "faol VIP -> cheksiz",
-            resolve_limit_override(user, kind="translation") == 0,
+            resolve_limit_override(user, kind="translation", vip_value=0) == 0,
         )
 
         # 3. Tugagan VIP -> yana None (standart limitga qaytadi).
         user.settings.premium_until = utcnow() - timedelta(days=1)
         check(
             "tugagan VIP -> None",
-            resolve_limit_override(user, kind="translation") is None,
+            resolve_limit_override(user, kind="translation", vip_value=0) is None,
         )
 
         # 4. Qo'lda qo'yilgan override VIP'dan USTUN turadi (aniq admin qarori).
@@ -287,12 +302,12 @@ async def test_premium_and_referral() -> None:
         user.settings.daily_limit_override = 7
         check(
             "qo'lda override VIP'dan ustun",
-            resolve_limit_override(user, kind="translation") == 7,
+            resolve_limit_override(user, kind="translation", vip_value=0) == 7,
         )
         # TTS uchun alohida ustun ishlatiladi, tarjima override'iga bog'liq emas.
         check(
             "TTS override alohida (hali yo'q -> VIP ishlaydi)",
-            resolve_limit_override(user, kind="tts") == 0,
+            resolve_limit_override(user, kind="tts", vip_value=0) == 0,
         )
         user.settings.daily_limit_override = None
 
@@ -301,7 +316,7 @@ async def test_premium_and_referral() -> None:
         user.settings.premium_until = None
         check(
             "admin roli -> har doim cheksiz",
-            resolve_limit_override(user, kind="translation") == 0,
+            resolve_limit_override(user, kind="translation", vip_value=0) == 0,
         )
         user.role = "user"
         user.settings.premium_until = None
@@ -456,23 +471,24 @@ async def test_image_translation() -> None:
     async with AsyncSessionLocal() as session:
         quota = QuotaService(session, redis=None)
 
-        status = await quota.check_image(user_id)
-        check("boshlang'ich holat ruxsat", status.allowed and status.used == 0)
+        row = await quota.usage.get(user_id)
+        check("boshlang'ich holat bo'sh", row is None)
 
         for _ in range(3):
-            await quota.consume_image(user_id)
+            status = await quota.try_reserve_image(user_id)
+            check("rasm band qilish muvaffaqiyatli", status.allowed)
         await session.commit()
 
-        status = await quota.check_image(user_id, limit_override=3)
+        status = await quota.try_reserve_image(user_id, limit_override=3)
         check("rasm limitiga yetganda taqiqlanadi", not status.allowed)
 
         # Rasm sarfi matn/ovoz hisoblagichiga umuman tegmasligi kerak —
         # bular butunlay alohida o'q (`images_count` vs `translations_count`).
-        text_status = await quota.check_translation(user_id)
+        row = await quota.usage.get(user_id)
         check(
             "rasm sarfi matn hisobiga ta'sir qilmaydi",
-            text_status.used == 0,
-            f"matn used={text_status.used}",
+            row is not None and row.translations_count == 0,
+            f"matn used={row.translations_count if row else None}",
         )
 
         await session.execute(delete(DailyUsage).where(DailyUsage.user_id == user_id))
@@ -693,7 +709,7 @@ async def test_admin_users() -> None:
         quota = QuotaService(session, redis=None)
         await quota.usage.increment(target_id, translations=settings.DAILY_TRANSLATION_LIMIT)
         await session.commit()
-        status = await quota.check_translation(
+        status = await quota.try_reserve_translation(
             target_id, limit_override=refreshed.settings.daily_limit_override
         )
         check(
