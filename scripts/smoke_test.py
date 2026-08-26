@@ -830,9 +830,14 @@ async def test_translation() -> None:
             result = await service.translate(session, "Salom dunyo", "auto", "en")
             check("tarjima qaytdi", bool(result.text), repr(result.text))
             check("kechikish o'lchandi", result.latency_ms >= 0, f"{result.latency_ms}ms")
-            # Standart muhitda pullik kalitlar sozlanmagan bo'lgani uchun
-            # doim bepul provayderga tushishi kerak.
-            check("provayder yozildi", result.provider == "deep_translator")
+            # Muhitga qarab (server'da haqiqiy pullik kalitlar bor, lokal
+            # sinovda esa yo'q) har xil provayder ishlatilishi mumkin — muhim
+            # narsa qaysi biri emas, balki BIRORTASI yozilgani.
+            check(
+                "provayder yozildi",
+                result.provider in ("deep_translator", "google_translate", "azure_translator", "gemini"),
+                result.provider,
+            )
         except TranslationError as exc:
             check("tarjima", False, f"{exc.code}: {exc}")
             return None
