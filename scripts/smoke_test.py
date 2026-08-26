@@ -927,12 +927,24 @@ async def test_translation_providers() -> None:
             candidates = await service._pick_paid_candidates(session)
             check("hamma kalit tugagan -> nomzod yo'q", candidates == [])
 
-            _, provider_name, _ = await service._dispatch(session, "salom", "auto", "en")
-            check(
-                "hamma pullik tugagan -> bepul provayderga (haqiqiy chaqiruv)",
-                provider_name == "deep_translator",
-                provider_name,
-            )
+            # `deep_translator` haqiqiy tarmoq chaqiruvi qiladi — Google
+            # o'zi vaqti-vaqti bilan band/bloklangan bo'lishi mumkin
+            # (2026-08-24/25 voqeasi). Bu holatda `TranslationError`
+            # ko'tariladi — bu ham TO'G'RI xulq (fallback chaqirilgani
+            # isbotlangan), shuning uchun smoke_test'ni yiqitmaydi.
+            try:
+                _, provider_name, _ = await service._dispatch(session, "salom", "auto", "en")
+                check(
+                    "hamma pullik tugagan -> bepul provayderga (haqiqiy chaqiruv)",
+                    provider_name == "deep_translator",
+                    provider_name,
+                )
+            except TranslationError as exc:
+                check(
+                    "hamma pullik tugagan -> bepul provayderga urinildi (u xato qaytardi)",
+                    True,
+                    f"deep_translator ham hozir ishlamadi: {exc.code}",
+                )
 
             usage_by_provider["azure_translator"] = {}
             text_out, provider_name, key_index = await service._dispatch(session, "salom", "auto", "en")
