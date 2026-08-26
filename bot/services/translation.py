@@ -283,19 +283,41 @@ class TranslationService:
         """Uch daraja: 1) Google/Azure (bepul hajmi tugamagan bo'lsa,
         tasodifiy), 2) Gemini (arzon, tasodifiy kalit), 3) `deep_translator`
         (oxirgi, bepul-lekin-ishonchsiz zaxira)."""
-        for name, index, api_key in await self._pick_free_tier_candidates(session):
+        free_candidates = await self._pick_free_tier_candidates(session)
+        last_free_error: Optional[str] = None
+        last_free_provider: Optional[str] = None
+        for name, index, api_key in free_candidates:
             try:
                 call = FREE_TIER_PROVIDER_CONFIG[name]["call"]
                 translated = await call(text, source, target, api_key)
                 if translated and translated.strip():
                     return translated, name, index
+                last_free_error = "bo'sh javob qaytardi"
+                last_free_provider = name
                 logger.warning("%s (kalit #%s) bo'sh javob qaytardi", name, index)
             except Exception as exc:
+                last_free_error = str(exc)
+                last_free_provider = name
                 logger.warning("%s (kalit #%s) ishlamadi: %s", name, index, exc)
                 continue
 
+        # 1-daraja nomzodlari BOR edi (hajmi ham tugamagan — aks holda
+        # `_pick_free_tier_candidates` allaqachon o'z alertini yuborgan
+        # bo'lardi), lekin HAMMASI xato qaytardi — bu kvota tugashidan
+        # BUTUNLAY boshqa muammo (masalan provayder API'si o'zi ishlamay
+        # qolgan), cheap-tier bilan bir xil izchillikda alert beriladi.
+        if free_candidates and last_free_error is not None:
+            provider_label = last_free_provider or free_candidates[0][0]
+            await alert_admins_once(
+                self.bot, self.redis, f"free_tier_failed:{provider_label}",
+                f"🚨 <b>{provider_label}</b> orqali tarjima ishlamayapti (hajmi "
+                f"hali tugamagan) — barcha kalitlar xato qaytardi. Oxirgi "
+                f"xato: {last_free_error}\nKeyingi bosqichga o'tilmoqda.",
+            )
+
         cheap_candidates = self._pick_cheap_tier_candidates()
         last_cheap_error: Optional[str] = None
+        last_cheap_provider: Optional[str] = None
         for name, index, api_key in cheap_candidates:
             try:
                 call = CHEAP_PROVIDER_CONFIG[name]["call"]
@@ -303,9 +325,11 @@ class TranslationService:
                 if translated and translated.strip():
                     return translated, name, index
                 last_cheap_error = "bo'sh javob qaytardi"
+                last_cheap_provider = name
                 logger.warning("%s (kalit #%s) bo'sh javob qaytardi", name, index)
             except Exception as exc:
                 last_cheap_error = str(exc)
+                last_cheap_provider = name
                 logger.warning("%s (kalit #%s) ishlamadi: %s", name, index, exc)
                 continue
 
@@ -313,7 +337,12 @@ class TranslationService:
         # ishlamadi — bu tasodifiy bitta xato emas, e'tibor talab qiladi
         # (masalan kvota/RPM chegarasi yoki kalit bekor qilingan).
         if cheap_candidates and last_cheap_error is not None:
-            provider_label = cheap_candidates[0][0]
+            # `cheap_candidates[0][0]` EMAS — tasodifiy aralashtirilgan
+            # ro'yxatning birinchi yozuvi haqiqiy xato bergan provayder
+            # bilan bir xil bo'lmasligi mumkin (CHEAP_PROVIDER_CONFIG'ga
+            # kelajakda 2-chi provayder qo'shilsa, bu xato adminga
+            # NOTO'G'RI provayder deb xabar berardi).
+            provider_label = last_cheap_provider or cheap_candidates[0][0]
             await alert_admins_once(
                 self.bot, self.redis, f"cheap_tier_failed:{provider_label}",
                 f"🚨 <b>{provider_label}</b> orqali tarjima ishlamayapti — "

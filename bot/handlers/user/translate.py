@@ -419,6 +419,12 @@ async def handle_photo(
             "oshdi — hozircha Google Vision jim qoplab turibdi (bepul "
             "hajmi kichikroq, keyin pullik bo'lishi mumkin).",
         )
+    if result.vision_free_exceeded:
+        await alert_admins_once(
+            message.bot, redis, "vision_free_exceeded",
+            "💸 <b>Google Vision</b>ning bepul oylik hajmidan (1000) "
+            "oshdi — endi HAQIQIY pul sarflanmoqda (pay-as-you-go).",
+        )
 
     # OCR chaqiruvi allaqachon amalga oshdi (pul/hajm sarflandi) — kvota
     # yuqorida band qilingan joy sifatida allaqachon sarflangan (natija

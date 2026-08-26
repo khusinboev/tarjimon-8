@@ -71,7 +71,13 @@ class SubscriptionMiddleware(BaseMiddleware):
             if event.successful_payment is not None:
                 return await handler(event, data)
             text = (event.text or "").strip()
-            if any(text.startswith(cmd) for cmd in ALLOWED_COMMANDS):
+            # `startswith` emas — aniq buyruq tokeni: aks holda `/starting`
+            # yoki `/startXYZ` kabi ro'yxatda YO'Q buyruqlar ham
+            # `/start` bilan boshlangani uchun majburiy obunani chetlab
+            # o'tardi. `@BotUsername` qo'shimchasi va argumentlar
+            # (`/start <referral_id>`) hisobga olinadi.
+            command = text.split(maxsplit=1)[0].split("@")[0] if text else ""
+            if command in ALLOWED_COMMANDS:
                 return await handler(event, data)
         elif isinstance(event, CallbackQuery):
             if event.data in ALLOWED_CALLBACKS:

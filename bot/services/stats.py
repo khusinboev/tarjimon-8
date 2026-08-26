@@ -170,7 +170,22 @@ class StatsService:
         return (await self.session.execute(query)).scalar_one() or 0
 
     async def collect(self) -> Stats:
+        # `REPEATABLE READ` — quyida ~25 ta MUSTAQIL so'rov bor; sukut
+        # bo'yicha (READ COMMITTED) har biri o'z paytidagi holatni ko'radi,
+        # ya'ni ikkita so'rov orasida yozuv qo'shilsa (masalan yangi
+        # foydalanuvchi), natijalar bir-biriga ozgina mos kelmasligi mumkin
+        # (masalan `users_by_status` yig'indisi `users_total`ga aynan teng
+        # chiqmasligi). `REPEATABLE READ` esa TRANZAKSIYA boshida BITTA
+        # suratga oladi — shu sessiya faqat shu metod uchun ishlatilgani
+        # uchun (yozuv yo'q) xavfsiz.
+        await self.session.connection(execution_options={"isolation_level": "REPEATABLE READ"})
         now = utcnow()
+        # DIQQAT: bu SIRPANUVCHI 24 soat (chaqirilgan lahzadan orqaga), UTC
+        # taqvim kuni EMAS — `UsageRepository.today()` (kunlik limitlar
+        # uchun) esa aynan UTC kalendar kunidan foydalanadi. Ataylab shunday:
+        # admin panelida "yaqinda qanday bo'ldik" ko'rsatish uchun sirpanuvchi
+        # oyna qulayroq, lekin buni "Bugun" deb chalkashtirmaslik uchun
+        # render()da "24 soat"/"24s" deb yozilgan, "Bugun" emas.
         day = now - timedelta(days=1)
         week = now - timedelta(days=7)
         month = now - timedelta(days=30)
@@ -396,7 +411,7 @@ def render(s: Stats) -> str:
         [
             ("Yangi", f"+{num(s.new_day)}", f"+{num(s.new_week)}", f"+{num(s.new_month)}"),
             ("Faol", num(s.active_day), num(s.active_week), num(s.active_month)),
-            ("", "bugun", "7 kun", "30 kun"),
+            ("", "24s", "7 kun", "30 kun"),
         ],
         align="lrrr",
     )
@@ -412,7 +427,7 @@ def render(s: Stats) -> str:
         "<pre>"
         + table(
             [
-                ("Bugun", num(s.translations_day)),
+                ("24 soat", num(s.translations_day)),
                 ("7 kun", num(s.translations_week)),
                 ("Faol userga", f"{per_user:.1f}"),
                 (
@@ -420,7 +435,7 @@ def render(s: Stats) -> str:
                     f"{num(round(s.avg_latency_ms))} ms" if s.avg_latency_ms else "—",
                 ),
                 ("Keshdan", f"{cache_pct:.0f}%"),
-                ("Xato (bugun)", f"{error_pct:.1f}%"),
+                ("Xato (24s)", f"{error_pct:.1f}%"),
             ]
         )
         + "</pre>"
@@ -458,16 +473,16 @@ def render(s: Stats) -> str:
     # "⭐" emas, "Stars": emoji `<pre>` ichida ustunni siljitadi.
     other = [
         ("Ovoz", num(s.tts_total)),
-        ("Ovoz bugun", num(s.tts_day)),
+        ("Ovoz 24s", num(s.tts_day)),
         ("Stars", num(s.donations_stars)),
         ("Stars 30 kun", num(s.donations_stars_month)),
         ("Homiylik soni", num(s.donations_count)),
         ("VIP faol", num(s.vip_active)),
         ("Referal (jami)", num(s.referrals_total)),
         ("Murojaat", num(s.support_total)),
-        ("Murojaat bugun", num(s.support_day)),
+        ("Murojaat 24s", num(s.support_day)),
         ("Voqealar", num(s.events_total)),
-        ("Voqea bugun", num(s.events_day)),
+        ("Voqea 24s", num(s.events_day)),
         ("Kanallar", num(s.active_channels)),
     ]
     parts.append(

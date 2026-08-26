@@ -63,6 +63,11 @@ class OcrResult:
     # o'tilgan bo'lsa True — chaqiruvchi buni ko'rib adminni ogohlantirishi
     # mumkin, aks holda OCR.Space tugagani hech qachon bilinmay qoladi.
     ocrspace_quota_exhausted: bool = False
+    # Vision bepul oylik hajmidan (GOOGLE_VISION_FREE_MONTHLY) o'tib
+    # ketgan bo'lsa True — Vision o'zi to'xtamaydi (pay-as-you-go bilan
+    # davom etadi), lekin bundan buyon HAQIQIY xarajat boshlanadi, admin
+    # buni bilishi kerak.
+    vision_free_exceeded: bool = False
 
 
 def _month_start() -> datetime:
@@ -85,6 +90,22 @@ async def _ocrspace_key_usage(session: AsyncSession) -> dict[int, int]:
         .group_by(Translation.ocr_key_index)
     )
     return {index: count for index, count in rows.all() if index is not None}
+
+
+async def _vision_monthly_usage(session: AsyncSession) -> int:
+    """Vision shu oy necha marta ishlatilganini qaytaradi.
+
+    OCR.Space'dan farqli — Vision'da bitta kalit bor (kalit rotatsiyasi
+    yo'q), shuning uchun GROUP BY shart emas, oddiy hisoblash yetarli.
+    """
+    result = await session.execute(
+        select(func.count(Translation.id)).where(
+            Translation.input_kind == "photo",
+            Translation.ocr_provider == "google_vision",
+            Translation.created_at >= _month_start(),
+        )
+    )
+    return result.scalar_one()
 
 
 async def _call_ocrspace(image_bytes: bytes, api_key: str) -> str:
@@ -182,9 +203,14 @@ async def extract_text(session: AsyncSession, image_bytes: bytes) -> OcrResult:
     tried_ocrspace = False
 
     if ocrspace_keys:
-        usage: dict[int, int] = {}
-        if settings.OCRSPACE_FREE_MONTHLY > 0:
-            usage = await _ocrspace_key_usage(session)
+        # Hisob HAR DOIM so'raladi (limit o'chirilgan bo'lsa ham) — "eng
+        # kam ishlatilgan" navbat aynan shunga tayanadi. Ilgari
+        # `OCRSPACE_FREE_MONTHLY<=0` bo'lganda `usage` bo'sh `{}` qolib
+        # ketardi, natijada Python'ning barqaror (stable) saralashi hamma
+        # kalitni "teng" (0) deb ko'rib, doim 0-kalitdan boshlardi — ko'p
+        # kalitli navbatning butun maqsadi (bepul hajmni ko'paytirish)
+        # buzilardi.
+        usage = await _ocrspace_key_usage(session)
 
         order = sorted(range(len(ocrspace_keys)), key=lambda i: usage.get(i, 0))
         if settings.OCRSPACE_FREE_MONTHLY > 0:
@@ -208,9 +234,14 @@ async def extract_text(session: AsyncSession, image_bytes: bytes) -> OcrResult:
     if vision_ready:
         try:
             text = await _call_google_vision(image_bytes)
+            vision_free_exceeded = False
+            if settings.GOOGLE_VISION_FREE_MONTHLY > 0:
+                used_so_far = await _vision_monthly_usage(session)
+                vision_free_exceeded = used_so_far >= settings.GOOGLE_VISION_FREE_MONTHLY
             return OcrResult(
                 text=text, provider="google_vision", key_index=None,
                 ocrspace_quota_exhausted=ocrspace_quota_exhausted,
+                vision_free_exceeded=vision_free_exceeded,
             )
         except Exception as exc:
             logger.warning("Google Vision ishlamadi: %s", exc)

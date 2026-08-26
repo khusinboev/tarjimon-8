@@ -1,3 +1,4 @@
+from functools import cached_property
 from typing import List, Optional
 
 from pydantic import Field
@@ -12,8 +13,13 @@ class Settings(BaseSettings):
     ADMIN_USER_ID: int = Field(..., description="Asosiy admin user ID")
     ADMIN_USER_IDS_RAW: Optional[str] = Field(default=None, alias="ADMIN_USER_IDS")
 
-    @property
+    @cached_property
     def ADMIN_USER_IDS(self) -> List[int]:
+        # `cached_property` — bu sozlama har bir admin-filtrlangan
+        # handler filtri uchun HAR BIR update'da qayta hisoblanardi
+        # (CSV qayta split+parse qilinardi); `settings` global, bir marta
+        # yuklanadigan singleton bo'lgani uchun keshlash xavfsiz.
+        #
         # Vergul bilan ajratilgan ADMIN_USER_IDS, bo'lmasa ADMIN_USER_ID.
         if self.ADMIN_USER_IDS_RAW:
             parsed: List[int] = []

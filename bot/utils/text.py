@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import unicodedata
 from html import escape as _escape
 
 _WHITESPACE = re.compile(r"\s+")
@@ -64,6 +65,27 @@ def text_hash(text: str, lang: str, voice: str | None = None) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def _safe_cut(text: str, cut: int) -> int:
+    """`cut` pozitsiyasini emoji ZWJ ketma-ketligi yoki birikuvchi belgi
+    o'rtasida bo'lib qo'ymaslik uchun orqaga suradi.
+
+    Faqat oxirgi zaxira — "qattiq kesish" (gap/bo'shliq chegarasi
+    topilmagan) holatida ishlatiladi. Python satrlari kod nuqtalari
+    ketma-ketligi (astral belgi ikkiga bo'linmaydi), lekin bitta ko'ринadigan
+    belgi bir nechta kod nuqtasidan iborat bo'lishi mumkin (masalan
+    oilaviy emoji — ZWJ bilan ulangan bir nechta emoji, yoki teri rangi
+    modifikatori) — ularni ikkiga bo'lsak, ikkala bo'lak ham buzilgan
+    ko'rinishda chiqadi.
+    """
+    while cut > 0 and (
+        unicodedata.combining(text[cut]) != 0
+        or text[cut - 1] == "‍"  # ZWJ'dan keyin kesmaymiz
+        or text[cut] in ("️", "‍")  # variatsiya selektori/ZWJ'dan oldin kesmaymiz
+    ):
+        cut -= 1
+    return cut
+
+
 def chunk(text: str, size: int) -> list[str]:
     """Uzun matnni bo'laklarga bo'ladi, imkon qadar gap chegarasidan.
 
@@ -81,7 +103,9 @@ def chunk(text: str, size: int) -> list[str]:
         if cut < size // 2:
             cut = window.rfind(" ")
         if cut < size // 2:
-            cut = size
+            cut = _safe_cut(remaining, size)
+            if cut <= 0:
+                cut = size
         else:
             cut += 1
         parts.append(remaining[:cut].strip())

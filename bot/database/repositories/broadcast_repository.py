@@ -74,19 +74,24 @@ class BroadcastRepository:
         await self.session.commit()
 
     async def fail_broadcast(
-        self, broadcast_id: int, failed_count: int, *, error: str | None = None,
-        active_seconds: int = 0,
+        self, broadcast_id: int, failed_count: int | None = None, *, error: str | None = None,
+        active_seconds: int | None = None,
     ) -> None:
+        """`failed_count`/`active_seconds` — ODDIY (masalan `_run()`
+        ichidan, checkpointlangan qiymatlar bilan) chaqirilganda beriladi.
+        `None` qoldirilsa — DB'dagi OXIRGI checkpointdagi qiymat
+        TEGILMAY qoladi (masalan `_guarded_run()`ning kutilmagan xato
+        yo'lidan, u lokal `failed`/`active_seconds` o'zgaruvchilariga
+        kira olmaydi — ilgari bu yerga qattiq `0` berilib, checkpointda
+        saqlangan haqiqiy sonlarni nolga tushirib qo'yardi).
+        """
+        values: dict = {"status": "failed", "error": error, "finished_at": utcnow()}
+        if failed_count is not None:
+            values["failed_count"] = failed_count
+        if active_seconds is not None:
+            values["active_seconds"] = active_seconds
         await self.session.execute(
-            update(Broadcast)
-            .where(Broadcast.id == broadcast_id)
-            .values(
-                status="failed",
-                failed_count=failed_count,
-                active_seconds=active_seconds,
-                error=error,
-                finished_at=utcnow(),
-            )
+            update(Broadcast).where(Broadcast.id == broadcast_id).values(**values)
         )
         await self.session.commit()
 
@@ -152,19 +157,26 @@ class BroadcastRepository:
 
     async def mark_paused(
         self, broadcast_id: int, *, cursor_user_id: int | None, active_seconds: int,
-        success_count: int, failed_count: int,
+        success_count: int, failed_count: int, total_targets: int | None = None,
     ) -> None:
-        """Background vazifa pauza so'rovini ko'rib, o'zini to'xtatganda chaqiradi."""
+        """Background vazifa pauza so'rovini ko'rib, o'zini to'xtatganda chaqiradi.
+
+        `total_targets` — ixtiyoriy: `checkpoint()`dan farqli, pauza
+        HAR DOIM ham yangilangan sonni bilmasligi mumkin, lekin bilsa
+        (chaqiruvchida bor bo'lsa) saqlanadi — aks holda "Pauzada" karta
+        eski (tarqatish boshlangandagi) taxminiy sonni ko'rsatib qolardi.
+        """
+        values: dict = {
+            "status": "paused",
+            "cursor_user_id": cursor_user_id,
+            "active_seconds": active_seconds,
+            "success_count": success_count,
+            "failed_count": failed_count,
+        }
+        if total_targets is not None:
+            values["total_targets"] = total_targets
         await self.session.execute(
-            update(Broadcast)
-            .where(Broadcast.id == broadcast_id)
-            .values(
-                status="paused",
-                cursor_user_id=cursor_user_id,
-                active_seconds=active_seconds,
-                success_count=success_count,
-                failed_count=failed_count,
-            )
+            update(Broadcast).where(Broadcast.id == broadcast_id).values(**values)
         )
         await self.session.commit()
 

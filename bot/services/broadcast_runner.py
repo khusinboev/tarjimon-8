@@ -53,6 +53,10 @@ SEND_ATTEMPTS = 2
 CHECKPOINT_EVERY_RESULTS = 10
 CHECKPOINT_INTERVAL_SECONDS = 3.0
 CONTROL_CHECK_INTERVAL_SECONDS = 2.0
+# `total_targets` faqat KARTADA ko'rsatish uchun (yangi qo'shilgan
+# foydalanuvchilar ham qamrab olinsin deb) — har safar bufer to'lganda
+# (37 ming foydalanuvchida ~190 marta) emas, shu oraliqda qayta hisoblanadi.
+TOTAL_REFRESH_INTERVAL_SECONDS = 30.0
 
 ProgressNotify = Callable[[int, bool], Awaitable[None]]
 
@@ -102,8 +106,11 @@ async def _guarded_run(
         logger.exception("Tarqatish #%s kutilmagan xato bilan yiqildi", broadcast_id)
         try:
             async with AsyncSessionLocal() as session:
+                # `failed_count`/`active_seconds` berilmaydi — bu yerda
+                # `_run()`ning lokal o'zgaruvchilariga kirish yo'q, DB'dagi
+                # OXIRGI checkpointdagi haqiqiy sonlar nolga tushirilmasin.
                 await BroadcastRepository(session).fail_broadcast(
-                    broadcast_id, 0, error="Kutilmagan ichki xato — loglarga qarang"
+                    broadcast_id, error="Kutilmagan ichki xato — loglarga qarang"
                 )
         except Exception:
             logger.exception("Tarqatish #%s xato holatini yozib ham bo'lmadi", broadcast_id)
@@ -167,6 +174,7 @@ async def _run(
         results_since_checkpoint = 0
         last_checkpoint = utcnow()
         last_control_check = utcnow()
+        last_total_refresh = utcnow()
         reached_this_round: list[int] = []
         fatal: Optional[str] = None
 
@@ -259,8 +267,23 @@ async def _run(
                 status = await repo.get_status(broadcast_id)
                 if status in ("cancel_requested", "pause_requested"):
                     if pending:
-                        drained, _ = await asyncio.wait(pending)
+                        # Timeout bilan — aks holda bitta osilib qolgan
+                        # yuborish (masalan tarmoq muammosi) "bir necha
+                        # soniyada to'xtaydi" degan va'dani cheksiz
+                        # cho'zib yuborardi. Muddat tugasa, hali
+                        # tugallanmagan urinishlar hisobga kiritilmay
+                        # tashlab ketiladi (keyingi safar kursordan qayta
+                        # urinilishi mumkin) — bloklanmaslik muhimroq.
+                        drained, still_pending = await asyncio.wait(pending, timeout=15.0)
                         await process_done(drained)
+                        if still_pending:
+                            logger.warning(
+                                "Tarqatish #%s: pauza/bekor qilishda %s ta yuborish "
+                                "15s ichida tugamadi, hisobga olinmasdan tashlab ketildi",
+                                broadcast_id, len(still_pending),
+                            )
+                            for task in still_pending:
+                                task.cancel()
                         pending.clear()
                     cursor = _advance_watermark(dispatch_order, done_ids, cursor)
                     await session.commit()
@@ -275,6 +298,7 @@ async def _run(
                             active_seconds=elapsed_active(),
                             success_count=success,
                             failed_count=failed,
+                            total_targets=total,
                         )
                     # DB holati yozilgach DARHOL ro'yxatdan chiqariladi —
                     # "davom ettirish" shu zahoti bosilsa ham yangi vazifa
@@ -291,8 +315,13 @@ async def _run(
                     exhausted = True
                 else:
                     buffer = list(batch)
-                    # Yangi qo'shilgan userlar hisobga kirsin deb davriy yangilanadi.
-                    total = await user_repo.count_broadcast_targets(exclude_user_id=admin_id)
+                    # Yangi qo'shilgan userlar hisobga kirsin deb davriy
+                    # yangilanadi — lekin HAR bufer to'lganda emas (bu
+                    # to'liq COUNT(*) so'rovi; 37 ming foydalanuvchida
+                    # ~190 marta chaqirilib, keraksiz DB yukini oshirardi).
+                    if (now - last_total_refresh).total_seconds() >= TOTAL_REFRESH_INTERVAL_SECONDS:
+                        total = await user_repo.count_broadcast_targets(exclude_user_id=admin_id)
+                        last_total_refresh = now
 
             while len(pending) < DEFAULT_CONCURRENCY and buffer:
                 user_id, telegram_id = buffer.pop(0)

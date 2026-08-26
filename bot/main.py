@@ -20,6 +20,8 @@ from bot.handlers.user import common, donate, languages, start, subscription
 from bot.handlers.user import support, translate, tts
 from bot.middlewares.context import ContextMiddleware
 from bot.middlewares.subscription import SubscriptionMiddleware
+from bot.services.translation import PROVIDERS as TRANSLATION_PROVIDERS
+from bot.services.tts import PROVIDERS as TTS_PROVIDERS
 
 logging.basicConfig(
     level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO),
@@ -70,7 +72,34 @@ async def recover_interrupted_broadcasts() -> None:
         )
 
 
+def _validate_startup_settings() -> None:
+    """`.env`dagi ba'zi sozlamalarni deploy vaqtida tekshiradi.
+
+    Ilgari provayder nomlari faqat BIRINCHI haqiqiy tarjima/TTS so'rovida
+    tekshirilardi (`TranslationService`/`TtsService` konstruktorida) —
+    ya'ni yozuv xatosi (masalan "deeptranslator") bot muvaffaqiyatli
+    ishga tushib, birinchi foydalanuvchi so'rov yuborgandan keyingina
+    bilinardi.
+    """
+    if settings.TRANSLATION_PROVIDER not in TRANSLATION_PROVIDERS:
+        raise ValueError(
+            f"Noto'g'ri TRANSLATION_PROVIDER: {settings.TRANSLATION_PROVIDER!r} "
+            f"(mavjud: {', '.join(TRANSLATION_PROVIDERS)})"
+        )
+    if settings.TTS_PROVIDER not in TTS_PROVIDERS:
+        raise ValueError(
+            f"Noto'g'ri TTS_PROVIDER: {settings.TTS_PROVIDER!r} "
+            f"(mavjud: {', '.join(TTS_PROVIDERS)})"
+        )
+    if settings.EVENT_LOG_LEVEL.strip().lower() not in ("all", "important", "off"):
+        raise ValueError(
+            f"Noto'g'ri EVENT_LOG_LEVEL: {settings.EVENT_LOG_LEVEL!r} "
+            "(mavjud: all, important, off)"
+        )
+
+
 async def main() -> None:
+    _validate_startup_settings()
     logger.info("Ma'lumotlar bazasi tekshirilmoqda...")
     await init_db()
     await recover_interrupted_broadcasts()

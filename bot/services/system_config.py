@@ -9,6 +9,14 @@ Bu funksiyalar har bir tarjima/ovoz/rasm so'rovida chaqiriladi (issiq yo'l),
 shuning uchun jarayon ichida qisqa muddat keshlanadi. Admin qiymatni
 o'zgartirganda `invalidate_cache()` darhol chaqiriladi — o'zgarish keshning
 tugashini kutmay ishlaydi.
+
+DIQQAT — bitta jarayon ichidagi oddiy Python global o'zgaruvchi (Redis
+emas): `invalidate_cache()` faqat SHU jarayonning keshini tozalaydi. Bot
+hozircha bitta jarayon (systemd, worker yo'q) sifatida ishlaydi, shuning
+uchun muammo yo'q — lekin kelajakda bir nechta worker/jarayonga
+bo'linsa, boshqa workerlar admin o'zgartirgan limitni CACHE_TTL (30s)
+tugaguncha ko'rmay qolishi mumkin. O'sha holatda Redis-asosli keshga
+(yoki pub/sub invalidatsiyaga) o'tish kerak bo'ladi.
 """
 
 from __future__ import annotations

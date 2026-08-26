@@ -138,8 +138,11 @@ class QuotaService:
             # Cheksiz bo'lsa ham hisob yuritiladi (statistika/admin karta
             # uchun) — faqat GATE qilinmaydi. `release_translation()` bu
             # holatda ham to'g'ri ishlaydi (xuddi shu +1 ni qaytaradi).
-            await self.usage.increment(user_id, translations=1, chars=chars)
-            return QuotaStatus(allowed=True, used=0, limit=0)
+            # Qaytgan qatordan haqiqiy `used`ni o'qiymiz — avval doim `0`
+            # yozilardi, garchi haqiqiy hisob yuritilsa ham (chalg'ituvchi
+            # edi, masalan kelajakda "bugun ishlatilgan" ko'rsatsa).
+            row = await self.usage.increment(user_id, translations=1, chars=chars)
+            return QuotaStatus(allowed=True, used=row.translations_count, limit=0)
 
         reserved = await self.usage.try_reserve(user_id, "translations_count", limit, chars=chars)
         row = await self.usage.get(user_id)
@@ -152,8 +155,8 @@ class QuotaService:
         """`try_reserve_translation` bilan bir xil mantiq — mukammal simmetriya."""
         limit = await self._resolve_limit("tts", limit_override)
         if limit <= 0:
-            await self.usage.increment(user_id, tts=1)
-            return QuotaStatus(allowed=True, used=0, limit=0)
+            row = await self.usage.increment(user_id, tts=1)
+            return QuotaStatus(allowed=True, used=row.tts_count, limit=0)
 
         reserved = await self.usage.try_reserve(user_id, "tts_count", limit)
         row = await self.usage.get(user_id)
@@ -172,8 +175,8 @@ class QuotaService:
         """
         limit = await self._resolve_limit("image", limit_override)
         if limit <= 0:
-            await self.usage.increment(user_id, images=1)
-            return QuotaStatus(allowed=True, used=0, limit=0)
+            row = await self.usage.increment(user_id, images=1)
+            return QuotaStatus(allowed=True, used=row.images_count, limit=0)
 
         reserved = await self.usage.try_reserve(user_id, "images_count", limit)
         row = await self.usage.get(user_id)

@@ -9,6 +9,7 @@ from sqlalchemy import select
 
 from bot.config.settings import settings
 from bot.database.models import SystemSettings
+from bot.database.repositories.user_repository import UserRepository
 from bot.database.session import AsyncSessionLocal
 from bot.keyboards.admin import (
     admin_main_keyboard,
@@ -249,6 +250,17 @@ async def global_limit_edit_finish(message: Message, state: FSMContext, user):
         if value < 0:
             await message.answer(
                 "Limit manfiy bo'lishi mumkin emas. Cheksiz uchun 0 yuboring.",
+                reply_markup=back_keyboard(),
+            )
+            return
+        # Foydalanuvchi-darajasidagi limit bilan bir xil chegara
+        # (`AdminService.set_user_limit`) — aks holda qo'shimcha nol
+        # (yozuv xatosi) qabul qilinib, Postgres Integer chegarasidan
+        # oshib ketishi (unhandled xato) yoki amalda cheksiz bo'lib
+        # qolishi mumkin edi.
+        if value > 1_000_000:
+            await message.answer(
+                "Limit juda katta (maks. 1 000 000).",
                 reply_markup=back_keyboard(),
             )
             return
@@ -558,23 +570,44 @@ async def broadcast_peak_cancelled(message: Message, state: FSMContext):
 def _make_finish_notifier(bot: Bot, admin_chat_id: int) -> Callable[[int, bool], Awaitable[None]]:
     """Tarqatish TUGAGANDA (pauza/bekor/yakun/xato) adminga bitta xabar
     yuboradi — u boshqa ish bilan band bo'lsa ham natijadan xabardor bo'ladi.
-    Oraliq checkpoint'larda chaqirilmaydi (`finished=False` — e'tiborsiz)."""
+    Oraliq checkpoint'larda chaqirilmaydi (`finished=False` — e'tiborsiz).
+
+    `admin_chat_id` — HOZIR harakat qilayotgan admin (boshlagan yoki
+    davom ettirgan). Bundan tashqari, agar tarqatishni ORIGINAL
+    boshlagan admin (`bc.created_by`) BOSHQA odam bo'lsa — ularga ham
+    xabar boradi, aks holda: admin A boshlab qo'yib ketsa, keyin bot
+    qayta ishga tushib admin B davom ettirsa — admin A natijadan
+    HECH QACHON xabar topmasdi.
+    """
 
     async def notify(broadcast_id: int, finished: bool) -> None:
         if not finished:
             return
         async with AsyncSessionLocal() as session:
             bc = await AdminService(session).get_broadcast(broadcast_id)
+            creator_chat_id = None
+            if bc is not None and bc.created_by is not None:
+                creator = await UserRepository(session).get_by_id(bc.created_by)
+                if creator is not None:
+                    creator_chat_id = creator.telegram_id
         if bc is None:
             return
-        try:
-            await bot.send_message(
-                admin_chat_id,
-                "🔔 " + render_card(bc),
-                reply_markup=broadcast_active_keyboard(bc.status),
-            )
-        except Exception:
-            logger.warning("Tarqatish #%s haqida adminga xabar berib bo'lmadi", broadcast_id)
+
+        recipients = {admin_chat_id}
+        if creator_chat_id is not None:
+            recipients.add(creator_chat_id)
+
+        for chat_id in recipients:
+            try:
+                await bot.send_message(
+                    chat_id,
+                    "🔔 " + render_card(bc),
+                    reply_markup=broadcast_active_keyboard(bc.status),
+                )
+            except Exception:
+                logger.warning(
+                    "Tarqatish #%s haqida adminga (%s) xabar berib bo'lmadi", broadcast_id, chat_id
+                )
 
     return notify
 
@@ -638,7 +671,20 @@ async def broadcast_pause(message: Message):
     async with AsyncSessionLocal() as session:
         service = AdminService(session)
         active = await service.get_active_broadcast()
-        if active is None or active.status != "running":
+        if active is None:
+            await message.answer(
+                "Hozir ishlab turgan tarqatish topilmadi.", reply_markup=admin_broadcast_keyboard()
+            )
+            return
+        if active.status == "pause_requested":
+            # Ikki marta bosilgan — "topilmadi" chalg'ituvchi bo'lardi,
+            # aslida tarqatish bor, faqat allaqachon pauzaga o'tmoqda.
+            await message.answer(
+                "⏸ Pauza allaqachon so'ralgan — bir necha soniya kuting.",
+                reply_markup=broadcast_active_keyboard("pause_requested"),
+            )
+            return
+        if active.status != "running":
             await message.answer(
                 "Hozir ishlab turgan tarqatish topilmadi.", reply_markup=admin_broadcast_keyboard()
             )
@@ -681,6 +727,14 @@ async def broadcast_cancel(message: Message):
         if active is None:
             await message.answer(
                 "Faol tarqatish topilmadi.", reply_markup=admin_broadcast_keyboard()
+            )
+            return
+        if active.status == "cancel_requested":
+            # Ikki marta bosilgan — "holat o'zgardi" chalg'ituvchi
+            # bo'lardi, aslida hammasi rejadagidek, faqat kutish kerak.
+            await message.answer(
+                "⛔ Bekor qilish allaqachon so'ralgan — bir necha soniya kuting.",
+                reply_markup=broadcast_active_keyboard("cancel_requested"),
             )
             return
         was_paused = active.status == "paused"

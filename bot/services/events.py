@@ -124,7 +124,10 @@ IMPORTANT_EVENTS = frozenset(
 
 
 def _should_log(event_type: str) -> bool:
-    level = settings.EVENT_LOG_LEVEL
+    # Katta-kichik harfga sezgir emas — aks holda `.env`da "Off"/"OFF" kabi
+    # yozilsa, jim tarzda "hammasini yoz"ga tushib qolardi (aynan
+    # o'chirishni maqsad qilgan sozlama teskarisiga ishlaydi).
+    level = settings.EVENT_LOG_LEVEL.strip().lower()
     if level == "off":
         return False
     if level == "important":

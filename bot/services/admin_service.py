@@ -108,37 +108,6 @@ class AdminService:
             return False, "bad_response"
         return True, status
 
-    async def get_stats(self) -> dict:
-        total_users = await self.user_repo.count_total()
-        active_week = await self.user_repo.count_active_since(days=7)
-        active_day = await self.user_repo.count_active_since(days=1)
-        new_day = await self.user_repo.count_new_since(days=1)
-        by_status = await self.user_repo.count_by_status()
-
-        channels_result = await self.session.execute(
-            select(func.count(Channel.id)).where(Channel.is_active.is_(True))
-        )
-        active_channels = channels_result.scalar_one() or 0
-
-        translations_total = await self.translation_repo.count_total()
-        translations_day = await self.translation_repo.count_since(days=1)
-        errors_day, attempts_day = await self.translation_repo.error_rate_since(days=1)
-        top_pairs = await self.translation_repo.top_language_pairs(limit=5)
-
-        return {
-            "total_users": total_users,
-            "active_week": active_week,
-            "active_day": active_day,
-            "new_day": new_day,
-            "blocked": by_status.get("blocked_bot", 0),
-            "active_channels": active_channels,
-            "translations_total": translations_total,
-            "translations_day": translations_day,
-            "errors_day": errors_day,
-            "attempts_day": attempts_day,
-            "top_pairs": top_pairs,
-        }
-
     async def add_channel(
         self,
         button_text: str,
@@ -393,11 +362,20 @@ class AdminService:
         digit_part = query.lstrip("@")
         if digit_part.lstrip("-").isdigit():
             number = int(digit_part)
-            # Avval telegram_id (admin odatda shuni yuboradi), keyin ichki id.
+            # Ikkalasini ham tekshiramiz (telegram_id VA ichki id) — agar
+            # ikkalasi HAM mos kelsa (turli foydalanuvchilarga tegishli
+            # bo'lsa), ikkalasini ham qaytaramiz, admin aniqlashtirsin.
+            # Ilgari faqat telegram_id sinalardi, ichki id mosligi esa
+            # HECH KIMGA bildirmasdan e'tiborsiz qoldirilardi — amalda
+            # Telegram ID'lar (9-10 xonali) ichki id oralig'idan
+            # (hozircha ~38 ming) ancha katta bo'lgani uchun to'qnashuv
+            # ehtimoli past, lekin nolga teng emas.
             by_tg = await self.user_repo.get_by_telegram_id(number)
+            by_id = await self.user_repo.get_by_id(number)
+            if by_tg and by_id and by_tg.id != by_id.id:
+                return [by_tg, by_id]
             if by_tg:
                 return [by_tg]
-            by_id = await self.user_repo.get_by_id(number)
             return [by_id] if by_id else []
 
         return await self.user_repo.find_by_username(query)
