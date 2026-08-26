@@ -45,7 +45,19 @@ class UsageRepository:
         chars: int = 0,
         day: Optional[date_type] = None,
     ) -> DailyUsage:
-        """Atomik UPSERT — parallel xabarlar hisobni buzmasligi uchun."""
+        """Atomik UPSERT — parallel xabarlar hisobni buzmasligi uchun.
+
+        Qaytgan qiymatning o'zi har doim toza (RETURNING'dan to'g'ridan-
+        to'g'ri o'qiladi). `try_reserve`/`release`dan farqli — bu yerda
+        `expire_all()` ATAYLAB chaqirilmaydi: u qaytarilayotgan obyektning
+        o'zini ham "eskirgan" deb belgilab qo'yardi, keyin uning
+        atributiga (masalan `.translations_count`) kirish async sessiyada
+        yashirin (avtomatik) qayta yuklashga urinib, xatoga olib kelardi.
+        Hozircha bu metodning qaytgan qiymatidan hech kim foydalanmaydi —
+        agar kelajakda kimdir shu obyektni o'qib, KEYIN yana `get()` bilan
+        boshqa joydan o'qisa, o'sha ikkinchi o'qishda eskirish xavfi bor
+        (past darajali, `try_reserve`/`release` kabi emas).
+        """
         day = day or self.today()
         stmt = (
             pg_insert(DailyUsage)
@@ -92,15 +104,17 @@ class UsageRepository:
         muvaffaqiyatsiz urinish ham kvotadan yeb qo'yadi (avvalgi
         xulq-atvor: faqat muvaffaqiyatli urinish sarflanardi).
 
-        `.returning(DailyUsage)` — ATAYLAB TO'LIQ ORM obyekti (faqat bitta
-        ustun emas): SQLAlchemy 2.0 ORM-yoqilgan DML RETURNING shu orqali
-        sessiya identity map'idagi (agar bor bo'lsa) obyektni YANGILAYDI.
-        Aks holda, agar shu foydalanuvchi uchun qator avvalroq `get()`
-        bilan o'qilgan bo'lsa, keyingi `get()` chaqiruvi ESKI (keshlangan)
-        qiymatlarni qaytarardi — chunki bu yerdagi xom UPSERT ORM
-        unit-of-work'dan chetlab o'tadi (`AsyncSessionLocal`
-        `expire_on_commit=False` bilan sozlangan, ya'ni commit ham buni
-        avtomatik tuzatmaydi).
+        `session.expire_all()` — bu yerdagi xom (dialektga xos `ON
+        CONFLICT`) UPSERT ORM unit-of-work'dan chetlab o'tadi. SQLAlchemy
+        2.0'ning ORM-DML RETURNING sinxronizatsiyasi FAQAT haqiqiy INSERT
+        qilingan (conflict bo'lmagan) obyektlarni to'ldiradi — conflict
+        paytida UPDATE qilingan qatorlar uchun sessiyada ALLAQACHON
+        yuklangan obyekt ESKI qiymat bilan qolib ketaveradi (qo'lda
+        tekshirilgan: `.returning(DailyUsage)`ning o'zi YETARLI emas edi).
+        `expire_all()` — keyingi HAR QANDAY `.get()` chaqiruvi bazadan
+        qayta o'qishini kafolatlaydi (`AsyncSessionLocal`
+        `expire_on_commit=False` bilan sozlangani uchun commit buni
+        avtomatik qilmaydi).
         """
         assert field in _COUNT_FIELDS
         day = day or self.today()
@@ -117,10 +131,12 @@ class UsageRepository:
                 },
                 where=(count_col < limit),
             )
-            .returning(DailyUsage)
+            .returning(DailyUsage.user_id)
         )
         result = await self.session.execute(stmt)
-        return result.first() is not None
+        reserved = result.first() is not None
+        self.session.expire_all()
+        return reserved
 
     async def release(
         self, user_id: int, field: str, *, chars: int = 0, day: Optional[date_type] = None,
@@ -128,7 +144,7 @@ class UsageRepository:
         """`try_reserve()`ni ortga qaytaradi — tashqi chaqiruv muvaffaqiyatsiz
         bo'lganda. `GREATEST(0, ...)` — hech qachon manfiyga tushmasin.
 
-        `.returning(DailyUsage)` haqida — `try_reserve()`dagi izohga qarang:
+        `session.expire_all()` haqida — `try_reserve()`dagi izohga qarang:
         shu bo'lmasa, sessiyada avvalroq o'qilgan `DailyUsage` obyekti
         eskirgan (kamaytirilmagan) qiymat bilan qolib ketardi.
         """
@@ -146,7 +162,6 @@ class UsageRepository:
                     "updated_at": utcnow(),
                 },
             )
-            .returning(DailyUsage)
         )
-        result = await self.session.execute(stmt)
-        result.all()  # natija ISTE'MOL qilinadi — shundagina ORM identity map yangilanishi kafolatlanadi.
+        await self.session.execute(stmt)
+        self.session.expire_all()
