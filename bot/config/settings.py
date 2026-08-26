@@ -78,6 +78,41 @@ class Settings(BaseSettings):
     DEFAULT_SOURCE_LANG: str = Field(default="auto")
     DEFAULT_TARGET_LANG: str = Field(default="uz")
 
+    # ── Tarjima: qo'shimcha pullik provayderlar ────────────────
+    # `deep_translator` (yuqoridagi TRANSLATION_PROVIDER) — bepul, lekin
+    # Google'ning veb-sahifasini scraping qilgani uchun ishonchsiz (2026-08
+    # dagi bloklash voqeasi). Ikkita rasmiy pullik provayder qo'shildi —
+    # ular orasida HAR BIR SO'ROVDA tasodifiy tanlanadi (ikkalasi ham
+    # bepul oylik hajmidan oshmagan bo'lsa); bittasi tugasa avtomatik
+    # ikkinchisiga, ikkalasi ham tugasa (yoki sozlanmagan bo'lsa) hozirgi
+    # bepul provayderga davom etiladi.
+    #
+    # OCR.Space kabi — bir nechta kalit (har biri alohida hisob/loyiha)
+    # vergul bilan berilsa, navbat bilan (kam ishlatilgani ustunlik bilan)
+    # ishlatiladi. Bepul hajm HAQIQATAN ko'payishi faqat kalitlar chindan
+    # ALOHIDA hisob/billing'larga tegishli bo'lsagina — buni faqat administrator
+    # biladi.
+    #
+    #   Google Cloud Translation (v2 Basic, API kalit — service account
+    #   shart emas): https://console.cloud.google.com/ -> "Cloud Translation
+    #   API"ni yoqib, shu APIga cheklangan API kalit yarating.
+    #   Azure Translator (v3.0): https://portal.azure.com/ -> "Translator"
+    #   resursi yarating, kalit va mintaqa (region) "Keys and Endpoint"da.
+    GOOGLE_TRANSLATE_API_KEYS_RAW: str = Field(default="", alias="GOOGLE_TRANSLATE_API_KEYS")
+    GOOGLE_TRANSLATE_FREE_MONTHLY_CHARS: int = Field(default=500_000)
+
+    AZURE_TRANSLATOR_KEYS_RAW: str = Field(default="", alias="AZURE_TRANSLATOR_KEYS")
+    AZURE_TRANSLATOR_REGION: str = Field(default="")
+    AZURE_TRANSLATOR_FREE_MONTHLY_CHARS: int = Field(default=2_000_000)
+
+    @property
+    def GOOGLE_TRANSLATE_KEYS(self) -> List[str]:
+        return [k.strip() for k in self.GOOGLE_TRANSLATE_API_KEYS_RAW.split(",") if k.strip()]
+
+    @property
+    def AZURE_TRANSLATOR_KEYS(self) -> List[str]:
+        return [k.strip() for k in self.AZURE_TRANSLATOR_KEYS_RAW.split(",") if k.strip()]
+
     # ── TTS ───────────────────────────────────────────────────
     TTS_PROVIDER: str = Field(default="edge")
     TTS_MAX_CHARS: int = Field(default=1000)

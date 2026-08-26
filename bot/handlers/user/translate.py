@@ -146,7 +146,7 @@ async def _translate(
     await message.bot.send_chat_action(message.chat.id, "typing")
 
     try:
-        result = await service.translate(text, source, target)
+        result = await service.translate(session, text, source, target)
     except TranslationError as exc:
         # Muvaffaqiyatsiz urinish ham yoziladi — provayder sog'lig'ini kuzatish uchun.
         await repo.create(
@@ -196,6 +196,7 @@ async def _translate(
         target_chars=len(result.text),
         provider=result.provider,
         provider_model=result.provider_model,
+        provider_key_index=result.provider_key_index,
         ocr_provider=ocr_provider,
         ocr_key_index=ocr_key_index,
         status="success",

@@ -825,28 +825,176 @@ async def test_translation() -> None:
     )
 
     service = TranslationService(redis=None)
-    try:
-        result = await service.translate("Salom dunyo", "auto", "en")
-        check("tarjima qaytdi", bool(result.text), repr(result.text))
-        check("kechikish o'lchandi", result.latency_ms >= 0, f"{result.latency_ms}ms")
-        check("provayder yozildi", result.provider == "deep_translator")
-    except TranslationError as exc:
-        check("tarjima", False, f"{exc.code}: {exc}")
-        return None
-
-    # Xato yo'llari — bularning hammasi ishlab turgan botda tekshirilmagan.
-    for label, args, expected in [
-        ("bo'sh matn", ("", "auto", "en"), "empty_input"),
-        ("bir xil til", ("test", "en", "en"), "same_language"),
-        ("juda uzun", ("x" * 99_999, "auto", "en"), "too_long"),
-    ]:
+    async with AsyncSessionLocal() as session:
         try:
-            await service.translate(*args)
-            check(f"xato ushlanadi: {label}", False, "xato chiqmadi")
+            result = await service.translate(session, "Salom dunyo", "auto", "en")
+            check("tarjima qaytdi", bool(result.text), repr(result.text))
+            check("kechikish o'lchandi", result.latency_ms >= 0, f"{result.latency_ms}ms")
+            # Standart muhitda pullik kalitlar sozlanmagan bo'lgani uchun
+            # doim bepul provayderga tushishi kerak.
+            check("provayder yozildi", result.provider == "deep_translator")
         except TranslationError as exc:
-            check(f"xato ushlanadi: {label}", exc.code == expected, exc.code)
+            check("tarjima", False, f"{exc.code}: {exc}")
+            return None
+
+        # Xato yo'llari — bularning hammasi ishlab turgan botda tekshirilmagan.
+        for label, args, expected in [
+            ("bo'sh matn", ("", "auto", "en"), "empty_input"),
+            ("bir xil til", ("test", "en", "en"), "same_language"),
+            ("juda uzun", ("x" * 99_999, "auto", "en"), "too_long"),
+        ]:
+            try:
+                await service.translate(session, *args)
+                check(f"xato ushlanadi: {label}", False, "xato chiqmadi")
+            except TranslationError as exc:
+                check(f"xato ushlanadi: {label}", exc.code == expected, exc.code)
 
     return result
+
+
+async def test_translation_providers() -> None:
+    """Google Translate / Azure Translator: ko'p kalitli tanlov, tasodifiy
+    almashish, ikkalasi ham yo'q/tugagan/xato bo'lsa bepul provayderga
+    (`deep_translator`) qaytish.
+
+    OCR.Space ko'p kalitli navbati bilan bir xil naqsh (`bot/services/ocr.py`),
+    faqat so'rov soni emas, BELGI soni bo'yicha hisoblanadi.
+    """
+    print("\n[7b] Tarjima — ko'p provayderli tasodifiy tanlov")
+    from sqlalchemy import delete
+
+    from bot.database.models import Translation, User, UserSettings
+    from bot.services import translation_providers as tp
+    from bot.services.translation import TranslationService
+
+    original_google_keys = settings.GOOGLE_TRANSLATE_API_KEYS_RAW
+    original_azure_keys = settings.AZURE_TRANSLATOR_KEYS_RAW
+    original_usage_fn = tp.provider_key_usage
+    original_google_call = tp.PAID_PROVIDER_CONFIG["google_translate"]["call"]
+    original_azure_call = tp.PAID_PROVIDER_CONFIG["azure_translator"]["call"]
+
+    usage_by_provider: dict[str, dict[int, int]] = {}
+
+    async def fake_usage(_session, provider: str) -> dict:
+        return dict(usage_by_provider.get(provider, {}))
+
+    async def fake_google(_text, _source, _target, api_key) -> str:
+        return f"google:{api_key}"
+
+    async def fake_azure(_text, _source, _target, api_key) -> str:
+        return f"azure:{api_key}"
+
+    async def fake_google_fails(_text, _source, _target, _api_key) -> str:
+        raise RuntimeError("test xatosi")
+
+    tp.provider_key_usage = fake_usage
+    tp.PAID_PROVIDER_CONFIG["google_translate"]["call"] = fake_google
+    tp.PAID_PROVIDER_CONFIG["azure_translator"]["call"] = fake_azure
+    service = TranslationService(redis=None)
+
+    try:
+        async with AsyncSessionLocal() as session:
+            settings.GOOGLE_TRANSLATE_API_KEYS_RAW = ""
+            settings.AZURE_TRANSLATOR_KEYS_RAW = ""
+            candidates = await service._pick_paid_candidates(session)
+            check("kalit yo'q -> nomzod yo'q", candidates == [])
+
+            settings.GOOGLE_TRANSLATE_API_KEYS_RAW = "gkey1,gkey2"
+            settings.AZURE_TRANSLATOR_KEYS_RAW = "akey1"
+            usage_by_provider.clear()
+            candidates = await service._pick_paid_candidates(session)
+            names = {c[0] for c in candidates}
+            check(
+                "ikkalasi ham nomzod (tekin hajmda)",
+                names == {"google_translate", "azure_translator"},
+                str(candidates),
+            )
+            google_pick = next(c for c in candidates if c[0] == "google_translate")
+            check("kam ishlatilgan (birinchi) kalit tanlanadi", google_pick[1] == 0, str(google_pick))
+
+            usage_by_provider["google_translate"] = {
+                0: settings.GOOGLE_TRANSLATE_FREE_MONTHLY_CHARS
+            }
+            candidates = await service._pick_paid_candidates(session)
+            google_pick = next(c for c in candidates if c[0] == "google_translate")
+            check("bepul hajmi tugagan kalit chetlanadi", google_pick[1] == 1, str(google_pick))
+
+            usage_by_provider["google_translate"] = {
+                0: settings.GOOGLE_TRANSLATE_FREE_MONTHLY_CHARS,
+                1: settings.GOOGLE_TRANSLATE_FREE_MONTHLY_CHARS,
+            }
+            usage_by_provider["azure_translator"] = {0: settings.AZURE_TRANSLATOR_FREE_MONTHLY_CHARS}
+            candidates = await service._pick_paid_candidates(session)
+            check("hamma kalit tugagan -> nomzod yo'q", candidates == [])
+
+            _, provider_name, _ = await service._dispatch(session, "salom", "auto", "en")
+            check(
+                "hamma pullik tugagan -> bepul provayderga (haqiqiy chaqiruv)",
+                provider_name == "deep_translator",
+                provider_name,
+            )
+
+            usage_by_provider["azure_translator"] = {}
+            text_out, provider_name, key_index = await service._dispatch(session, "salom", "auto", "en")
+            check(
+                "faqat Azure tekin qolgan -> aniq Azure tanlanadi",
+                provider_name == "azure_translator" and key_index == 0 and text_out == "azure:akey1",
+                f"{provider_name}, {key_index}, {text_out}",
+            )
+
+            usage_by_provider.clear()
+            tp.PAID_PROVIDER_CONFIG["google_translate"]["call"] = fake_google_fails
+            seen = set()
+            for _ in range(5):
+                _, provider_name, _ = await service._dispatch(session, "salom", "auto", "en")
+                seen.add(provider_name)
+            check(
+                "google ishlamasa (xato) azure'ga o'tadi, deep_translator'ga emas",
+                seen == {"azure_translator"},
+                str(seen),
+            )
+    finally:
+        settings.GOOGLE_TRANSLATE_API_KEYS_RAW = original_google_keys
+        settings.AZURE_TRANSLATOR_KEYS_RAW = original_azure_keys
+        tp.provider_key_usage = original_usage_fn
+        tp.PAID_PROVIDER_CONFIG["google_translate"]["call"] = original_google_call
+        tp.PAID_PROVIDER_CONFIG["azure_translator"]["call"] = original_azure_call
+
+    # ── provider_key_usage: haqiqiy SUM so'rovi (xato hisoblanmasligi kerak) ──
+    async with AsyncSessionLocal() as session:
+        test_user, _ = await UserRepository(session).get_or_create(
+            TEST_TELEGRAM_ID + 100, first_name="TrProv"
+        )
+        await session.commit()
+
+        before = (await tp.provider_key_usage(session, "google_translate")).get(0, 0)
+
+        session.add(Translation(
+            user_id=test_user.id, chat_id=1, chat_type="private", input_kind="text",
+            source_lang_requested="auto", target_lang="en", source_text="x",
+            source_hash="smoke_tr_1", source_chars=12345,
+            provider="google_translate", provider_key_index=0, status="success",
+        ))
+        session.add(Translation(
+            # Xato bo'lgan urinish HISOBLANMASLIGI kerak — odatda to'lovga tushmaydi.
+            user_id=test_user.id, chat_id=1, chat_type="private", input_kind="text",
+            source_lang_requested="auto", target_lang="en", source_text="y",
+            source_hash="smoke_tr_2", source_chars=999,
+            provider="google_translate", provider_key_index=0, status="error",
+        ))
+        await session.commit()
+
+        after = (await tp.provider_key_usage(session, "google_translate")).get(0, 0)
+        check(
+            "SUM faqat muvaffaqiyatlini hisoblaydi",
+            after - before == 12345,
+            f"before={before}, after={after}",
+        )
+
+        await session.execute(delete(Translation).where(Translation.user_id == test_user.id))
+        await session.execute(delete(UserSettings).where(UserSettings.user_id == test_user.id))
+        await session.execute(delete(User).where(User.id == test_user.id))
+        await session.commit()
 
 
 async def test_translation_record(user_id: int, result) -> None:
@@ -1800,6 +1948,7 @@ async def main() -> None:
     await test_image_translation()
     await test_admin_users()
     result = await test_translation()
+    await test_translation_providers()
     await test_translation_record(user_id, result)
     await test_events(user_id)
     await test_tts()

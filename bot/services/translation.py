@@ -1,20 +1,29 @@
 """Tarjima servisi.
 
-Provayder: `deep-translator` (GoogleTranslator). Boshqa botlar bilan bir xil.
-Servis `TranslationProvider` protokoli orqali ishlaydi — kelajakda AI provayderini
-qo'shish uchun faqat yangi klass yozib, `PROVIDERS` ga qo'shish kifoya.
-Baza sxemasida `provider` va `provider_model` ustunlari allaqachon bor.
+Uchta provayder: `deep-translator` (bepul, lekin Google veb-sahifasini
+scraping qilgani uchun ishonchsiz), Google Cloud Translation va Azure
+Translator (ikkalasi ham pullik, rasmiy API). Har bir so'rovda pullik
+provayderlar orasidan TASODIFIY tanlanadi (hali bepul oylik hajmidan
+oshmagan bo'lsa) — batafsil: `bot/services/translation_providers.py`.
+Ikkalasi ham yo'q/tugagan/xato bersa `deep_translator`ga qaytiladi.
+
+Baza sxemasida `provider`/`provider_model`/`provider_key_index` ustunlari
+allaqachon bor.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import time
 from dataclasses import dataclass
 from typing import Optional, Protocol
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from bot.config.settings import settings
+from bot.services.translation_providers import PAID_PROVIDER_CONFIG, pick_key
 from bot.utils.text import chunk, content_hash, normalize
 
 logger = logging.getLogger(__name__)
@@ -60,6 +69,7 @@ class TranslationResult:
     provider_model: Optional[str]
     latency_ms: int
     cache_hit: bool = False
+    provider_key_index: Optional[int] = None
 
 
 class TranslationProvider(Protocol):
@@ -188,7 +198,9 @@ class TranslationService:
         provider_cls = PROVIDERS.get(settings.TRANSLATION_PROVIDER)
         if provider_cls is None:
             raise ValueError(f"Noma'lum tarjima provayderi: {settings.TRANSLATION_PROVIDER}")
-        self.provider: TranslationProvider = provider_cls(settings.TRANSLATION_TIMEOUT)
+        # Har doim mavjud, oxirgi zaxira — pullik provayderlar yo'q/tugagan/
+        # xato bersa shunga qaytiladi.
+        self.deep_provider: TranslationProvider = provider_cls(settings.TRANSLATION_TIMEOUT)
         self.redis = redis
 
     async def _cache_get(self, key: str) -> Optional[str]:
@@ -211,7 +223,47 @@ class TranslationService:
         except Exception:
             pass
 
-    async def translate(self, text: str, source: str, target: str) -> TranslationResult:
+    async def _pick_paid_candidates(
+        self, session: AsyncSession
+    ) -> list[tuple[str, int, str]]:
+        """Hali bepul oylik hajmidan oshmagan provayder+kalit variantlari,
+        tasodifiy tartibda (har so'rovda qaysi biri sinab ko'rilishi
+        tasodifiy — talab shunday: "toki limiti tugagunicha random")."""
+        candidates: list[tuple[str, int, str]] = []
+        for name, cfg in PAID_PROVIDER_CONFIG.items():
+            keys = cfg["keys"]()
+            if not keys:
+                continue
+            picked = await pick_key(session, name, keys, cfg["free_limit"]())
+            if picked is not None:
+                index, api_key = picked
+                candidates.append((name, index, api_key))
+        random.shuffle(candidates)
+        return candidates
+
+    async def _dispatch(
+        self, session: AsyncSession, text: str, source: str, target: str
+    ) -> tuple[str, str, Optional[int]]:
+        """Tasodifiy tanlangan pullik provayderni sinaydi, muvaffaqiyatsiz
+        bo'lsa keyingisiga, ikkalasi ham bo'lmasa/ishlamasa bepul
+        (`deep_translator`) provayderga o'tadi."""
+        for name, index, api_key in await self._pick_paid_candidates(session):
+            try:
+                call = PAID_PROVIDER_CONFIG[name]["call"]
+                translated = await call(text, source, target, api_key)
+                if translated and translated.strip():
+                    return translated, name, index
+                logger.warning("%s (kalit #%s) bo'sh javob qaytardi", name, index)
+            except Exception as exc:
+                logger.warning("%s (kalit #%s) ishlamadi: %s", name, index, exc)
+                continue
+
+        translated = await self.deep_provider.translate(text, source, target)
+        return translated, self.deep_provider.name, None
+
+    async def translate(
+        self, session: AsyncSession, text: str, source: str, target: str
+    ) -> TranslationResult:
         if not text or not text.strip():
             raise TranslationError("empty_input", "Bo'sh matn")
         if len(text) > settings.TRANSLATION_MAX_CHARS:
@@ -227,13 +279,13 @@ class TranslationService:
             return TranslationResult(
                 text=cached,
                 source_lang_detected=detect_language(text) if source == "auto" else source,
-                provider=self.provider.name,
+                provider="cache",
                 provider_model=None,
                 latency_ms=int((time.perf_counter() - started) * 1000),
                 cache_hit=True,
             )
 
-        translated = await self.provider.translate(text, source, target)
+        translated, provider_name, key_index = await self._dispatch(session, text, source, target)
         latency_ms = int((time.perf_counter() - started) * 1000)
 
         if not translated or not translated.strip():
@@ -244,8 +296,9 @@ class TranslationService:
         return TranslationResult(
             text=translated,
             source_lang_detected=detect_language(text) if source == "auto" else source,
-            provider=self.provider.name,
+            provider=provider_name,
             provider_model=None,
+            provider_key_index=key_index,
             latency_ms=latency_ms,
             cache_hit=False,
         )

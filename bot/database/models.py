@@ -205,6 +205,14 @@ class Translation(Base):
 
     provider = Column(String(32), nullable=False)
     provider_model = Column(String(64))
+    # `provider` shu tarjimani BAJARGAN dvigatel: `deep_translator`,
+    # `google_translate`, `azure_translator` yoki keshdan olingan bo'lsa
+    # `cache`. `google_translate`/`azure_translator` bo'lganda,
+    # `provider_key_index` o'sha provayderning qaysi kaliti (`settings.
+    # GOOGLE_TRANSLATE_KEYS`/`AZURE_TRANSLATOR_KEYS`dagi tartib raqami)
+    # ishlatilganini bildiradi — har bir kalit alohida oylik bepul belgi
+    # hajmiga ega bo'lishi mumkin, shuning uchun alohida hisoblanadi.
+    provider_key_index = Column(Integer)
     # Faqat `input_kind='photo'` uchun to'ldiriladi — rasmdan matnni qaysi
     # OCR provayder (ocrspace / google_vision) ajratganini bildiradi.
     # `provider` bilan aralashmasin: u har doim tarjima dvigateli.
@@ -232,6 +240,12 @@ class Translation(Base):
         Index(
             "idx_translations_ocr_monthly",
             "input_kind", "ocr_provider", "ocr_key_index", "created_at",
+        ),
+        # Tarjima provayder/kalit oylik bepul BELGI hajmini hisoblash uchun
+        # (`translation.py`) — xuddi shu naqsh, OCR emas, tarjima uchun.
+        Index(
+            "idx_translations_provider_monthly",
+            "provider", "provider_key_index", "created_at",
         ),
         Index("idx_translations_lang_pair", "source_lang_detected", "target_lang"),
         # BRIN — append-only vaqt ustuni uchun btree'dan minglab marta arzon.
