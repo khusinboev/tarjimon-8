@@ -155,13 +155,10 @@ CONTACT_PROMPT = (
     "✉️ <b>Contact admin</b>\n\n"
     "Write your message — it goes straight to the admin.\n\n"
     "Text, photo, video, voice message, document — any type works.\n\n"
-    "<i>The admin's answer arrives here. To continue the conversation just "
-    "reply to their message — any time, no need to open this again.</i>"
+    "<i>The admin's answer arrives here. To send another message, tap the "
+    "\"🔁 Send again\" button under your sent message.</i>"
 )
-CONTACT_SENT = (
-    "✅ <b>Your message was sent to the admin</b>\n\n"
-    "The answer will arrive here. Reply to it to continue the conversation."
-)
+CONTACT_SENT = "✅ <b>Your message was sent to the admin</b>\n\nThe answer will arrive here."
 CONTACT_CANCELLED = "Cancelled."
 CONTACT_TOO_LONG = "📏 The message is too long (<b>{length}</b> characters). Maximum: <b>{limit}</b>."
 CONTACT_RATE_LIMITED = (
@@ -169,11 +166,8 @@ CONTACT_RATE_LIMITED = (
     "You can send the next one in <b>{minutes}</b> minutes."
 )
 CONTACT_FAILED = "⚠️ Could not send the message. Please try again later."
-CONTACT_REPLY_HEADER = (
-    "✉️ <b>Reply from the admin</b>\n\n"
-    "<i>Reply to this message to answer.</i>"
-)
-CONTACT_REPLY_SENT = "✅ Your reply was sent to the admin."
+CONTACT_REPLY_HEADER = "✉️ <b>Reply from the admin</b>"
+CONTACT_SEND_AGAIN_BUTTON = "🔁 Send again"
 
 # ── Donations (Telegram Stars) ───────────────────────────────
 DONATE_INTRO = (

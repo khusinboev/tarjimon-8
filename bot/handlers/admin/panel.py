@@ -942,11 +942,9 @@ async def user_message_finish(message: Message, state: FSMContext, session_id):
         # kiritmay qolardi (ikki xil tranzaksiya, atomik bo'lmagan yozuv).
         events = EventService(session)
         ok, reply_text = await deliver_admin_message(message, session, events, session_id, target)
-        if ok:
-            # Adminning tugmasiz keyingi oddiy xabari ham shu foydalanuvchiga
-            # ketishi uchun ("davom etadigan" suhbat, xuddi murojaatga
-            # javob berilgandagi kabi) — bir martalik.
-            await SupportRepository(session).set_pinned_target(message.chat.id, target_id)
+        # Avtomatik pin QO'YILMAYDI (2026-08-27dan) — har bir xabar FAQAT
+        # aniq tugma bosilgach ketishi kerak. Yana yozish uchun admin
+        # shu ekrandan qayta "✉️ Xabar yuborish"ni bossin.
         await session.commit()
 
     await state.set_state(None)

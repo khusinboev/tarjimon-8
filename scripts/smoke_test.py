@@ -1715,18 +1715,14 @@ async def test_stats() -> None:
         )
 
 
-async def test_support_thread_lookup() -> None:
-    """Ikki tomonlama murojaat: reply orqali ip topiladi.
-
-    Diqqat: bu funksiya ilgari `test_support_thread` deb nomlangan edi va
-    quyida boshqa bir `test_support_thread` bilan bir xil nom bo'lgani
-    uchun Python uni jimgina almashtirib qo'ygan — bu yerdagi 7 ta tekshiruv
-    hech qachon ishlamagan (`main()` faqat oxirgi ta'rifni chaqirgan).
+async def test_support_record() -> None:
+    """`SupportRepository.record()` — endi FAQAT tarix/audit uchun
+    (2026-08-27dan suhbat aniqlash uchun ishlatilmaydi, buni pin qiladi).
     """
-    print("\n[16] Murojaat yozishmasi")
-    from sqlalchemy import delete
+    print("\n[16] Murojaat tarixi (audit yozuvi)")
+    from sqlalchemy import delete, func, select
 
-    from bot.database.models import SupportMessage
+    from bot.database.models import SupportMessage, User, UserSettings
     from bot.database.repositories.support_repository import SupportRepository
 
     async with AsyncSessionLocal() as session:
@@ -1735,34 +1731,11 @@ async def test_support_thread_lookup() -> None:
         await session.commit()
 
         support = SupportRepository(session)
-
-        # 1. Foydalanuvchi murojaat yozdi, admin chatiga tushdi.
         await support.record(
             user_id=user.id, direction="in", text="savol",
             admin_chat_id=111, admin_message_id=900,
             user_chat_id=user.telegram_id, user_message_id=500,
         )
-        await session.commit()
-
-        # 2. Admin o'sha xabarga reply qildi — ip topilishi kerak.
-        found = await support.by_admin_message(111, 900)
-        check("admin javobi ipni topadi", found is not None and found.user_id == user.id)
-        check("ip foydalanuvchini biladi", found.user is not None and found.user.telegram_id == user.telegram_id)
-
-        # Handler `found.user.settings.interface_lang` ni o'qiydi — ikki qavat
-        # chuqur. Sinov faqat `found.user` ni tekshirgani uchun `settings`
-        # yuklanmagani sezilmay qolgan va ishlab turgan botda admin javoblari
-        # `MissingGreenlet` bilan jimgina yo'qolgan edi.
-        try:
-            lang = found.user.settings.interface_lang
-            check("ip foydalanuvchi sozlamasini ham biladi", bool(lang), lang)
-        except Exception as exc:  # MissingGreenlet — eager load tushib qolgan
-            check("ip foydalanuvchi sozlamasini ham biladi", False, type(exc).__name__)
-
-        # Boshqa xabarga reply — ip yo'q, tarjimaga o'tishi kerak.
-        check("begona xabar ipsiz", await support.by_admin_message(111, 999) is None)
-
-        # 3. Admin javobi yozildi, foydalanuvchi chatidagi id bilan.
         await support.record(
             user_id=user.id, direction="out", text="javob",
             admin_chat_id=111, admin_message_id=901,
@@ -1770,74 +1743,16 @@ async def test_support_thread_lookup() -> None:
         )
         await session.commit()
 
-        # 4. Foydalanuvchi javobga reply qildi — ip yana topiladi.
-        back = await support.by_user_message(user.telegram_id, 501)
-        check("foydalanuvchi javobi ipni topadi", back is not None and back.direction == "out")
-        check("begona reply ipsiz", await support.by_user_message(user.telegram_id, 777) is None)
-
-        check("yozishma sanaladi", await support.thread_size(user.id) == 2)
+        count = (
+            await session.execute(
+                select(func.count(SupportMessage.id)).where(SupportMessage.user_id == user.id)
+            )
+        ).scalar_one()
+        check("tarix yozuvlari saqlanadi", count == 2, str(count))
 
         await session.execute(delete(SupportMessage).where(SupportMessage.user_id == user.id))
-        from bot.database.models import User as U, UserSettings as US
-        await session.execute(delete(US).where(US.user_id == user.id))
-        await session.execute(delete(U).where(U.id == user.id))
-        await session.commit()
-
-
-async def test_support_thread_lazy_load() -> None:
-    """Murojaat ipi: admin javobi foydalanuvchi tilida yuborilishi kerak.
-
-    Diqqat — qidiruv **yangi sessiyada** bajariladi. Aynan shu shart bo'lmasa
-    sinov muammoni ko'rsatmaydi: bir sessiyada yaratilgan `User` identity
-    map'da sozlamalari bilan yotadi va lazy yuklanish umuman bo'lmaydi.
-    Ishlab turgan botda esa admin javob berayotgan foydalanuvchi boshqa
-    obyekt bo'ladi va `user.settings` ga murojaat `MissingGreenlet` beradi.
-    """
-    print("\n[16b] Murojaat ipi — yangi sessiyada lazy-load")
-    from sqlalchemy import delete
-
-    from bot.database.models import SupportMessage, User, UserSettings
-    from bot.database.repositories.support_repository import SupportRepository
-
-    tg_id = TEST_TELEGRAM_ID + 50
-    async with AsyncSessionLocal() as session:
-        user, _ = await UserRepository(session).get_or_create(tg_id, telegram_lang="id")
-        await session.commit()
-        user_id = user.id
-
-        await SupportRepository(session).record(
-            user_id=user_id,
-            direction="in",
-            text="sinov",
-            admin_chat_id=777001,
-            admin_message_id=888001,
-            user_chat_id=tg_id,
-            user_message_id=888000,
-        )
-        await session.commit()
-
-    # Yangi sessiya = bo'sh identity map, ya'ni ishlab turgan botdagi holat.
-    async with AsyncSessionLocal() as fresh:
-        thread = await SupportRepository(fresh).by_admin_message(777001, 888001)
-        check("ip admin xabari bo'yicha topildi", thread is not None)
-        check("foydalanuvchi yuklandi", thread is not None and thread.user is not None)
-        try:
-            lang = thread.user.settings.interface_lang
-            check("sozlamalar eager yuklangan", lang == "id", lang)
-        except Exception as exc:
-            # MissingGreenlet aynan shu yerda chiqardi.
-            check("sozlamalar eager yuklangan", False, type(exc).__name__)
-
-        back = await SupportRepository(fresh).by_user_message(tg_id, 888000)
-        check("ip foydalanuvchi xabari bo'yicha topildi", back is not None)
-
-        missing = await SupportRepository(fresh).by_admin_message(777001, 999999)
-        check("noma'lum xabar uchun ip yo'q", missing is None)
-
-    async with AsyncSessionLocal() as session:
-        await session.execute(delete(SupportMessage).where(SupportMessage.user_id == user_id))
-        await session.execute(delete(UserSettings).where(UserSettings.user_id == user_id))
-        await session.execute(delete(User).where(User.id == user_id))
+        await session.execute(delete(UserSettings).where(UserSettings.user_id == user.id))
+        await session.execute(delete(User).where(User.id == user.id))
         await session.commit()
 
 
@@ -1883,6 +1798,15 @@ async def test_admin_reply_pin() -> None:
     async with AsyncSessionLocal() as session:
         pinned = await SupportRepository(session).get_pinned_target(admin_chat_id)
         check("pin o'rnatilgach topiladi", pinned is not None and pinned.id == user_id, str(pinned))
+        # `deliver_admin_message` `target.settings.interface_lang`ni o'qiydi —
+        # bu YANGI (bo'sh identity map) sessiyada eager-load qilinmagan
+        # bo'lsa `MissingGreenlet` bilan jimgina yiqilardi (loyihada bu
+        # xato ilgari boshqa joyda ham uchragan).
+        try:
+            _ = pinned.settings.interface_lang if pinned else None
+            check("sozlamalar eager yuklangan (MissingGreenlet yo'q)", True)
+        except Exception as exc:
+            check("sozlamalar eager yuklangan (MissingGreenlet yo'q)", False, type(exc).__name__)
         await session.commit()
 
     # Bir martalik: OLDINGI so'rov PIN'ni allaqachon o'chirgan — keyingi
@@ -1918,41 +1842,15 @@ async def test_admin_reply_pin() -> None:
 
 
 async def test_support_parsing() -> None:
-    """Murojaat sarlavhasidan foydalanuvchi ID'sini va kontent turini ajratish.
+    """Murojaat xabaridan kontent turini ajratish (`_describe`).
 
-    Baza kerak emas — sof funksiyalar, `SimpleNamespace` bilan Telegram
+    Baza kerak emas — sof funksiya, `SimpleNamespace` bilan Telegram
     xabarini taqlid qilamiz.
     """
-    print("\n[16c] Murojaat sarlavhasini tahlil qilish")
+    print("\n[16c] Murojaat kontentini aniqlash")
     from types import SimpleNamespace
 
-    from bot.handlers.user.support import _describe, _extract_target_id
-
-    header = (
-        "\u2709\ufe0f Yangi murojaat\n\n"
-        "\U0001f464 Ali \u00b7 @ali\n"
-        "\U0001f194 5718446822\n"
-        "\U0001f310 uz"
-    )
-    check(
-        "sarlavhadan ID ajratiladi",
-        _extract_target_id(SimpleNamespace(text=header, caption=None)) == 5718446822,
-    )
-    check(
-        "izohdan ham ajratiladi",
-        _extract_target_id(
-            SimpleNamespace(text=None, caption="\U0001f4ac Suhbat davomi\n\U0001f194 123456789")
-        ) == 123456789,
-    )
-    check(
-        "sarlavha belgisisiz ID e'tiborsiz qoldiriladi (donat/admin panel bilan chalkashmasin)",
-        _extract_target_id(SimpleNamespace(text="\U0001f194 999999999", caption=None)) is None,
-    )
-    check(
-        "oddiy matnda ID yo'q",
-        _extract_target_id(SimpleNamespace(text="salom dunyo", caption=None)) is None,
-    )
-    check("reply bo'lmasa None", _extract_target_id(None) is None)
+    from bot.handlers.user.support import _describe
 
     check(
         "matn o'zi olinadi",
@@ -2120,8 +2018,7 @@ async def main() -> None:
     await test_broadcast()
     await test_broadcast_resumable()
     await test_stats()
-    await test_support_thread_lookup()
-    await test_support_thread_lazy_load()
+    await test_support_record()
     await test_admin_reply_pin()
     await test_support_parsing()
     await test_content_extraction()

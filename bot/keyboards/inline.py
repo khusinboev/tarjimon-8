@@ -28,6 +28,20 @@ def support_reply_keyboard(target_user_id: int) -> InlineKeyboardMarkup:
     )
 
 
+def contact_send_again_keyboard(t: ModuleType) -> InlineKeyboardMarkup:
+    """Foydalanuvchining "yuborildi" tasdig'i ostidagi "🔁 Yana yuborish"
+    tugmasi — yangi murojaat yozish tartibiga aniq (state emas, reply
+    emas) qaytish yo'li. Tugma ESKI xabarlarda ham abadiy ishlaydi
+    (Telegram inline tugmalarni muddatsiz saqlaydi), reply-havolasi
+    kabi vaqt o'tishi bilan yo'qolmaydi.
+    """
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=t.CONTACT_SEND_AGAIN_BUTTON, callback_data="sup:again")]
+        ]
+    )
+
+
 def get_subscription_keyboard(
     t: ModuleType, channels: List[Channel]
 ) -> InlineKeyboardMarkup:

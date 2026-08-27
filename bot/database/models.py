@@ -614,11 +614,14 @@ class SupportMessage(Base):
 
     user = relationship("User")
 
+    # DIQQAT: `admin_chat_id`/`admin_message_id`/`user_chat_id`/
+    # `user_message_id` faqat TARIX/audit uchun saqlanadi — 2026-08-27
+    # qayta qurilgach suhbatni ANIQLASH uchun ENDI ishlatilmaydi (buni
+    # `admin_reply_targets` pin mexanizmi qiladi). Shu sababli ilgari
+    # shu ustunlar bo'yicha qidiruv uchun bo'lgan indekslar (migratsiya
+    # 017da o'chirilgan) endi yo'q.
     __table_args__ = (
         CheckConstraint("direction IN ('in', 'out')", name="ck_support_direction"),
-        # Javobni topish uchun ikki yo'nalishdagi qidiruv.
-        Index("idx_support_admin_msg", "admin_chat_id", "admin_message_id"),
-        Index("idx_support_user_msg", "user_chat_id", "user_message_id"),
     )
 
 

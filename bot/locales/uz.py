@@ -154,13 +154,10 @@ CONTACT_PROMPT = (
     "✉️ <b>Adminga murojaat</b>\n\n"
     "Xabaringizni yozing — u to'g'ridan-to'g'ri adminga yetadi.\n\n"
     "Matn, rasm, video, ovozli xabar, hujjat — istalgan turni yuborishingiz mumkin.\n\n"
-    "<i>Admin javobi shu yerga keladi. Suhbatni davom ettirish uchun uning "
-    "xabariga reply qiling — istalgan payt, qayta murojaat qilmasdan.</i>"
+    "<i>Admin javobi shu yerga keladi. Yana xabar yubormoqchi bo'lsangiz, "
+    "yuborilgan xabaringiz ostidagi \"🔁 Yana yuborish\" tugmasini bosing.</i>"
 )
-CONTACT_SENT = (
-    "✅ <b>Xabaringiz adminga yuborildi</b>\n\n"
-    "Javob shu yerga keladi. Unga reply qilib suhbatni davom ettirishingiz mumkin."
-)
+CONTACT_SENT = "✅ <b>Xabaringiz adminga yuborildi</b>\n\nJavob shu yerga keladi."
 CONTACT_CANCELLED = "Bekor qilindi."
 CONTACT_TOO_LONG = "📏 Xabar juda uzun (<b>{length}</b> belgi). Eng ko'pi: <b>{limit}</b>."
 CONTACT_RATE_LIMITED = (
@@ -168,11 +165,8 @@ CONTACT_RATE_LIMITED = (
     "Keyingi xabarni <b>{minutes}</b> daqiqadan keyin yuborishingiz mumkin."
 )
 CONTACT_FAILED = "⚠️ Xabarni yuborib bo'lmadi. Keyinroq urinib ko'ring."
-CONTACT_REPLY_HEADER = (
-    "✉️ <b>Admindan javob</b>\n\n"
-    "<i>Javob berish uchun shu xabarga reply qiling.</i>"
-)
-CONTACT_REPLY_SENT = "✅ Javobingiz adminga yuborildi."
+CONTACT_REPLY_HEADER = "✉️ <b>Admindan javob</b>"
+CONTACT_SEND_AGAIN_BUTTON = "🔁 Yana yuborish"
 
 # ── Homiylik (Telegram Stars) ────────────────────────────────
 DONATE_INTRO = (
