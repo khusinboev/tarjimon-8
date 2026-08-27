@@ -2,6 +2,7 @@ from aiogram import Bot, Router, F
 import logging
 import re
 from typing import Awaitable, Callable
+from aiogram.dispatcher.event.bases import SkipHandler
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
@@ -414,7 +415,14 @@ async def broadcast_menu(message: Message, state: FSMContext):
 
 
 @router.message(F.text == "🔄 Yangilash", F.from_user.func(lambda u: u and is_admin(u.id)))
-async def broadcast_refresh(message: Message):
+async def broadcast_refresh(message: Message, state: FSMContext):
+    # "🔄 Yangilash" matni foydalanuvchi kartochkasida ham bor (pastdagi
+    # `user_refresh`) — shu yerda ustunlik olib qo'ymasligi uchun
+    # foydalanuvchi tanlangan bo'lsa keyingi mos handlerga o'tkazib
+    # yuboriladi (aks holda kartochka o'rniga doim reklama menyusi ochilardi).
+    data = await state.get_data()
+    if data.get("target_user_id") is not None:
+        raise SkipHandler
     await _show_broadcast_menu(message)
 
 
