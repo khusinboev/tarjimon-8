@@ -227,6 +227,7 @@ _ADMIN_PANEL_BUTTONS = frozenset(
         "⏸ Pauza", "🔍 Qidirish", "✏️ Rasm (bepul)", "🖼 Rasm limiti",
         "🚫 Rasm limitini tozalash", "✏️ Rasm (VIP)", "📤 Reklama",
         "📊 Statistika", "🗂 Tarix", "⚙️ Umumiy limitlar", "🔄 Yangilash",
+        "✉️ Xabar yuborish",
     }
 )
 
@@ -394,6 +395,63 @@ async def pick_reply_target(callback: CallbackQuery, session: AsyncSession) -> N
     )
 
 
+async def deliver_admin_message(
+    message: Message,
+    session: AsyncSession,
+    events: EventService,
+    session_id,
+    target: User,
+) -> tuple[bool, str]:
+    """Adminning istalgan yo'ldan (reply, "↩️ Javob yozish" tugmasi, yoki
+    admin panelidagi "✉️ Xabar yuborish") yozgan xabarini foydalanuvchiga
+    yetkazadi va yozishma ipiga qo'shadi.
+
+    BARCHA yo'llar shu FUNKSIYA orqali o'tadi — shu sababli qayerdan
+    boshlangan bo'lishidan qat'i nazar, keyingi javoblar bir xilda
+    (foydalanuvchi javob bersa "💬 Suhbat davomi" + "↩️ Javob yozish"
+    tugmasi bilan) davom etadi.
+
+    Qaytaradi: (muvaffaqiyat, adminga ko'rsatiladigan xabar).
+    """
+    support = SupportRepository(session)
+    described = _describe(message)
+
+    # Sarlavha foydalanuvchining o'z tilida.
+    reply_locale = locales.get(
+        target.settings.interface_lang if target.settings else None
+    )
+
+    try:
+        head_id, copy_id = await _deliver(
+            message, target.telegram_id, reply_locale.CONTACT_REPLY_HEADER
+        )
+    except Exception:
+        logger.warning("Admin xabari yetmadi (user_id=%s)", target.id, exc_info=True)
+        return False, "⚠️ Xabar yetkazilmadi — foydalanuvchi botni bloklagan bo'lishi mumkin."
+
+    for user_message_id in (head_id, copy_id):
+        if user_message_id is None:
+            continue
+        await support.record(
+            user_id=target.id,
+            direction="out",
+            text=described,
+            admin_chat_id=message.chat.id,
+            admin_message_id=message.message_id,
+            user_chat_id=target.telegram_id,
+            user_message_id=user_message_id,
+        )
+
+    await events.log(
+        EventType.SUPPORT_REPLY_SENT,
+        user_id=target.id,
+        chat_id=message.chat.id,
+        session_id=session_id,
+        chars=len(described),
+    )
+    return True, ("✅ Yuborildi." if copy_id else "⚠️ Faqat sarlavha ketdi — bu turni ko'chirib bo'lmadi.")
+
+
 # FSM holati bo'yicha filtr ataylab YO'Q, garchi u tabiiy ko'rinsa ham.
 #
 # `StateFilter(None)` qo'yilganda quyidagi xavf tug'ilardi: admin xabar
@@ -456,45 +514,12 @@ async def admin_reply(
     if target is None:
         raise SkipHandler
 
-    described = _describe(message)
-
-    # Sarlavha foydalanuvchining o'z tilida.
-    reply_locale = locales.get(
-        target.settings.interface_lang if target.settings else None
-    )
-
-    try:
-        head_id, copy_id = await _deliver(
-            message, target.telegram_id, reply_locale.CONTACT_REPLY_HEADER
-        )
-    except Exception:
-        logger.warning("Admin javobi yetmadi (user_id=%s)", target.id, exc_info=True)
-        await message.reply(
-            "⚠️ Javob yetkazilmadi — foydalanuvchi botni bloklagan bo'lishi mumkin."
-        )
-        return
-
-    for user_message_id in (head_id, copy_id):
-        if user_message_id is None:
-            continue
-        await support.record(
-            user_id=target.id,
-            direction="out",
-            text=described,
-            admin_chat_id=message.chat.id,
-            admin_message_id=message.message_id,
-            user_chat_id=target.telegram_id,
-            user_message_id=user_message_id,
-        )
-
-    await events.log(
-        EventType.SUPPORT_REPLY_SENT,
-        user_id=target.id,
-        chat_id=message.chat.id,
-        session_id=session_id,
-        chars=len(described),
-    )
-    await message.reply("✅ Yuborildi." if copy_id else "⚠️ Faqat sarlavha ketdi — bu turni ko'chirib bo'lmadi.")
+    ok, reply_text = await deliver_admin_message(message, session, events, session_id, target)
+    await message.reply(reply_text)
+    if ok:
+        # Adminning tugmasiz keyingi xabari ham shu foydalanuvchiga ketishi
+        # uchun ("davom etadigan" suhbat) — bir martalik, izoh: `set_pinned_target`.
+        await support.set_pinned_target(message.chat.id, target.id)
 
 
 # Yuqoridagi kabi: ajratuvchi belgi reply qilingan xabar, holat emas.

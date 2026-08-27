@@ -27,9 +27,15 @@ from bot.services import broadcast_runner
 from bot.services.admin_service import AdminService
 from bot.services.broadcast_progress import render_card, render_history_line
 from bot.services.stats import StatsService, render as render_stats
-from bot.services.events import utcnow
+from bot.services.events import EventService, utcnow
 from bot.services.system_config import get_effective_limits, set_limit as set_system_limit
 from bot.states.admin import AdminStates
+# `deliver_admin_message`/`SupportRepository` — admin panelidan yuborilgan
+# xabar ham ODDIY murojaat javobi bilan BIR XIL yozishma ipiga (va
+# "↩️ Javob yozish"/pin mexanizmiga) qo'shilishi uchun ATAYLAB
+# `support.py`dan (handler qatlami) olinadi, alohida takrorlanmasin deb.
+from bot.database.repositories.support_repository import SupportRepository
+from bot.handlers.user.support import deliver_admin_message
 
 
 router = Router()
@@ -879,6 +885,72 @@ async def user_unban(message: Message, state: FSMContext, user):
         ok, text = await service.unban_user(user.id, target_id)
 
     await message.answer(text, reply_markup=admin_user_actions_keyboard())
+    if ok:
+        await _show_user_card(message, state, target_id)
+
+
+@router.message(F.text == "✉️ Xabar yuborish", F.from_user.func(lambda u: u and is_admin(u.id)))
+async def user_message_start(message: Message, state: FSMContext):
+    target_id = await _require_target_user(state)
+    if target_id is None:
+        await message.answer(
+            "Avval foydalanuvchini qidiring.",
+            reply_markup=admin_users_keyboard(),
+        )
+        return
+
+    await state.set_state(AdminStates.waiting_user_message)
+    await message.answer(
+        "Foydalanuvchiga yuboriladigan xabarni yozing (matn, rasm, ovoz — "
+        "istalgan turi).",
+        reply_markup=back_keyboard(),
+    )
+
+
+@router.message(AdminStates.waiting_user_message, F.from_user.func(lambda u: u and is_admin(u.id)))
+async def user_message_finish(message: Message, state: FSMContext, session_id):
+    if (message.text or "").strip() == "🔙 Orqaga":
+        target_id = await _require_target_user(state)
+        await state.set_state(None)
+        if target_id is not None:
+            await _show_user_card(message, state, target_id)
+        else:
+            await message.answer("Foydalanuvchi boshqaruvi", reply_markup=admin_users_keyboard())
+        return
+
+    target_id = await _require_target_user(state)
+    if target_id is None:
+        await state.clear()
+        await message.answer(
+            "Avval foydalanuvchini qidiring.",
+            reply_markup=admin_users_keyboard(),
+        )
+        return
+
+    async with AsyncSessionLocal() as session:
+        target = await SupportRepository(session).find_user_by_id(target_id)
+        if target is None:
+            await state.set_state(None)
+            await message.answer(
+                "Foydalanuvchi topilmadi (o'chirilgan bo'lishi mumkin).",
+                reply_markup=admin_users_keyboard(),
+            )
+            return
+
+        # `events` ataylab shu (ICHKI) sessiyaga bog'lanadi — ContextMiddleware
+        # tashqi sessiyasidan olinganda, pastdagi `session.commit()` uni
+        # kiritmay qolardi (ikki xil tranzaksiya, atomik bo'lmagan yozuv).
+        events = EventService(session)
+        ok, reply_text = await deliver_admin_message(message, session, events, session_id, target)
+        if ok:
+            # Adminning tugmasiz keyingi oddiy xabari ham shu foydalanuvchiga
+            # ketishi uchun ("davom etadigan" suhbat, xuddi murojaatga
+            # javob berilgandagi kabi) — bir martalik.
+            await SupportRepository(session).set_pinned_target(message.chat.id, target_id)
+        await session.commit()
+
+    await state.set_state(None)
+    await message.answer(reply_text, reply_markup=admin_user_actions_keyboard())
     if ok:
         await _show_user_card(message, state, target_id)
 

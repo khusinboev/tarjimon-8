@@ -10,6 +10,7 @@ class AdminStates(StatesGroup):
     waiting_broadcast_test_confirm = State()
     waiting_broadcast_peak_confirm = State()
     waiting_user_query = State()
+    waiting_user_message = State()
     waiting_user_limit = State()
     waiting_user_tts_limit = State()
     waiting_user_image_limit = State()

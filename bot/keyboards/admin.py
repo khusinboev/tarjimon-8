@@ -38,6 +38,7 @@ def admin_user_actions_keyboard() -> ReplyKeyboardMarkup:
     """Tanlangan foydalanuvchi ustida amallar."""
     return ReplyKeyboardMarkup(
         keyboard=[
+            [KeyboardButton(text="✉️ Xabar yuborish")],
             [
                 KeyboardButton(text="🚫 Bloklash"),
                 KeyboardButton(text="✅ Blokdan chiqarish"),
