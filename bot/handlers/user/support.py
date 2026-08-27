@@ -12,6 +12,15 @@ aniqlaydi. Har bir yetkazilgan xabar uchun ikki uchdagi `message_id`
 Ip topilmasa `SkipHandler` bilan keyingi handlerlarga o'tkaziladi: oddiy
 reply bo'lsa matn odatdagidek tarjima qilinishi kerak.
 
+**2026-08-27 qo'shimcha — "↩️ Javob yozish" tugmasi.** Telegram
+`message.reply_to_message`ni ESKI xabarlar uchun har doim ham
+uzatavermaydi (hujjatlashtirilgan cheklovdan qat'i nazar, amalda bir
+necha soatdan keyin kuzatilgan haqiqiy voqea) — shu holatda reply
+mexanizmining O'ZI ishlamay qoladi. Shuning uchun har bir murojaat
+sarlavhasida tugma bor: bosilsa, `admin_reply_targets`ga (FSM EMAS,
+oddiy DB qatori, muddatsiz) "tanlangan suhbat" yoziladi — reply ishlamasa
+ham, KEYINGI oddiy xabar shu foydalanuvchiga boradi (bir martalik).
+
 Har qanday tur uzatiladi — rasm, video, ovoz, hujjat, stiker. Buning uchun
 `copy_message` ishlatiladi: media qayta yuklanmaydi, Telegram faylni o'zida
 ko'chiradi. Har bir uzatishda ikki xabar ketadi — kim yozgani haqida
@@ -34,13 +43,14 @@ from aiogram import F, Router
 from aiogram.dispatcher.event.bases import SkipHandler
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
-from aiogram.types import Message
+from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config.settings import settings
 from bot.database.models import User
 from bot.database.redis import atomic_rate_incr
 from bot.database.repositories.support_repository import SupportRepository
+from bot.keyboards.inline import support_reply_keyboard
 from bot.keyboards.user import cancel_menu, main_menu
 from bot import locales
 from bot.locales import CANCEL_BUTTONS, CONTACT_BUTTONS, RESERVED_BUTTONS
@@ -133,7 +143,9 @@ def _describe(message: Message) -> str:
     return "[xabar]"
 
 
-async def _deliver(message: Message, to_chat_id: int, header: str) -> tuple[int, int | None]:
+async def _deliver(
+    message: Message, to_chat_id: int, header: str, *, header_markup=None
+) -> tuple[int, int | None]:
     """Sarlavha + kontent nusxasini yuboradi. `(sarlavha_id, nusxa_id)`.
 
     `copy_message` har qanday turni ko'chiradi — rasm, video, ovoz, hujjat,
@@ -142,8 +154,11 @@ async def _deliver(message: Message, to_chat_id: int, header: str) -> tuple[int,
     Ba'zi turlarni ko'chirib bo'lmaydi (masalan so'rovnoma). O'shanda faqat
     sarlavha ketadi va ikkinchi qiymat `None` bo'ladi — chaqiruvchi buni
     ko'rib foydalanuvchiga xabar beradi.
+
+    `header_markup` — faqat ADMINGA yuborilganda beriladi ("↩️ Javob
+    yozish" tugmasi); foydalanuvchiga yuborilgan javobda kerak emas.
     """
-    head = await message.bot.send_message(to_chat_id, header)
+    head = await message.bot.send_message(to_chat_id, header, reply_markup=header_markup)
     try:
         copied = await message.bot.copy_message(
             chat_id=to_chat_id,
@@ -194,6 +209,28 @@ def _extract_target_id(message: Message | None) -> int | None:
     return int(found.group(1)) if found else None
 
 
+# Admin paneli tugmalari (`bot/keyboards/admin.py`dagi barcha `text=...`
+# qiymatlari). `admin_reply`dagi pin-fallback (`get_pinned_target`) UCHUN
+# kerak: agar admin oldin "↩️ Javob yozish" tugmasini bosib UNUTGAN
+# bo'lsa-yu, keyin panelda "📤 Reklama" kabi tugmani bossa, shu tugma
+# matni tasodifan pin qilingan foydalanuvchiga "javob" sifatida ketib
+# qolmasligi kerak. Yangi tugma qo'shilsa shu ro'yxatga ham qo'shing.
+_ADMIN_PANEL_BUTTONS = frozenset(
+    {
+        "📜 Audit", "⛔ Bekor qilish", "✅ Blokdan chiqarish", "🚫 Bloklash",
+        "🔁 Boshqa xabar", "▶️ Davom ettirish", "📨 Forward xabar yuborish",
+        "👤 Foydalanuvchilar", "✅ Ha, baribir yubor", "🚀 Ha, hammaga yuborilsin",
+        "🔧 Kanallar", "📋 Kanallar ro'yxati", "❌ Kanalni olib tashlash",
+        "➕ Kanal qo'shish", "♻️ Limitni tozalash", "🔢 Limit o'rnatish",
+        "✏️ Matn limiti", "📬 Oddiy xabar yuborish", "🔙 Orqaga",
+        "✏️ Ovoz limiti", "🔊 Ovoz limiti", "🔇 Ovoz limitini tozalash",
+        "⏸ Pauza", "🔍 Qidirish", "✏️ Rasm (bepul)", "🖼 Rasm limiti",
+        "🚫 Rasm limitini tozalash", "✏️ Rasm (VIP)", "📤 Reklama",
+        "📊 Statistika", "🗂 Tarix", "⚙️ Umumiy limitlar", "🔄 Yangilash",
+    }
+)
+
+
 def _is_reserved(message: Message) -> bool:
     """Menyu tugmasi yoki buyruqmi.
 
@@ -201,7 +238,7 @@ def _is_reserved(message: Message) -> bool:
     "🌐 Tillar" bosganda u adminga ketib qolmasin.
     """
     text = message.text or ""
-    return text.startswith("/") or text in RESERVED_BUTTONS
+    return text.startswith("/") or text in RESERVED_BUTTONS or text in _ADMIN_PANEL_BUTTONS
 
 
 @router.message(F.text.in_(CONTACT_BUTTONS))
@@ -285,12 +322,13 @@ async def receive_message(
     )
 
     header = _admin_view(user)
+    header_markup = support_reply_keyboard(user.id)
     support = SupportRepository(session)
     delivered = 0
 
     for admin_id in settings.ADMIN_USER_IDS:
         try:
-            head_id, copy_id = await _deliver(message, admin_id, header)
+            head_id, copy_id = await _deliver(message, admin_id, header, header_markup=header_markup)
             delivered += 1
             # Ikkala xabar ham ipga bog'lanadi — admin qaysi biriga reply
             # qilsa ham suhbat topilishi kerak.
@@ -325,6 +363,37 @@ def _is_admin(telegram_id: int) -> bool:
     return telegram_id in settings.ADMIN_USER_IDS
 
 
+@router.callback_query(
+    F.data.startswith("sup:pick:"),
+    F.from_user.func(lambda u: u and _is_admin(u.id)),
+)
+async def pick_reply_target(callback: CallbackQuery, session: AsyncSession) -> None:
+    """"↩️ Javob yozish" tugmasi — Telegram reply-havolasi ishlamay qolsa
+    ham (izoh: `admin_reply`) ishlaydigan zaxira yo'l.
+
+    Bosilgach shu suhbat "tanlangan" deb DB'ga yoziladi (FSM emas,
+    muddatsiz) — keyingi oddiy xabar (reply bo'lmasa ham) o'shanga boradi.
+    """
+    try:
+        target_user_id = int(callback.data.split(":")[2])
+    except (IndexError, ValueError):
+        await callback.answer("Xato.", show_alert=True)
+        return
+
+    support = SupportRepository(session)
+    target = await support.find_user_by_id(target_user_id)
+    if target is None:
+        await callback.answer("Foydalanuvchi topilmadi.", show_alert=True)
+        return
+
+    await support.set_pinned_target(callback.from_user.id, target_user_id)
+    name = target.first_name or (f"@{target.username}" if target.username else str(target.telegram_id))
+    await callback.answer()
+    await callback.message.answer(
+        f"↩️ Endi <b>{html_escape(name)}</b>ga yozyapsiz — keyingi xabaringiz shunga yuboriladi."
+    )
+
+
 # FSM holati bo'yicha filtr ataylab YO'Q, garchi u tabiiy ko'rinsa ham.
 #
 # `StateFilter(None)` qo'yilganda quyidagi xavf tug'ilardi: admin xabar
@@ -335,34 +404,54 @@ def _is_admin(telegram_id: int) -> bool:
 # Ajratuvchi belgi — holat emas, **reply qilingan xabarning o'zi**: u
 # `support_messages` da topilsa, admin aniq javob yozyapti. Topilmasa
 # `SkipHandler` bilan odatdagi oqimga qaytaramiz.
-@router.message(
-    F.reply_to_message,
-    F.from_user.func(lambda u: u and _is_admin(u.id)),
-)
+#
+# DIQQAT (2026-08-27 haqiqiy voqea): Telegram `reply_to_message`ni ESKI
+# xabarlar uchun har doim ham UZATAVERMAYDI (hujjatlashtirilgan
+# cheklovdan qat'i nazar, amalda bir necha soatdan keyin kuzatilgan) —
+# shu holatda `F.reply_to_message` FILTRINING O'ZI mos kelmay qoladi,
+# xabar to'g'ridan-to'g'ri `translate.py`ga tushib, oddiy tarjima
+# sifatida ishlanib ketardi. Shuning uchun filtr ENDI reply talab
+# qilmaydi — o'rniga, reply orqali topilmasa, "↩️ Javob yozish" tugmasi
+# bilan TANLANGAN (pin qilingan) suhbatga tekshiriladi (pastda).
+@router.message(F.from_user.func(lambda u: u and _is_admin(u.id)))
 async def admin_reply(
     message: Message,
     session: AsyncSession,
     events: EventService,
     session_id,
+    state: FSMContext,
 ) -> None:
-    """Admin murojaat xabariga reply qilsa — javob foydalanuvchiga boradi.
+    """Admin murojaat xabariga reply qilsa (yoki oldin "↩️ Javob yozish"
+    tugmasini bosgan bo'lsa) — javob foydalanuvchiga boradi.
 
     Har qanday tur uzatiladi: matn, rasm, ovoz, hujjat.
     """
     support = SupportRepository(session)
-
-    # 1. Sarlavhadagi ID — asosiy yo'l, eski xabarlarda ham ishlaydi.
     target = None
-    target_id = _extract_target_id(message.reply_to_message)
-    if target_id is not None:
-        target = await support.find_user(target_id)
 
-    # 2. Zaxira: admin kontent nusxasiga reply qilgan bo'lsa sarlavha yo'q.
+    if message.reply_to_message is not None:
+        # 1. Sarlavhadagi ID — asosiy yo'l, eski xabarlarda ham ishlaydi
+        #    (Telegram reply-havolasini uzatgan taqdirda).
+        target_id = _extract_target_id(message.reply_to_message)
+        if target_id is not None:
+            target = await support.find_user(target_id)
+
+        # 2. Zaxira: admin kontent nusxasiga reply qilgan bo'lsa sarlavha yo'q.
+        if target is None:
+            thread = await support.by_admin_message(
+                message.chat.id, message.reply_to_message.message_id
+            )
+            target = thread.user if thread else None
+
     if target is None:
-        thread = await support.by_admin_message(
-            message.chat.id, message.reply_to_message.message_id
-        )
-        target = thread.user if thread else None
+        # 3. Reply umuman yo'q (yoki topilmadi) — "↩️ Javob yozish" tugmasi
+        # bilan tanlangan suhbatga tekshiramiz. FAQAT admin boshqa hech
+        # qanday holatda (tarqatish, kanal qo'shish, limit kiritish va h.k.)
+        # bo'lmasa va bu menyu tugmasi/buyruq bo'lmasa — aks holda admin
+        # panelidagi matn kiritishlarni yoki o'zining oddiy tarjimalarini
+        # ushlab qolgan bo'lardik.
+        if await state.get_state() is None and not _is_reserved(message):
+            target = await support.get_pinned_target(message.chat.id)
 
     if target is None:
         raise SkipHandler
@@ -453,11 +542,12 @@ async def user_reply(
         return
 
     header = _admin_view(user, is_reply=True)
+    header_markup = support_reply_keyboard(user.id)
     delivered = 0
 
     for admin_id in settings.ADMIN_USER_IDS:
         try:
-            head_id, copy_id = await _deliver(message, admin_id, header)
+            head_id, copy_id = await _deliver(message, admin_id, header, header_markup=header_markup)
             delivered += 1
             for admin_message_id in (head_id, copy_id):
                 if admin_message_id is None:

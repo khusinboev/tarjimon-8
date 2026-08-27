@@ -622,6 +622,33 @@ class SupportMessage(Base):
     )
 
 
+class AdminReplyTarget(Base):
+    """Admin "↩️ Javob yozish" tugmasini bosganda TANLAGAN suhbat.
+
+    Nega kerak: `SupportMessage.admin_message_id` orqali topish
+    `message.reply_to_message`ga tayanadi — Telegram esa buni ESKI
+    xabarlar uchun (amalda bir necha soatdan keyin, hujjatlashtirilgan
+    limitdan qat'i nazar) UZATMASLIGI mumkin, shunda javob oddiy
+    tarjima sifatida ketib qolardi (2026-08-27 haqiqiy voqea). Shuning
+    uchun har bir murojaat sarlavhasida tugma bor — bosilsa, reply
+    ishlamasa ham, KEYINGI oddiy xabar shu foydalanuvchiga boradi.
+
+    FSM EMAS — oddiy DB qatori, muddatsiz saqlanadi (foydalanilgach
+    o'zi tozalanadi, vaqt bo'yicha emas). Har bir admin uchun bitta
+    qator (`admin_chat_id` — PK): yangi tanlov eskisini almashtiradi.
+    """
+
+    __tablename__ = "admin_reply_targets"
+
+    admin_chat_id = Column(BigInteger, primary_key=True)
+    target_user_id = Column(
+        BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    set_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    target_user = relationship("User")
+
+
 class Donation(Base):
     """Telegram Stars orqali homiylik.
 

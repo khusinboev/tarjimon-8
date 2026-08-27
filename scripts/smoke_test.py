@@ -1841,6 +1841,82 @@ async def test_support_thread_lazy_load() -> None:
         await session.commit()
 
 
+async def test_admin_reply_pin() -> None:
+    """"↩️ Javob yozish" tugmasi — Telegram `reply_to_message`ni ESKI
+    xabarlar uchun har doim ham uzatavermasligi (2026-08-27 haqiqiy
+    voqea) sabab qo'shilgan zaxira yo'l. FSM EMAS — oddiy DB qatori,
+    muddatsiz, faqat ISHLATILGANDA o'chadi.
+
+    Har bosqich ALOHIDA sessiyada (ishlab turgan botdagi kabi — bitta
+    so'rov = bitta sessiya) — `AsyncSessionLocal` `autoflush=False` bilan
+    sozlangani uchun bitta sessiya ichida ketma-ket chaqiruv `delete()`ni
+    hali bazaga yubormasdan "eski" natijani ko'rsatishi mumkin edi, bu esa
+    haqiqiy oqimni noto'g'ri aks ettirardi.
+    """
+    print("\n[16d] Admin javob-nishoni (pin) — reply ishlamasa ham")
+    from sqlalchemy import delete
+
+    from bot.database.models import AdminReplyTarget, User, UserSettings
+    from bot.database.repositories.support_repository import SupportRepository
+
+    admin_chat_id = 777777001
+    async with AsyncSessionLocal() as session:
+        repo = UserRepository(session)
+        user, _ = await repo.get_or_create(TEST_TELEGRAM_ID + 51, first_name="PinTarget")
+        other, _ = await repo.get_or_create(TEST_TELEGRAM_ID + 52, first_name="PinTarget2")
+        await session.commit()
+        user_id, other_id = user.id, other.id
+
+    async with AsyncSessionLocal() as session:
+        support = SupportRepository(session)
+        check("boshida pin yo'q", await support.get_pinned_target(admin_chat_id) is None)
+
+        found_by_id = await support.find_user_by_id(user_id)
+        check(
+            "ichki id bo'yicha topiladi (tugma shuni ishlatadi)",
+            found_by_id is not None and found_by_id.telegram_id == user.telegram_id,
+        )
+
+        await support.set_pinned_target(admin_chat_id, user_id)
+        await session.commit()
+
+    async with AsyncSessionLocal() as session:
+        pinned = await SupportRepository(session).get_pinned_target(admin_chat_id)
+        check("pin o'rnatilgach topiladi", pinned is not None and pinned.id == user_id, str(pinned))
+        await session.commit()
+
+    # Bir martalik: OLDINGI so'rov PIN'ni allaqachon o'chirgan — keyingi
+    # (yangi) so'rov bo'sh qaytishi kerak, aks holda admin bitta tugma
+    # bosib, cheksiz keyingi xabarlarini ham shu userga yuborib yuborardi.
+    async with AsyncSessionLocal() as session:
+        check(
+            "pin bir martalik — ishlatilgach o'chadi",
+            await SupportRepository(session).get_pinned_target(admin_chat_id) is None,
+        )
+
+    # Qayta pin qilib, keyin BOSHQA userga qayta pin qilish eskisini
+    # almashtirishi kerak (bitta admin — bitta faol nishon).
+    async with AsyncSessionLocal() as session:
+        support = SupportRepository(session)
+        await support.set_pinned_target(admin_chat_id, user_id)
+        await support.set_pinned_target(admin_chat_id, other_id)
+        await session.commit()
+
+    async with AsyncSessionLocal() as session:
+        pinned2 = await SupportRepository(session).get_pinned_target(admin_chat_id)
+        check(
+            "qayta pin eskisini almashtiradi", pinned2 is not None and pinned2.id == other_id,
+            str(pinned2),
+        )
+        await session.commit()
+
+    async with AsyncSessionLocal() as session:
+        await session.execute(delete(AdminReplyTarget).where(AdminReplyTarget.admin_chat_id == admin_chat_id))
+        await session.execute(delete(UserSettings).where(UserSettings.user_id.in_([user_id, other_id])))
+        await session.execute(delete(User).where(User.id.in_([user_id, other_id])))
+        await session.commit()
+
+
 async def test_support_parsing() -> None:
     """Murojaat sarlavhasidan foydalanuvchi ID'sini va kontent turini ajratish.
 
@@ -2046,6 +2122,7 @@ async def main() -> None:
     await test_stats()
     await test_support_thread_lookup()
     await test_support_thread_lazy_load()
+    await test_admin_reply_pin()
     await test_support_parsing()
     await test_content_extraction()
 
