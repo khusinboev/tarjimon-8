@@ -150,20 +150,10 @@ DEVELOPER = (
 )
 
 # ── Hubungi admin ────────────────────────────────────────────
-CONTACT_PROMPT = (
-    "✉️ <b>Hubungi admin</b>\n\n"
-    "Tulis pesan Anda — pesan akan langsung sampai ke admin.\n\n"
-    "Teks, foto, video, pesan suara, dokumen — semua jenis bisa dikirim.\n\n"
-    "<i>Balasan admin akan muncul di sini. Untuk mengirim pesan lagi, ketuk "
-    "tombol \"🔁 Kirim lagi\" di bawah pesan Anda yang terkirim.</i>"
-)
+CONTACT_PROMPT = "✉️ Tulis pesan Anda."
 CONTACT_SENT = "✅ <b>Pesan Anda sudah dikirim ke admin</b>\n\nBalasannya akan muncul di sini."
 CONTACT_CANCELLED = "Dibatalkan."
 CONTACT_TOO_LONG = "📏 Pesan terlalu panjang (<b>{length}</b> karakter). Maksimum: <b>{limit}</b>."
-CONTACT_RATE_LIMITED = (
-    "⏳ Anda baru saja mengirim pesan.\n\n"
-    "Anda bisa mengirim lagi dalam <b>{minutes}</b> menit."
-)
 CONTACT_FAILED = "⚠️ Pesan tidak bisa dikirim. Coba lagi nanti."
 CONTACT_REPLY_HEADER = "✉️ <b>Balasan dari admin</b>"
 CONTACT_SEND_AGAIN_BUTTON = "🔁 Kirim lagi"

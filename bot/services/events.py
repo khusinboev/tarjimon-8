@@ -68,7 +68,6 @@ class EventType:
     # Adminga murojaat
     SUPPORT_MESSAGE_SENT = "support.message_sent"
     SUPPORT_REPLY_SENT = "support.reply_sent"
-    SUPPORT_RATE_LIMITED = "support.rate_limited"
 
     # Homiylik
     DONATE_OPENED = "donate.opened"

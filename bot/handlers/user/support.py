@@ -51,7 +51,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config.settings import settings
 from bot.database.models import User
-from bot.database.redis import atomic_rate_incr
 from bot.database.repositories.support_repository import SupportRepository
 from bot.keyboards.inline import contact_send_again_keyboard, support_reply_keyboard
 from bot.keyboards.user import cancel_menu, main_menu
@@ -63,39 +62,6 @@ from bot.utils.text import html_escape, truncate
 
 logger = logging.getLogger(__name__)
 router = Router(name="support")
-
-
-async def _rate_limited(
-    redis,
-    user_id: int,
-    *,
-    limit: int | None = None,
-    key: str = "support",
-) -> int:
-    """Limit oshgan bo'lsa qolgan daqiqalarni qaytaradi, aks holda 0.
-
-    `key` alohida hisoblagichlar uchun: yangi murojaat va suhbat ichidagi
-    javob har xil chegaraga ega bo'lishi kerak.
-
-    Redis yo'q bo'lsa cheklov ishlamaydi (fail-open) — tarjima oqimidagi
-    bilan bir xil qaror: Redis tushganda bot ishlashda davom etsin.
-    """
-    if not redis:
-        return 0
-    cap = limit if limit is not None else settings.SUPPORT_RATE_LIMIT
-    redis_key = f"{key}:{user_id}"
-    try:
-        # Atomik Lua skript orqali — alohida incr+expire orasida uzilib
-        # qolsa, kalit TTL'siz abadiy o'sib, foydalanuvchini doimiy
-        # bloklab qo'yishi mumkin edi (izoh: `atomic_rate_incr`).
-        count = await atomic_rate_incr(redis, redis_key, settings.SUPPORT_RATE_WINDOW)
-        if count > cap:
-            ttl = await redis.ttl(redis_key)
-            return max(1, (ttl + 59) // 60) if ttl and ttl > 0 else 1
-        return 0
-    except Exception:
-        logger.warning("Murojaat limitini tekshirib bo'lmadi", exc_info=True)
-        return 0
 
 
 def _admin_view(user: User) -> str:
@@ -252,7 +218,6 @@ async def receive_message(
     session_id,
     state: FSMContext,
     t: ModuleType,
-    redis=None,
 ) -> None:
     described = _describe(message)
     text = (message.text or message.caption or "").strip()
@@ -262,20 +227,6 @@ async def receive_message(
             t.CONTACT_TOO_LONG.format(
                 length=len(text), limit=settings.SUPPORT_MAX_CHARS
             )
-        )
-        return
-
-    minutes = await _rate_limited(redis, user.id)
-    if minutes:
-        await events.log(
-            EventType.SUPPORT_RATE_LIMITED,
-            user_id=user.id,
-            chat_id=message.chat.id,
-            session_id=session_id,
-        )
-        await state.clear()
-        await message.answer(
-            t.CONTACT_RATE_LIMITED.format(minutes=minutes), reply_markup=main_menu(t)
         )
         return
 
@@ -500,4 +451,9 @@ async def admin_reply(
         raise SkipHandler
 
     ok, reply_text = await deliver_admin_message(message, session, events, session_id, target)
-    await message.reply(reply_text)
+    # Muvaffaqiyatli bo'lsa "↩️ Javob yozish"ni qayta ko'rsatamiz — admin
+    # xuddi shu suhbatni davom ettirish uchun murojaat sarlavhasigacha
+    # yuqoriga qaytmasin, shu yerdan bittasi bosilsa yetarli.
+    await message.reply(
+        reply_text, reply_markup=support_reply_keyboard(target.id) if ok else None
+    )

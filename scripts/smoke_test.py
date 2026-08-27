@@ -103,7 +103,6 @@ async def test_locales() -> None:
             t.WELCOME.format(name="X", source="A", target="B")
             t.HELP.format(limit=50, admin="someone")
             t.CONTACT_TOO_LONG.format(length=10, limit=5)
-            t.CONTACT_RATE_LIMITED.format(minutes=7)
             t.TOO_LONG.format(length=10, limit=5)
             t.QUOTA_EXCEEDED.format(limit=50)
             t.LANG_SWAPPED.format(source="A", target="B")
@@ -1290,11 +1289,11 @@ async def test_keyboards() -> None:
 
 
 async def test_support() -> None:
-    """Adminga murojaat: matn tayyorlash va spam cheklovi."""
+    """Adminga murojaat: matn tayyorlash (sarlavha)."""
     print("\n[12] Adminga murojaat")
     from types import SimpleNamespace
 
-    from bot.handlers.user.support import _admin_view, _rate_limited
+    from bot.handlers.user.support import _admin_view
 
     # Foydalanuvchi matnidagi HTML buzmasligi kerak: `<` bo'lsa Telegram
     # xabarni butunlay rad etadi va murojaat adminga yetmasdi.
@@ -1317,32 +1316,6 @@ async def test_support() -> None:
         username=None, first_name=None, telegram_id=9, telegram_lang=None
     )
     check("username/ism yo'q bo'lsa ham ishlaydi", "—" in _admin_view(anon))
-
-    # Redis yo'q — cheklov fail-open (tarjima oqimidagi bilan bir xil qaror).
-    check("redis yo'q bo'lsa cheklov o'tkazadi", await _rate_limited(None, 1) == 0)
-
-    # Redis bilan: limitdan keyin qolgan daqiqa qaytadi.
-    try:
-        from bot.database.redis import get_redis
-
-        client = get_redis()
-        await client.ping()
-    except Exception:
-        print("  ⏭  Redis yo'q — cheklov sinovi o'tkazib yuborildi")
-        return
-
-    uid = 999_111_222
-    await client.delete(f"support:{uid}")
-    allowed = [await _rate_limited(client, uid) for _ in range(settings.SUPPORT_RATE_LIMIT)]
-    check(
-        f"birinchi {settings.SUPPORT_RATE_LIMIT} murojaat o'tadi",
-        all(x == 0 for x in allowed),
-        str(allowed),
-    )
-    blocked = await _rate_limited(client, uid)
-    check("keyingisi cheklanadi", blocked > 0, f"{blocked} daqiqa")
-    await client.delete(f"support:{uid}")
-    await client.aclose()
 
 
 async def test_donate(user_id: int) -> None:

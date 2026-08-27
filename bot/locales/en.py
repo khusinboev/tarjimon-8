@@ -151,20 +151,10 @@ DEVELOPER = (
 )
 
 # ── Contact admin ────────────────────────────────────────────
-CONTACT_PROMPT = (
-    "✉️ <b>Contact admin</b>\n\n"
-    "Write your message — it goes straight to the admin.\n\n"
-    "Text, photo, video, voice message, document — any type works.\n\n"
-    "<i>The admin's answer arrives here. To send another message, tap the "
-    "\"🔁 Send again\" button under your sent message.</i>"
-)
+CONTACT_PROMPT = "✉️ Write your message."
 CONTACT_SENT = "✅ <b>Your message was sent to the admin</b>\n\nThe answer will arrive here."
 CONTACT_CANCELLED = "Cancelled."
 CONTACT_TOO_LONG = "📏 The message is too long (<b>{length}</b> characters). Maximum: <b>{limit}</b>."
-CONTACT_RATE_LIMITED = (
-    "⏳ You sent a message recently.\n\n"
-    "You can send the next one in <b>{minutes}</b> minutes."
-)
 CONTACT_FAILED = "⚠️ Could not send the message. Please try again later."
 CONTACT_REPLY_HEADER = "✉️ <b>Reply from the admin</b>"
 CONTACT_SEND_AGAIN_BUTTON = "🔁 Send again"

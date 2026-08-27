@@ -3,9 +3,8 @@ qolishi) haqida Telegram orqali xabar berish.
 
 Bir xil muammo har so'rovda emas — `COOLDOWN_SECONDS` oralig'ida FAQAT BIR
 MARTA yuboriladi (Redis'dagi `NX` — faqat mavjud bo'lmasa yoz — bayrog'i
-bilan, `support.py`dagi `_rate_limited()` bilan bir xil naqsh). Aks holda
-minglab tarjima so'rovi bitta tugagan kvota haqida minglab xabar
-yuborardi.
+bilan). Aks holda minglab tarjima so'rovi bitta tugagan kvota haqida
+minglab xabar yuborardi.
 
 Redis mavjud bo'lmasa (masalan test muhitida) — dedup o'tkazib yuboriladi,
 xabar baribir jo'natiladi: bu yerda "ko'rinmaslik" xavfi "spam" xavfidan
