@@ -424,7 +424,10 @@ async def deliver_admin_message(
 
     try:
         head_id, copy_id = await _deliver(
-            message, target.telegram_id, reply_locale.CONTACT_REPLY_HEADER
+            message,
+            target.telegram_id,
+            reply_locale.CONTACT_REPLY_HEADER,
+            header_markup=contact_send_again_keyboard(reply_locale),
         )
     except Exception:
         logger.warning("Admin xabari yetmadi (user_id=%s)", target.id, exc_info=True)
