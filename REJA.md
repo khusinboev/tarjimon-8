@@ -1,283 +1,153 @@
-# Tarjimon-8 — Qayta qurish rejasi
+# Tarjimon-8 — Barqarorlashtirish rejasi
 
-> Holat: **muhokama bosqichi**. Kod yozilmagan.
-> Sana: 2026-07-29
-
----
-
-## 0. Nimadan boshlaymiz — hozirgi manzara
-
-| | Holat |
-|---|---|
-| Ishlab turgan bot | `tarjimon4` → `t4.service` (server 23.94.2.204) |
-| Haqiqiy userlar | **37,430** unikal (PG 34,606 + SQLite 4,298, ustma-ust 1,474) |
-| Tarjimalar | 155,675 (PG 96,427 + SQLite 59,248) |
-| Oylik faol user | ~1,450 |
-| Oylik tarjima | ~25,000 |
-| Kritik nosozlik | `.env` da `DBTYPE=True` → SQLite fallback, PG 2026-04-29 dan muzlagan |
-| O'lik kod | ~4,000 qator (lug'atlar, gamification, timetable) — `main.py` da ulanmagan |
-
-**Eng shoshilinch:** har kuni ma'lumot ikkiga bo'linib ketyapti.
+> Holat: **tasdiqlangan, bajarilmagan**
+> Sana: 2026-08-31
+> Asos: jonli serverdagi loglar va bazadagi 194,741 ta tarjima yozuvi tahlili
+> (taxmin emas — har bir band quyidagi dalillarga tayanadi)
 
 ---
 
-## 1. Arxitektura qarori
+## 0. Dalillar — muammo qayerda
 
-**Asos:** `tarjimon-8` (shu repo) — aiogram 3 + SQLAlchemy 2.0 async + asyncpg + Alembic + Redis.
+### 0.1 Tarjima xatolari (kunlik ulush, `translations` jadvali)
 
-**Nima olinadi:**
-- `tarjimon-8` dan: skelet, admin panel, broadcast, majburiy obuna, analytics middleware
-- `tarjimon4` dan: **faqat biznes mantiq** (kod ko'chirilmaydi, qayta yoziladi)
-- `tarjimon7` dan: mini app va admin panel g'oyalari (agar kerak bo'lsa)
-
-**Nima tashlanadi:** sync psycopg2, `DBTYPE` flagi, SQLite fallback, migratsiyasiz `CREATE TABLE`, o'lik kod.
-
-**Qatlamlar:**
-```
-handlers/  → faqat Telegram I/O, biznes mantiq yo'q
-services/  → biznes mantiq (tarjima, limit, obuna)
-repositories/ → DB so'rovlari
-database/models.py → SQLAlchemy modellar + Alembic
-```
-
----
-
-## 2. Tarjima dvigateli — model tanlash
-
-Hozir: `googletrans` + `deep-translator` (bepul, lekin `NoneType has no attribute 'lower'` xatosi kuniga bir necha marta).
-
-### Variant A — Gibrid (tavsiya) 💡
-
-| Matn turi | Model | Narx (1M token) |
+| Sana | Xato % | Izoh |
 |---|---|---|
-| Qisqa matn (<200 belgi), oddiy | **Haiku 4.5** `claude-haiku-4-5` | $1 in / $5 out |
-| Uzun matn, badiiy, kontekstli | **Sonnet 5** `claude-sonnet-5` | $3 in / $15 out ($2/$10 — 2026-08-31 gacha) |
+| 17–22 avgust | 0.1–0.4% | sog'lom |
+| 23 avgust | 2.2% | boshlandi |
+| 24 avgust | **17%** | |
+| **25 avgust** | **45.6%** | har ikkinchi tarjima yiqilgan |
+| 26 avgust | 4.3% | Google kvotasi yangilandi |
+| 27–28 avgust | 0% | Google ishlayapti |
+| 29–30 avgust | 3–4% | Google tugadi → Gemini + deep_translator |
+| 31 avgust | 0.6% | Gemini'ga to'lov qilingandan keyin |
 
-**Oylik xarajat hisobi** (25,000 tarjima × ~200 token):
+**30 kunda 874 ta foydalanuvchi xato olgan** (`provider_error` 874, `empty_result` 40,
+`provider_blocked` 27; `events` jadvalida `translate.failed` — 942).
 
-| Model | Oylik |
-|---|---|
-| Faqat Haiku 4.5 | ~$15 |
-| Gibrid (80% Haiku / 20% Sonnet) | ~$18 |
-| Faqat Sonnet 5 | ~$30 (intro narx) |
-| Faqat Opus 5 | ~$75 |
+**Eng muhim xulosa:** 25-avgustdagi 45% falokat paytida **hech qanday ogohlantirish
+kelmagan**, chunki mavjud signal faqat "uchala daraja ham yiqildi" holatini ushlaydi —
+deep_translator "ishlagan" bo'lsa, tizim buni muvaffaqiyat deb hisoblaydi.
 
-Prompt caching bilan tizim promptining narxi ~90% tushadi.
+### 0.2 Kechikish (7 kun, `latency_ms`)
 
-### Variant B — Faqat Opus 5
-Eng yuqori sifat (`claude-opus-5`, $5/$25). Badiiy va nozik tarjima uchun eng yaxshisi, lekin oddiy "salom" tarjimasi uchun ortiqcha.
-
-### Variant C — Bepul + AI zaxira
-`deep-translator` asosiy, xato bo'lsa Claude'ga o'tadi. Deyarli bepul, lekin sifat past va hozirgi xatolar saqlanadi.
-
-**Mening tavsiyam: Variant A.** Sifat sezilarli oshadi, oyiga ~$18 — 37k userli bot uchun arzimas. Lekin bu sizning qaroringiz — Opus 5 ni tanlasangiz ham hisob-kitob yuqorida.
-
-> ⬜ **BELGILANG:** A / B / C
-
----
-
-## 3. USER PANEL — funksiyalar ro'yxati
-
-Belgilar: ✅ hozir ishlaydi · 💀 kod bor, ulanmagan · 🔨 "tez orada" stub · ➖ umuman yo'q
-
-`[x]` = mening tavsiyam. O'zgartiring.
-
-### A. Yadro tarjima
-
-| | Funksiya | tarjimon4 | Mehnat |
+| Provayder | o'rtacha | p50 | p95 |
 |---|---|---|---|
-| `[x]` | Matn tarjimasi (asosiy oqim) | ✅ | S |
-| `[x]` | Avto til aniqlash | ✅ | S |
-| `[x]` | Tarjima natijasini nusxalash tugmasi | ➖ | XS |
-| `[x]` | Qayta tarjima / muqobil variant | ➖ | S |
-| `[ ]` | Tarjimani tushuntirish (nega shunday) — AI bonus | ➖ | S |
-| `[ ]` | Grammatika tuzatish rejimi | ➖ | M |
+| cache | 1 ms | 0 ms | 5 ms |
+| google_translate | 360 ms | 187 ms | 1,179 ms |
+| gemini | 1,384 ms | 614 ms | 6,305 ms |
+| **deep_translator** | **3,956 ms** | 1,379 ms | **17,202 ms** |
 
-### B. Kirish turlari
+Zaxiraga tushgan foydalanuvchi p95 da **17 soniya** kutadi.
 
-| | Funksiya | tarjimon4 | Mehnat |
-|---|---|---|---|
-| `[x]` | Matn | ✅ | — |
-| `[x]` | Ovozli xabar → matn → tarjima (STT) | 🔨 stub | M |
-| `[x]` | Rasm → OCR → tarjima | 🔨 stub | M |
-| `[ ]` | Hujjat (PDF/DOCX) tarjimasi | 🔨 stub | L |
-| `[ ]` | Video subtitr | ➖ | XL |
-| `[ ]` | Forward qilingan xabarni tarjima | ➖ | XS |
+### 0.3 Ushlanmagan istisnolar (~20 soatda 10 ta)
 
-> Ovoz va rasm — userlar eng ko'p so'raydigan, lekin hozir "tez orada" deb javob beradigan ikkita narsa.
+Global `@dp.error` handler **yo'q** → istisno faqat log'ga tushadi,
+**foydalanuvchi hech qanday javob olmaydi** (bot "jim qoladi").
 
-### C. Chiqish
-
-| | Funksiya | tarjimon4 | Mehnat |
-|---|---|---|---|
-| `[x]` | Matn javob | ✅ | — |
-| `[x]` | TTS — tarjimani ovozda eshitish | 💀 jadval bor | M |
-| `[x]` | Uzun matnni bo'lib yuborish | ✅ | — |
-| `[ ]` | Transliteratsiya (kiril ↔ lotin) | ➖ | S |
-| `[ ]` | Talaffuz ko'rsatish | ➖ | S |
-
-### D. Til boshqaruvi
-
-| | Funksiya | tarjimon4 | Mehnat |
-|---|---|---|---|
-| `[x]` | Til tanlash (21 til bor) | ✅ | S |
-| `[x]` | Tillarni almashtirish (swap) | ➖ | XS |
-| `[x]` | Oxirgi ishlatilgan tillar | ➖ | S |
-| `[ ]` | Til juftliklarini saqlash (preset) | ➖ | S |
-| `[ ]` | Interfeys tilini alohida tanlash | qisman | S |
-
-### E. Tarix va sevimlilar
-
-| | Funksiya | tarjimon4 | Mehnat |
-|---|---|---|---|
-| `[x]` | Tarjimalar tarixi | ✅ `/history` | S |
-| `[x]` | Sevimlilar (yulduzcha) | jadvalda bor, UI yo'q | S |
-| `[x]` | Tarixdan qidirish | ➖ | S |
-| `[ ]` | Tarixni eksport (CSV/TXT) | ➖ | S |
-| `[ ]` | Tarixni tozalash | ➖ | XS |
-
-### F. Lug'at va o'rganish — **eng katta blok**
-
-`tarjimon4` da ~3,300 qator kod yozilgan, lekin **hech qachon ishga tushmagan**.
-DB da: `vocab_entries` 307 qator, `practice_sessions` 0.
-
-| | Funksiya | tarjimon4 | Mehnat |
-|---|---|---|---|
-| `[ ]` | Shaxsiy lug'at (so'z saqlash) | 💀 446 qator | M |
-| `[ ]` | Mashqlar / flashcard | 💀 373 qator | L |
-| `[ ]` | Ommaviy lug'atlar | 💀 465 qator | M |
-| `[ ]` | Essential (asosiy so'zlar) | 💀 708 qator | L |
-| `[ ]` | Parallel matnlar | 💀 894 qator | XL |
-| `[ ]` | Kun so'zi | ➖ | S |
-
-> **Ochiq savol:** bu blok kerakmi? Foydalanish statistikasi deyarli nol (307 so'z / 37k user).
-> Mening tavsiyam: **1-relizga kiritmaslik.** Avval tarjima botini mukammal qilamiz, keyin lug'atni alohida faza sifatida — agar userlar so'rasa.
-
-### G. Gamification
-
-| | Funksiya | tarjimon4 | Mehnat |
-|---|---|---|---|
-| `[ ]` | Ballar / darajalar | 💀 556 qator | M |
-| `[ ]` | Streak (ketma-ket kunlar) | 💀 | S |
-| `[ ]` | Leaderboard | 💀 SQLite'da 4,298 qator | M |
-| `[ ]` | Yutuqlar (achievements) | 💀 15 ta bor | M |
-
-> Tavsiya: **1-relizga kiritmaslik.** Tarjima boti uchun ikkinchi darajali.
-
-### H. Guruh va inline rejim
-
-| | Funksiya | tarjimon4 | Mehnat |
-|---|---|---|---|
-| `[x]` | Inline rejim (`@bot matn`) | ✅ | S |
-| `[x]` | Guruhda tarjima (35 ta guruh bor) | ✅ qisman | M |
-| `[ ]` | Guruhda avto-tarjima rejimi | ➖ | M |
-| `[ ]` | Reply qilingan xabarni tarjima | ➖ | S |
-
-### I. Sozlamalar
-
-| | Funksiya | tarjimon4 | Mehnat |
-|---|---|---|---|
-| `[x]` | Sozlamalar menyusi | ➖ | S |
-| `[x]` | Tarixni yozishni o'chirish (maxfiylik) | ➖ | XS |
-| `[ ]` | Tungi rejim / tema | ➖ | S |
-| `[ ]` | Bildirishnomalar sozlamasi | ➖ | S |
-
-### J. Mini App (Telegram WebApp)
-
-| | Funksiya | tarjimon7 | Mehnat |
-|---|---|---|---|
-| `[ ]` | Mini app tarjima oynasi | bor (ishlamagan) | L |
-| `[ ]` | Mini app tarix / sevimlilar | bor | M |
-| `[ ]` | Web admin panel | bor | L |
-
-> Tavsiya: keyingi faza. Avval bot mukammal ishlasin.
-
-### K. Limit va monetizatsiya
-
-| | Funksiya | tarjimon4 | Mehnat |
-|---|---|---|---|
-| `[x]` | Rate limiting (spam himoya) | 💀 87 qator | S |
-| `[x]` | Kunlik bepul limit | ➖ | S |
-| `[x]` | Majburiy obuna (kanal) | ✅ | — |
-| `[ ]` | Premium obuna (Telegram Stars) | ➖ | L |
-| `[ ]` | Referal tizimi | ➖ | M |
-| `[ ]` | Reklama bloklari | tarjimon7 da bor | M |
-
-> AI tarjima pullik bo'lgani uchun **kunlik limit shart** — aks holda bitta user oyiga $50 ni yeb qo'yishi mumkin.
-
-**Mehnat belgilari:** XS = 1-2 soat · S = yarim kun · M = 1-2 kun · L = 3-5 kun · XL = 1 hafta+
-
----
-
-## 4. Admin panel
-
-`tarjimon-8` da tayyor: statistika, kanal boshqaruvi, broadcast (forward/copy, progress, cancel).
-
-Qo'shiladigan:
-- `[x]` Tarjima statistikasi (til juftliklari, kunlik hajm)
-- `[ ]` AI xarajat monitoringi (token/dollar hisobi)
-- `[x]` User qidirish va bloklash
-- `[x]` Limit sozlash (kunlik bepul tarjima soni — user override)
-- `[ ]` A/B test (model taqqoslash)
-
----
-
-## 5. Ma'lumot migratsiyasi — 1-navbatdagi ish
-
-```
-SQLite (4,298 user)  ─┐
-                      ├─→ Yangi PostgreSQL (37,430 user)
-PostgreSQL (34,606)  ─┘
-```
-
-Qadamlar:
-1. Ikkala bazadan to'liq zaxira (backup)
-2. Yangi sxema Alembic bilan
-3. Migratsiya skripti: `accounts` → `users`, `translation_history` → `translations`, `user_langs` → `user_settings`
-4. Dedup: `telegram_id` bo'yicha, eng yangi `date` g'olib
-5. Tekshiruv: sonlar mos kelishi, tasodifiy 100 ta yozuv solishtirish
-6. `t4.service` to'xtatish → yangi bot ishga tushirish
-
-**Xavf:** migratsiya paytida bot to'xtaydi (~15-30 daqiqa). Kechasi qilish kerak.
-
----
-
-## 6. Bosqichlar
-
-| Faza | Nima | Muddat |
+| Joy | Istisno | Soni |
 |---|---|---|
-| **0. Ma'lumot qutqaruv** | SQLite + PG merge, backup | 1 kun |
-| **1. Yadro** | Modellar, migratsiya, /start, majburiy obuna, til tanlash | 2 kun |
-| **2. Tarjima** | AI dvigatel, matn tarjimasi, limit, cache | 2 kun |
-| **3. Kengaytirish** | Ovoz (STT), rasm (OCR), TTS, tarix, sevimlilar | 3 kun |
-| **4. Admin** | Statistika, broadcast, xarajat monitoringi | 1 kun |
-| **5. Deploy** | systemd/docker, nginx, monitoring, rollback rejasi | 1 kun |
-| **6+.** | Lug'at bloki / Mini app / Premium — alohida qaror | — |
+| `bot/handlers/user/languages.py:133` `set_language` | `TelegramBadRequest: MESSAGE_ID_INVALID` | 4 |
+| `bot/handlers/user/languages.py:196` `swap_languages` | `AttributeError: 'InaccessibleMessage' object has no attribute 'edit_text'` | 2 |
+| `bot/handlers/user/tts.py:147` `send_voice` | `TelegramBadRequest: VOICE_MESSAGES_FORBIDDEN` | 2 |
+| `bot/handlers/user/translate.py:378` `handle_photo` | `TelegramNetworkError: Request timeout` | 1 |
+| `languages.py` (edit) | `message is not modified` | 1 |
 
-Jami 1-5: **~10 ish kuni**
+### 0.4 Diagnostika teshigi
+
+Gemini xatolarining **62% (21/34)** log'da **bo'sh sabab** bilan yozilgan:
+
+```
+bot.services.translation - WARNING - gemini (kalit #0) ishlamadi:
+```
+
+Sabab: `bot/services/translation_providers.py:186` da `except aiohttp.ClientError` —
+lekin `aiohttp.ClientTimeout(total=15)` **`asyncio.TimeoutError`** ko'taradi, u
+`ClientError`ning bolasi emas. Shu sababli u yuqoridagi umumiy `except Exception`ga
+tushadi va `str(exc)` bo'sh bo'ladi. **Ya'ni nima uchun yiqilayotganini bilmayapmiz.**
+
+### 0.5 Chidamlilik
+
+- Har bir provayderda **1 tadan kalit** (Google 1, Gemini 1, Azure 0) — zaxira yo'q.
+- Transient xatoda **qayta urinish yo'q**: bitta timeout → darhol 17-soniyalik
+  deep_translator'ga tushadi.
+- `deep_translator` qisqa/noaniq matnni uddalay olmaydi
+  (masalan `"see, seen"` → `No translation was found using the current translator`).
+- `journald` ~20 soatda rotatsiya bo'lyapti — orqaga qarab tekshirib bo'lmaydi.
 
 ---
 
-## 7. Texnik qarorlar
+## P0 — Crashlar: foydalanuvchi jim qoladigan holatlar
 
-| Savol | Tavsiya |
-|---|---|
-| Polling yoki webhook? | **Webhook** — 37k user uchun tezroq, nginx allaqachon bor |
-| Deploy | **systemd** (docker-compose emas — server 1.5GB RAM, oddiyroq) |
-| Cache | **Redis** — bir xil matn qayta tarjima qilinmasin (katta tejamkorlik) |
-| FSM storage | **Redis** (hozir MemoryStorage — restart'da yo'qoladi) |
-| Loglar | `loguru` + fayl rotatsiyasi (hozir 64MB broadcast.log to'planib qolgan) |
-| Xatoliklar | Sentry yoki admin'ga Telegram orqali xabar |
-| Testlar | Kritik yo'llar uchun pytest (tarjima, limit, migratsiya) |
+> ~2 soat · eng arzon, eng ko'p foyda
+
+1. **Global `@dp.error` handler** — bitta joyda yuqoridagi 10 ta crashni qoplaydi:
+   foydalanuvchiga tushunarli xabar + adminga signal (dedup bilan).
+   *Busiz har qanday yangi xato ham jimgina yo'qoladi.*
+
+2. **`safe_edit()` yordamchisi** — `InaccessibleMessage`, `MESSAGE_ID_INVALID`,
+   `message is not modified` holatlarini ushlaydi.
+   Chaqiruv joylari atigi 7 ta: `languages.py`, `subscription.py`.
+
+3. **`answer_voice` himoyasi** (`tts.py:147`) — foydalanuvchi ovozli xabarlarni
+   yopib qo'ygan bo'lsa (`VOICE_MESSAGES_FORBIDDEN`), tushunarli javob berilsin.
+   Hozir: crash + sarflangan TTS limiti qaytarilmaydi.
+
+4. **`bot.download` timeout himoyasi** (`translate.py:378`) — rasm yuklanmasa,
+   band qilingan rasm limiti ortga qaytarilsin va xabar berilsin.
 
 ---
 
-## 8. Ochiq savollar — javob kerak
+## P1 — Tarjima ishonchliligi
 
-1. **Tarjima modeli:** Variant A (gibrid) / B (Opus 5) / C (bepul+zaxira)?
-2. **Lug'at bloki:** 1-relizga kiritamizmi yoki keyinga?
-3. **Gamification:** keraklimi?
-4. **Mini App:** keraklimi, qachon?
-5. **Kunlik bepul limit:** nechta tarjima? (masalan 50/kun bepul, keyin premium)
-6. **Bot tokeni:** eskisini ishlatamizmi (`5098772001:...`) yoki yangisini?
-7. **Domen:** `ilmda.uz` tarjimon uchun ishlatilsinmi?
+> ~3 soat · P0 dan keyin
+
+5. **`asyncio.TimeoutError` alohida ushlansin** (`translation_providers.py`) —
+   log'da aniq sabab ko'rinsin (`"timeout 15s"`).
+   *Bu birinchi bo'lishi shart: busiz 6- va 7-bandlar ko'r-ko'rona bo'ladi.*
+
+6. **Gemini'ga 1 marta qayta urinish** — transient `high demand` / timeout'da
+   darhol 17-soniyalik deep_translator'ga tushmasin.
+
+7. **Qisqa matn edge-case** — deep_translator `No translation found` bersa,
+   foydalanuvchiga xato o'rniga oqilona javob.
+
+---
+
+## P2 — Ko'rinuvchanlik
+
+> ~2 soat
+
+8. **Xato DARAJASI bo'yicha ogohlantirish** — oxirgi 15 daqiqada xato ulushi >10%
+   bo'lsa adminga xabar.
+   *Aynan shu 25-avgustdagi falokatni birinchi soatidayoq ushlagan bo'lardi.*
+
+9. **Journal saqlash muddati** — `journald` sozlamasi (hozir ~20 soat).
+
+10. **Kunlik avto-hisobot** adminga: tarjima soni, xato %, provayder taqsimoti,
+    o'rtacha kechikish, Gemini xarajati.
+
+---
+
+## P3 — Keyingi bosqichlar (alohida muhokama)
+
+Bular barqarorlashtirishdan **keyin**, alohida reja bilan:
+
+- **Monetizatsiya** — 194k tarjima, 1,982 oylik faol user, lekin jami **1 ta to'lov ($0.1)**.
+- **Amhar tili segmenti** — `en↔am` juftligi 17.6k (ru↔uz dan katta), lekin amhar
+  interfeys tili yo'q.
+- **Xarajatni kamaytirish** — 194k haqiqiy (matn, tarjima) juftligi asosida eng ko'p
+  ishlatiladigan yo'nalishlar (`en-uz`, `ru-uz`, `uz-en` — ~65k) uchun o'z modelini
+  moslashtirish.
+- **Churn tahlili** — 41,566 userdan 30% botni bloklagan, 25% akkountini o'chirgan.
+
+---
+
+## Bajarilish tartibi
+
+```
+P0 (crashlar) → P1.5 (timeout log) → P1 (ishonchlilik) → P2 (monitoring)
+```
+
+Har bir bosqichdan keyin: `scripts/smoke_test.py` (hozir 268 ta tekshiruv) →
+deploy → jonli loglarda tasdiqlash.

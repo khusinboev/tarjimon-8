@@ -15,6 +15,7 @@ from sqlalchemy.orm import selectinload
 
 from bot.database.models import AdminReplyTarget, SupportMessage, User
 from bot.services.events import utcnow
+from bot.utils.media import MediaRef
 
 
 class SupportRepository:
@@ -31,6 +32,7 @@ class SupportRepository:
         admin_message_id: int,
         user_chat_id: int,
         user_message_id: Optional[int] = None,
+        media: Optional[MediaRef] = None,
     ) -> SupportMessage:
         row = SupportMessage(
             user_id=user_id,
@@ -40,6 +42,12 @@ class SupportRepository:
             admin_message_id=admin_message_id,
             user_chat_id=user_chat_id,
             user_message_id=user_message_id,
+            media_kind=media.kind if media else None,
+            media_file_id=media.file_id if media else None,
+            media_file_unique_id=media.file_unique_id if media else None,
+            media_mime_type=media.mime_type if media else None,
+            media_file_size=media.file_size if media else None,
+            media_file_name=media.file_name if media else None,
         )
         self.session.add(row)
         await self.session.flush()

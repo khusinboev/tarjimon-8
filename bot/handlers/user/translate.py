@@ -24,6 +24,7 @@ from bot.services.referral import grant_referral_bonus
 from bot.services.system_config import get_effective_limits
 from bot.services.translation import TranslationError, TranslationService
 from bot.utils.content import extract
+from bot.utils.media import extract_media
 from bot.utils.text import chunk_html_safe, content_hash, html_escape
 
 logger = logging.getLogger(__name__)
@@ -148,6 +149,19 @@ async def _translate(
     repo = TranslationRepository(session)
     source_hash = content_hash(text, source, target)
 
+    # Manba xabarning aniq manzili va (media bo'lsa) fayl identifikatorlari.
+    # Muvaffaqiyatli va muvaffaqiyatsiz yozuvda bir xil — shuning uchun bir
+    # marta hisoblab, ikkalasiga ham beriladi.
+    media = extract_media(message)
+    source_ref = {
+        "source_message_id": message.message_id,
+        "media_file_id": media.file_id if media else None,
+        "media_file_unique_id": media.file_unique_id if media else None,
+        "media_mime_type": media.mime_type if media else None,
+        "media_file_size": media.file_size if media else None,
+        "media_file_name": media.file_name if media else None,
+    }
+
     # Yaqinda shu matn tarjima qilingan bo'lsa — foydalanuvchi natijadan qoniqmagan.
     # Bu sifat signali; uni faqat shu yerda ushlash mumkin.
     previous = await repo.find_recent_by_hash(user.id, source_hash, within_seconds=60)
@@ -174,6 +188,7 @@ async def _translate(
             chat_id=message.chat.id,
             chat_type=message.chat.type,
             input_kind=input_kind,
+            **source_ref,
             source_lang_requested=source,
             target_lang=target,
             source_text=text,
@@ -206,6 +221,7 @@ async def _translate(
         chat_id=message.chat.id,
         chat_type=message.chat.type,
         input_kind=input_kind,
+        **source_ref,
         source_lang_requested=source,
         source_lang_detected=detected,
         target_lang=target,

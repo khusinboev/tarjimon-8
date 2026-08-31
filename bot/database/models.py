@@ -191,6 +191,20 @@ class Translation(Base):
     chat_type = Column(String(20), default="private", server_default=sql_text("'private'"), nullable=False)
     input_kind = Column(String(20), default="text", server_default=sql_text("'text'"), nullable=False)
 
+    # `chat_id` bilan birga manba xabarning ANIQ manzili — keyinchalik
+    # Telegram'dagi aynan o'sha xabarga qaytib borish uchun.
+    source_message_id = Column(BigInteger)
+
+    # Media manbasi — `input_kind` matn bo'lmaganda to'ldiriladi.
+    # `media_file_id` bilan faylni qayta yuklab olish mumkin,
+    # `media_file_unique_id` esa o'zgarmas va faqat u orqali "bu bir xil
+    # faylmi?" aniqlanadi (batafsil: `bot/utils/media.py`).
+    media_file_id = Column(Text)
+    media_file_unique_id = Column(String(64))
+    media_mime_type = Column(String(128))
+    media_file_size = Column(BigInteger)
+    media_file_name = Column(Text)
+
     source_lang_requested = Column(String(10), default="auto", server_default=sql_text("'auto'"), nullable=False)
     source_lang_detected = Column(String(10))
     target_lang = Column(String(10), nullable=False)
@@ -260,6 +274,13 @@ class Translation(Base):
             "status",
             "created_at",
             postgresql_where=sql_text("status <> 'success'"),
+        ),
+        # Media bo'yicha qidirish/dedup uchun. Xuddi shu sabab bilan qisman:
+        # tarjimalarning ~99% i oddiy matn, ularda bu ustun NULL.
+        Index(
+            "idx_translations_media_unique",
+            "media_file_unique_id",
+            postgresql_where=sql_text("media_file_unique_id IS NOT NULL"),
         ),
         CheckConstraint("chat_type IN " + str(CHAT_TYPES), name="ck_translations_chat_type"),
         CheckConstraint("input_kind IN " + str(INPUT_KINDS), name="ck_translations_input_kind"),
@@ -609,6 +630,16 @@ class SupportMessage(Base):
     user_chat_id = Column(BigInteger, nullable=False)
     user_message_id = Column(BigInteger)
 
+    # Media murojaat — `text` da faqat belgi (`[🖼 rasm]`) qoladi, faylning
+    # o'zi `copy_message` bilan uzatiladi va bazaga tushmasdi. Endi fayl
+    # identifikatorlari ham yoziladi (izoh: `bot/utils/media.py`).
+    media_kind = Column(String(20))
+    media_file_id = Column(Text)
+    media_file_unique_id = Column(String(64))
+    media_mime_type = Column(String(128))
+    media_file_size = Column(BigInteger)
+    media_file_name = Column(Text)
+
     created_at = _created_at(index=True)
     meta = _meta()
 
@@ -622,6 +653,13 @@ class SupportMessage(Base):
     # 017da o'chirilgan) endi yo'q.
     __table_args__ = (
         CheckConstraint("direction IN ('in', 'out')", name="ck_support_direction"),
+        # Qisman — murojaatlarning ko'pchiligi oddiy matn (`translations`
+        # dagi bilan bir xil naqsh).
+        Index(
+            "idx_support_media_unique",
+            "media_file_unique_id",
+            postgresql_where=sql_text("media_file_unique_id IS NOT NULL"),
+        ),
     )
 
 

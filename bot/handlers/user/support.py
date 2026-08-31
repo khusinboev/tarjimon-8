@@ -58,6 +58,7 @@ from bot import locales
 from bot.locales import CANCEL_BUTTONS, CONTACT_BUTTONS, RESERVED_BUTTONS
 from bot.services.events import EventService, EventType
 from bot.states.support import SupportStates
+from bot.utils.media import extract_media
 from bot.utils.text import html_escape, truncate
 
 logger = logging.getLogger(__name__)
@@ -245,6 +246,7 @@ async def receive_message(
     header = _admin_view(user)
     header_markup = support_reply_keyboard(user.id)
     support = SupportRepository(session)
+    media = extract_media(message)
     delivered = 0
 
     for admin_id in settings.ADMIN_USER_IDS:
@@ -264,6 +266,7 @@ async def receive_message(
                     admin_message_id=admin_message_id,
                     user_chat_id=message.chat.id,
                     user_message_id=message.message_id,
+                    media=media,
                 )
         except Exception:
             # Bitta admin yetib olmasa qolganlariga yuborishda davom etamiz.
@@ -384,6 +387,7 @@ async def deliver_admin_message(
         logger.warning("Admin xabari yetmadi (user_id=%s)", target.id, exc_info=True)
         return False, "⚠️ Xabar yetkazilmadi — foydalanuvchi botni bloklagan bo'lishi mumkin."
 
+    media = extract_media(message)
     for user_message_id in (head_id, copy_id):
         if user_message_id is None:
             continue
@@ -395,6 +399,7 @@ async def deliver_admin_message(
             admin_message_id=message.message_id,
             user_chat_id=target.telegram_id,
             user_message_id=user_message_id,
+            media=media,
         )
 
     await events.log(
