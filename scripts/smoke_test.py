@@ -856,7 +856,10 @@ async def test_translation() -> None:
             # narsa qaysi biri emas, balki BIRORTASI yozilgani.
             check(
                 "provayder yozildi",
-                result.provider in ("deep_translator", "google_translate", "azure_translator", "gemini"),
+                result.provider in (
+                    "deep_translator", "google_translate", "azure_translator",
+                    "deepl", "mymemory", "gemini",
+                ),
                 result.provider,
             )
         except TranslationError as exc:
@@ -1044,8 +1047,12 @@ async def test_translation_providers() -> None:
                 seen == {"azure_translator"},
                 str(seen),
             )
-            # 5 urinishdan 3 tasi google'da yiqildi -> circuit breaker ochildi,
-            # qolgan 2 tasida google umuman nomzod bo'lmagan.
+            # Nomzodlar tartibi tasodifiy — google har safar sinalmaydi, shuning
+            # uchun breaker'ni ANIQ 3 ta ketma-ket xato bilan tekshiramiz.
+            for _ in range(3):
+                await service._attempt(
+                    "google_translate", 0, "gkey1", fake_google_fails, "salom", "auto", "en"
+                )
             check(
                 "3 ketma-ket xatodan keyin google breaker'i ochiq",
                 await service.breaker.is_open("google_translate", 0),
