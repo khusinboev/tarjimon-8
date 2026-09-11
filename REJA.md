@@ -1,6 +1,11 @@
 # Tarjimon-8 — Barqarorlashtirish rejasi
 
-> Holat: **tasdiqlangan, bajarilmagan**
+> Holat: **2026-09-11 — P0 (1–4), P1 (5–6), P2 (8) BAJARILDI va deploy qilindi.**
+> Qolgan: P1 §7 (qisqa matn edge-case), P2 §9 (journal), P2 §10 (kunlik hisobot).
+> Qo'shimcha (2026-09-11): 1-darajaga DeepL (1M/oy) va MyMemory (50k/kun,
+> past ustunlik) qo'shildi; Gemini `.env`da o'chirildi; circuit breaker
+> (`bot/services/circuit_breaker.py`) — buzilgan kalit har so'rovga 1 s
+> qo'shmaydi; xato-darajasi ogohlantirishi (`bot/services/error_rate.py`).
 > Sana: 2026-08-31
 > Asos: jonli serverdagi loglar va bazadagi 194,741 ta tarjima yozuvi tahlili
 > (taxmin emas — har bir band quyidagi dalillarga tayanadi)

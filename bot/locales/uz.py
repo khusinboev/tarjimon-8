@@ -96,6 +96,7 @@ IMAGE_QUOTA_EXCEEDED = (
 )
 IMAGE_OCR_UNAVAILABLE = "🖼 Rasmdan tarjima hozircha sozlanmoqda — tez orada ishga tushadi."
 IMAGE_OCR_FAILED = "⚠️ Rasmni o'qib bo'lmadi. Aniqroq/yorug'roq rasm bilan qayta urinib ko'ring."
+IMAGE_DOWNLOAD_FAILED = "⚠️ Rasmni yuklab olib bo'lmadi — qayta yuborib ko'ring."
 IMAGE_NO_TEXT_FOUND = "🔍 Rasmda matn topilmadi."
 
 RATE_LIMITED = "⏳ Biroz sekinroq, iltimos. Bir necha soniyadan keyin urinib ko'ring."
@@ -129,6 +130,10 @@ TTS_ERRORS = {
     "timeout": "⌛ Ovoz tayyorlanmadi — xizmat javob bermadi.",
     "no_voice": "🔇 Bu til uchun ovoz mavjud emas.",
     "too_long": "📏 Matn ovoz uchun juda uzun.",
+    "voice_forbidden": (
+        "🔇 Telegram maxfiylik sozlamalaringiz ovozli xabar qabul qilishga "
+        "ruxsat bermaydi (Sozlamalar → Maxfiylik → Ovozli xabarlar)."
+    ),
 }
 TTS_ERROR_DEFAULT = "⚠️ Ovozni tayyorlab bo'lmadi."
 

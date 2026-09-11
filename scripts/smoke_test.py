@@ -896,15 +896,19 @@ async def test_translation_providers() -> None:
 
     original_google_keys = settings.GOOGLE_TRANSLATE_API_KEYS_RAW
     original_azure_keys = settings.AZURE_TRANSLATOR_KEYS_RAW
+    original_deepl_keys = settings.DEEPL_API_KEYS_RAW
+    original_mymemory_emails = settings.MYMEMORY_EMAILS_RAW
     original_gemini_keys = settings.GEMINI_API_KEYS_RAW
     original_usage_fn = tp.provider_key_usage
     original_google_call = tp.FREE_TIER_PROVIDER_CONFIG["google_translate"]["call"]
     original_azure_call = tp.FREE_TIER_PROVIDER_CONFIG["azure_translator"]["call"]
+    original_deepl_call = tp.FREE_TIER_PROVIDER_CONFIG["deepl"]["call"]
+    original_mymemory_call = tp.FREE_TIER_PROVIDER_CONFIG["mymemory"]["call"]
     original_gemini_call = tp.CHEAP_PROVIDER_CONFIG["gemini"]["call"]
 
     usage_by_provider: dict[str, dict[int, int]] = {}
 
-    async def fake_usage(_session, provider: str) -> dict:
+    async def fake_usage(_session, provider: str, _period: str = "month") -> dict:
         return dict(usage_by_provider.get(provider, {}))
 
     async def fake_google(_text, _source, _target, api_key) -> str:
@@ -912,6 +916,12 @@ async def test_translation_providers() -> None:
 
     async def fake_azure(_text, _source, _target, api_key) -> str:
         return f"azure:{api_key}"
+
+    async def fake_deepl(_text, _source, _target, api_key) -> str:
+        return f"deepl:{api_key}"
+
+    async def fake_mymemory(_text, _source, _target, api_key) -> str:
+        return f"mymemory:{api_key}"
 
     async def fake_google_fails(_text, _source, _target, _api_key) -> str:
         raise RuntimeError("test xatosi")
@@ -925,6 +935,8 @@ async def test_translation_providers() -> None:
     tp.provider_key_usage = fake_usage
     tp.FREE_TIER_PROVIDER_CONFIG["google_translate"]["call"] = fake_google
     tp.FREE_TIER_PROVIDER_CONFIG["azure_translator"]["call"] = fake_azure
+    tp.FREE_TIER_PROVIDER_CONFIG["deepl"]["call"] = fake_deepl
+    tp.FREE_TIER_PROVIDER_CONFIG["mymemory"]["call"] = fake_mymemory
     tp.CHEAP_PROVIDER_CONFIG["gemini"]["call"] = fake_gemini
     service = TranslationService(redis=None)
 
@@ -932,14 +944,16 @@ async def test_translation_providers() -> None:
         async with AsyncSessionLocal() as session:
             settings.GOOGLE_TRANSLATE_API_KEYS_RAW = ""
             settings.AZURE_TRANSLATOR_KEYS_RAW = ""
+            settings.DEEPL_API_KEYS_RAW = ""
+            settings.MYMEMORY_EMAILS_RAW = ""
             settings.GEMINI_API_KEYS_RAW = ""
-            candidates = await service._pick_free_tier_candidates(session)
+            candidates = await service._pick_free_tier_candidates(session, "auto", "en", 5)
             check("kalit yo'q -> nomzod yo'q", candidates == [])
 
             settings.GOOGLE_TRANSLATE_API_KEYS_RAW = "gkey1,gkey2"
             settings.AZURE_TRANSLATOR_KEYS_RAW = "akey1"
             usage_by_provider.clear()
-            candidates = await service._pick_free_tier_candidates(session)
+            candidates = await service._pick_free_tier_candidates(session, "auto", "en", 5)
             names = {c[0] for c in candidates}
             check(
                 "ikkalasi ham nomzod (tekin hajmda)",
@@ -952,7 +966,7 @@ async def test_translation_providers() -> None:
             usage_by_provider["google_translate"] = {
                 0: settings.GOOGLE_TRANSLATE_FREE_MONTHLY_CHARS
             }
-            candidates = await service._pick_free_tier_candidates(session)
+            candidates = await service._pick_free_tier_candidates(session, "auto", "en", 5)
             google_pick = next(c for c in candidates if c[0] == "google_translate")
             check("bepul hajmi tugagan kalit chetlanadi", google_pick[1] == 1, str(google_pick))
 
@@ -961,7 +975,7 @@ async def test_translation_providers() -> None:
                 1: settings.GOOGLE_TRANSLATE_FREE_MONTHLY_CHARS,
             }
             usage_by_provider["azure_translator"] = {0: settings.AZURE_TRANSLATOR_FREE_MONTHLY_CHARS}
-            candidates = await service._pick_free_tier_candidates(session)
+            candidates = await service._pick_free_tier_candidates(session, "auto", "en", 5)
             check("hamma kalit tugagan -> nomzod yo'q", candidates == [])
 
             # 1-daraja (Google/Azure) tugagan, Gemini ham sozlanmagan — endi
@@ -1030,13 +1044,64 @@ async def test_translation_providers() -> None:
                 seen == {"azure_translator"},
                 str(seen),
             )
+            # 5 urinishdan 3 tasi google'da yiqildi -> circuit breaker ochildi,
+            # qolgan 2 tasida google umuman nomzod bo'lmagan.
+            check(
+                "3 ketma-ket xatodan keyin google breaker'i ochiq",
+                await service.breaker.is_open("google_translate", 0),
+            )
+            candidates = await service._pick_free_tier_candidates(session, "auto", "en", 5)
+            check(
+                "breaker ochiq kalit nomzodlar ro'yxatiga kirmaydi",
+                all(c[0] != "google_translate" for c in candidates),
+                str(candidates),
+            )
+
+            # ── DeepL: til qo'llab-quvvatlash filtri ──
+            settings.GOOGLE_TRANSLATE_API_KEYS_RAW = ""
+            settings.DEEPL_API_KEYS_RAW = "dkey1:fx"
+            names = {c[0] for c in await service._pick_free_tier_candidates(session, "auto", "en", 5)}
+            check("DeepL en uchun nomzod", "deepl" in names, str(names))
+            names = {c[0] for c in await service._pick_free_tier_candidates(session, "en", "uz", 5)}
+            check("DeepL uz uchun nomzod (2026: qo'llab-quvvatlaydi)", "deepl" in names, str(names))
+            names = {c[0] for c in await service._pick_free_tier_candidates(session, "auto", "am", 5)}
+            check("DeepL amhar uchun NOMZOD EMAS (xato ham emas)", "deepl" not in names and "azure_translator" in names, str(names))
+            check("DeepL breaker'i tegilmagan", not await service.breaker.is_open("deepl", 0))
+
+            # ── MyMemory: past ustunlik + 500 belgi chegarasi + kunlik davr ──
+            settings.MYMEMORY_EMAILS_RAW = "smoke@example.com"
+            candidates = await service._pick_free_tier_candidates(session, "auto", "en", 5)
+            check(
+                "MyMemory faqat asosiylardan KEYIN (oxirgi o'rinda)",
+                candidates and candidates[-1][0] == "mymemory"
+                and all(c[0] != "mymemory" for c in candidates[:-1]),
+                str(candidates),
+            )
+            candidates = await service._pick_free_tier_candidates(session, "auto", "en", 600)
+            check("600 belgi -> MyMemory nomzod emas", all(c[0] != "mymemory" for c in candidates), str(candidates))
+            usage_by_provider["mymemory"] = {0: settings.MYMEMORY_FREE_DAILY_CHARS}
+            candidates = await service._pick_free_tier_candidates(session, "auto", "en", 5)
+            check("MyMemory kunlik hajmi tugagan -> chetlanadi", all(c[0] != "mymemory" for c in candidates), str(candidates))
+            usage_by_provider["mymemory"] = {}
+            settings.AZURE_TRANSLATOR_KEYS_RAW = ""
+            settings.DEEPL_API_KEYS_RAW = ""
+            text_out, provider_name, key_index = await service._dispatch(session, "salom", "auto", "en")
+            check(
+                "asosiylar yo'q -> MyMemory ishlatiladi (deep_translator emas)",
+                provider_name == "mymemory" and text_out == "mymemory:smoke@example.com",
+                f"{provider_name}, {text_out}",
+            )
     finally:
         settings.GOOGLE_TRANSLATE_API_KEYS_RAW = original_google_keys
         settings.AZURE_TRANSLATOR_KEYS_RAW = original_azure_keys
+        settings.DEEPL_API_KEYS_RAW = original_deepl_keys
+        settings.MYMEMORY_EMAILS_RAW = original_mymemory_emails
         settings.GEMINI_API_KEYS_RAW = original_gemini_keys
         tp.provider_key_usage = original_usage_fn
         tp.FREE_TIER_PROVIDER_CONFIG["google_translate"]["call"] = original_google_call
         tp.FREE_TIER_PROVIDER_CONFIG["azure_translator"]["call"] = original_azure_call
+        tp.FREE_TIER_PROVIDER_CONFIG["deepl"]["call"] = original_deepl_call
+        tp.FREE_TIER_PROVIDER_CONFIG["mymemory"]["call"] = original_mymemory_call
         tp.CHEAP_PROVIDER_CONFIG["gemini"]["call"] = original_gemini_call
 
     # ── provider_key_usage: haqiqiy SUM so'rovi (xato hisoblanmasligi kerak) ──
@@ -1316,6 +1381,50 @@ async def test_support() -> None:
         username=None, first_name=None, telegram_id=9, telegram_lang=None
     )
     check("username/ism yo'q bo'lsa ham ishlaydi", "—" in _admin_view(anon))
+
+
+async def test_resilience() -> None:
+    """Circuit breaker (xotira rejimi) va xato-darajasi ogohlantirishi."""
+    print("\n[7c] Chidamlilik — circuit breaker va xato darajasi")
+    from bot.services import error_rate
+    from bot.services.circuit_breaker import FAILURE_THRESHOLD, CircuitBreaker
+
+    breaker = CircuitBreaker(redis=None)
+    opened = [await breaker.record_failure("p", 0) for _ in range(FAILURE_THRESHOLD)]
+    check("chegaragacha ochilmaydi", not any(opened[:-1]), str(opened))
+    check("chegarada ochiladi", opened[-1] is True)
+    check("ochiq holat ko'rinadi", await breaker.is_open("p", 0))
+    check("boshqa kalitga ta'sir qilmaydi", not await breaker.is_open("p", 1))
+    await breaker.record_failure("q", 0)
+    await breaker.record_success("q", 0)
+    await breaker.record_failure("q", 0)
+    await breaker.record_failure("q", 0)
+    check("muvaffaqiyat hisobni nolga tushiradi", not await breaker.is_open("q", 0))
+
+    try:
+        from bot.database.redis import get_redis
+
+        client = get_redis()
+        await client.ping()
+    except Exception:
+        print("  ⏭  Redis yo'q — xato darajasi sinovi o'tkazib yuborildi")
+        return
+
+    prefix = "smoke:stat"
+    try:
+        for _ in range(5):
+            await error_rate.record(client, True, prefix=prefix)
+        for _ in range(25):
+            await error_rate.record(client, False, prefix=prefix)
+        ok, err = await error_rate.window_stats(client, prefix=prefix)
+        check("oyna statistikasi to'g'ri", (ok, err) == (5, 25), f"{ok}, {err}")
+        fired = await error_rate.check_and_alert(None, client, prefix=prefix)
+        check("xato ulushi >10% -> ogohlantirish tetiklanadi", fired is True)
+    finally:
+        keys = [k async for k in client.scan_iter(f"{prefix}:*")]
+        if keys:
+            await client.delete(*keys)
+        await client.aclose()
 
 
 async def test_donate(user_id: int) -> None:
@@ -1991,6 +2100,7 @@ async def main() -> None:
     await test_broadcast()
     await test_broadcast_resumable()
     await test_stats()
+    await test_resilience()
     await test_support_record()
     await test_admin_reply_pin()
     await test_support_parsing()

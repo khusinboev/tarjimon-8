@@ -30,7 +30,9 @@ from aiogram import Bot
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config.settings import settings
+from bot.services import error_rate
 from bot.services.admin_alerts import alert_admins_once
+from bot.services.circuit_breaker import OPEN_SECONDS, CircuitBreaker
 from bot.services.translation_providers import (
     CHEAP_PROVIDER_CONFIG,
     FREE_TIER_PROVIDER_CONFIG,
@@ -218,6 +220,9 @@ class TranslationService:
         # tarjimaning o'ziga ta'siri yo'q, `bot=None` bo'lsa ogohlantirish
         # jim o'tkaziladi (`alert_admins_once`).
         self.bot = bot
+        # Ketma-ket yiqilayotgan provayder/kalitni vaqtincha chetlab o'tish
+        # (izoh: `circuit_breaker.py`). Redis orqali jarayonlar o'rtasida umumiy.
+        self.breaker = CircuitBreaker(redis)
 
     async def _cache_get(self, key: str) -> Optional[str]:
         if not self.redis:
@@ -240,66 +245,120 @@ class TranslationService:
             pass
 
     async def _pick_free_tier_candidates(
-        self, session: AsyncSession
+        self, session: AsyncSession, source: str, target: str, text_len: int = 0
     ) -> list[tuple[str, int, str]]:
-        """Hali bepul oylik hajmidan oshmagan 1-daraja provayder+kalit
-        variantlari, tasodifiy tartibda (har so'rovda qaysi biri sinab
-        ko'rilishi tasodifiy — talab shunday: "toki limiti tugagunicha random")."""
-        candidates: list[tuple[str, int, str]] = []
+        """Hali bepul hajmidan oshmagan 1-daraja provayder+kalit variantlari.
+
+        Ustunlik guruhlari (`priority`) bo'yicha: 0-guruh (Google/Azure/DeepL)
+        o'zaro TASODIFIY tartibda birinchi — talab shunday: "toki limiti
+        tugagunicha random"; 1-guruh (MyMemory) faqat ulardan keyin.
+
+        Filtrlar (hech biri XATO hisoblanmaydi, breaker'ga tushmaydi):
+          - provayder shu til juftligini qo'llab-quvvatlaydimi (DeepL'da amhar yo'q);
+          - matn provayder chegarasidan uzun emasmi (MyMemory — 500 belgi);
+          - circuit breaker ochiq emasmi (yaqinda ketma-ket yiqilgan kalit
+            vaqtincha chetlanadi — buzilgan Google kaliti har so'rovga
+            1 soniya qo'shmasin).
+        """
+        groups: dict[int, list[tuple[str, int, str]]] = {}
         for name, cfg in FREE_TIER_PROVIDER_CONFIG.items():
             keys = cfg["keys"]()
             if not keys:
                 continue
-            picked = await pick_key(session, name, keys, cfg["free_limit"]())
-            if picked is not None:
-                index, api_key = picked
-            else:
-                label = "Google Translate" if name == "google_translate" else "Azure Translator"
+            if not cfg["supports"](source, target):
+                continue
+            max_chars = cfg.get("max_chars")
+            if max_chars and text_len > max_chars:
+                continue
+            picked = await pick_key(
+                session, name, keys, cfg["free_limit"](), cfg.get("period", "month")
+            )
+            if picked is None:
+                period_label = "bugun" if cfg.get("period") == "day" else "bu oy"
                 await alert_admins_once(
                     self.bot, self.redis, f"quota_exhausted:{name}",
-                    f"⚠️ <b>{label}</b>ning barcha kalitlari bu oy bepul hajmidan "
-                    "oshdi — endi keyingi bosqichga (Gemini yoki bepul zaxira) "
-                    "o'tilmoqda.",
+                    f"⚠️ <b>{cfg['label']}</b>ning barcha kalitlari {period_label} bepul "
+                    "hajmidan oshdi — qolgan provayderlar/zaxira ishlatilmoqda.",
                 )
                 continue
-            candidates.append((name, index, api_key))
-        random.shuffle(candidates)
+            index, api_key = picked
+            if await self.breaker.is_open(name, index):
+                continue
+            groups.setdefault(cfg.get("priority", 0), []).append((name, index, api_key))
+
+        candidates: list[tuple[str, int, str]] = []
+        for priority in sorted(groups):
+            group = groups[priority]
+            random.shuffle(group)
+            candidates.extend(group)
         return candidates
 
-    def _pick_cheap_tier_candidates(self) -> list[tuple[str, int, str]]:
+    async def _pick_cheap_tier_candidates(self) -> list[tuple[str, int, str]]:
         """2-daraja (Gemini va h.k.) — hajm kuzatilmaydi, faqat sozlangan
-        kalitlar orasida tasodifiy tartib."""
+        kalitlar orasida tasodifiy tartib (breaker ochiqlari chetlanadi)."""
         candidates: list[tuple[str, int, str]] = []
         for name, cfg in CHEAP_PROVIDER_CONFIG.items():
             keys = cfg["keys"]()
             for index, api_key in enumerate(keys):
+                if await self.breaker.is_open(name, index):
+                    continue
                 candidates.append((name, index, api_key))
         random.shuffle(candidates)
         return candidates
 
+    async def _attempt(
+        self, name: str, index: int, api_key: str, call, text: str, source: str, target: str
+    ) -> tuple[Optional[str], Optional[str]]:
+        """Bitta provayder+kalitni sinaydi: `(tarjima, None)` yoki `(None, xato)`.
+
+        Breaker hisobini shu yerda yuritadi. Log'da xato matni bo'sh bo'lsa
+        (masalan ba'zi istisnolar `str()`da bo'sh) — tur nomi yoziladi;
+        ilgari shu sababli timeout'lar "ishlamadi: " deb sababsiz qolardi.
+        """
+        try:
+            translated = await call(text, source, target, api_key)
+        except Exception as exc:
+            reason = str(exc) or type(exc).__name__
+            logger.warning("%s (kalit #%s) ishlamadi: %s", name, index, reason)
+            if await self.breaker.record_failure(name, index):
+                logger.warning(
+                    "%s (kalit #%s) ketma-ket yiqildi — %s soniya chetlab o'tiladi",
+                    name, index, OPEN_SECONDS,
+                )
+                await alert_admins_once(
+                    self.bot, self.redis, f"circuit_open:{name}:{index}",
+                    f"⛔ <b>{name}</b> (kalit #{index}) ketma-ket xato qaytarmoqda — "
+                    f"vaqtincha chetlab o'tilmoqda. Oxirgi xato: {reason[:200]}",
+                )
+            return None, reason
+        if translated and translated.strip():
+            await self.breaker.record_success(name, index)
+            return translated, None
+        logger.warning("%s (kalit #%s) bo'sh javob qaytardi", name, index)
+        await self.breaker.record_failure(name, index)
+        return None, "bo'sh javob qaytardi"
+
     async def _dispatch(
         self, session: AsyncSession, text: str, source: str, target: str
     ) -> tuple[str, str, Optional[int]]:
-        """Uch daraja: 1) Google/Azure (bepul hajmi tugamagan bo'lsa,
+        """Uch daraja: 1) Google/Azure/DeepL (bepul hajmi tugamagan bo'lsa,
         tasodifiy), 2) Gemini (arzon, tasodifiy kalit), 3) `deep_translator`
-        (oxirgi, bepul-lekin-ishonchsiz zaxira)."""
-        free_candidates = await self._pick_free_tier_candidates(session)
+        (oxirgi, bepul-lekin-ishonchsiz zaxira).
+
+        1-darajada BIR nechta provayder bor — bittasi xato bersa qolganlari
+        sinab ko'riladi; hammasi bo'sh/xato bo'lsagina pastga tushiladi.
+        """
+        free_candidates = await self._pick_free_tier_candidates(session, source, target, len(text))
         last_free_error: Optional[str] = None
         last_free_provider: Optional[str] = None
         for name, index, api_key in free_candidates:
-            try:
-                call = FREE_TIER_PROVIDER_CONFIG[name]["call"]
-                translated = await call(text, source, target, api_key)
-                if translated and translated.strip():
-                    return translated, name, index
-                last_free_error = "bo'sh javob qaytardi"
-                last_free_provider = name
-                logger.warning("%s (kalit #%s) bo'sh javob qaytardi", name, index)
-            except Exception as exc:
-                last_free_error = str(exc)
-                last_free_provider = name
-                logger.warning("%s (kalit #%s) ishlamadi: %s", name, index, exc)
-                continue
+            translated, error = await self._attempt(
+                name, index, api_key, FREE_TIER_PROVIDER_CONFIG[name]["call"],
+                text, source, target,
+            )
+            if translated is not None:
+                return translated, name, index
+            last_free_error, last_free_provider = error, name
 
         # 1-daraja nomzodlari BOR edi (hajmi ham tugamagan — aks holda
         # `_pick_free_tier_candidates` allaqachon o'z alertini yuborgan
@@ -315,33 +374,22 @@ class TranslationService:
                 f"xato: {last_free_error}\nKeyingi bosqichga o'tilmoqda.",
             )
 
-        cheap_candidates = self._pick_cheap_tier_candidates()
+        cheap_candidates = await self._pick_cheap_tier_candidates()
         last_cheap_error: Optional[str] = None
         last_cheap_provider: Optional[str] = None
         for name, index, api_key in cheap_candidates:
-            try:
-                call = CHEAP_PROVIDER_CONFIG[name]["call"]
-                translated = await call(text, source, target, api_key)
-                if translated and translated.strip():
-                    return translated, name, index
-                last_cheap_error = "bo'sh javob qaytardi"
-                last_cheap_provider = name
-                logger.warning("%s (kalit #%s) bo'sh javob qaytardi", name, index)
-            except Exception as exc:
-                last_cheap_error = str(exc)
-                last_cheap_provider = name
-                logger.warning("%s (kalit #%s) ishlamadi: %s", name, index, exc)
-                continue
+            translated, error = await self._attempt(
+                name, index, api_key, CHEAP_PROVIDER_CONFIG[name]["call"],
+                text, source, target,
+            )
+            if translated is not None:
+                return translated, name, index
+            last_cheap_error, last_cheap_provider = error, name
 
         # 2-daraja sozlangan edi (kalitlari bor), lekin BARCHA kalitlari
         # ishlamadi — bu tasodifiy bitta xato emas, e'tibor talab qiladi
         # (masalan kvota/RPM chegarasi yoki kalit bekor qilingan).
         if cheap_candidates and last_cheap_error is not None:
-            # `cheap_candidates[0][0]` EMAS — tasodifiy aralashtirilgan
-            # ro'yxatning birinchi yozuvi haqiqiy xato bergan provayder
-            # bilan bir xil bo'lmasligi mumkin (CHEAP_PROVIDER_CONFIG'ga
-            # kelajakda 2-chi provayder qo'shilsa, bu xato adminga
-            # NOTO'G'RI provayder deb xabar berardi).
             provider_label = last_cheap_provider or cheap_candidates[0][0]
             await alert_admins_once(
                 self.bot, self.redis, f"cheap_tier_failed:{provider_label}",
@@ -396,7 +444,17 @@ class TranslationService:
                 cache_hit=True,
             )
 
-        translated, provider_name, key_index = await self._dispatch(session, text, source, target)
+        # Natija statistikasi (`error_rate`) — provayderdan qat'i nazar,
+        # foydalanuvchi tarjima OLDIMI yoki YO'QMI. Xato ulushi oshsa admin
+        # 15 daqiqa ichida biladi (2026-09-04…10 dagi bir haftalik ko'rlik
+        # takrorlanmasin).
+        try:
+            translated, provider_name, key_index = await self._dispatch(session, text, source, target)
+        except TranslationError:
+            await error_rate.record(self.redis, ok=False)
+            await error_rate.check_and_alert(self.bot, self.redis)
+            raise
+        await error_rate.record(self.redis, ok=True)
         latency_ms = int((time.perf_counter() - started) * 1000)
 
         if not translated or not translated.strip():

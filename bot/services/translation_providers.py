@@ -1,25 +1,34 @@
-"""Google Translate, Azure Translator, Gemini — pullik tarjima provayderlari.
+"""Google Translate, Azure Translator, DeepL, Gemini — tashqi tarjima provayderlari.
 
 Barchasi oddiy REST orqali (`aiohttp` bilan), `ocr.py`dagi bilan bir xil
 uslubda — SDK yoki service-account fayli kerak emas, faqat API kalit
 (Azure uchun mintaqa ham, `settings.AZURE_TRANSLATOR_REGION`).
 
-**1-daraja — Google/Azure (bepul hajmi kuzatiladi).** Bir nechta kalit
-sozlansa, har biri ALOHIDA hisob/loyihaga tegishli deb faraz qilinadi — har
-birining o'z oylik bepul BELGI hajmi bo'ladi, shuning uchun eng kam
-ishlatilgan (hali bepul hajmidan oshmagan) kalit tanlanadi (`ocr.py`dagi
-ko'p kalitli navbat bilan bir xil naqsh, faqat so'rov SONI emas, BELGI
-SONI bo'yicha).
+**1-daraja — Google / Azure / DeepL (bepul oylik hajmi kuzatiladi).**
+Har birining o'z oylik bepul BELGI hajmi bor (Google 500k, Azure 2M,
+DeepL 1M — `*_FREE_MONTHLY_CHARS`), shuning uchun eng kam ishlatilgan
+(hali bepul hajmidan oshmagan) kalit tanlanadi (`ocr.py`dagi ko'p kalitli
+navbat bilan bir xil naqsh, faqat so'rov SONI emas, BELGI SONI bo'yicha).
+Provayderlar orasida tanlov tasodifiy — talab shunday.
 
-**2-daraja — Gemini (arzon, hajm kuzatilmaydi).** Google/Azure'ning
-BEPUL hajmi tugagach ishlatiladi — Cloud Translation'dan ~40-150 barobar
-arzon (LLM narxlash siyosati tufayli), shuning uchun oylik hisob shart
-emas: cheklovi BELGI hajmi emas, so'rov TEZLIGI (RPM/RPD), shu sababli
-kalitlar orasida oddiy tasodifiy tanlov bilan yuklama taqsimlanadi.
+DeepL hamma tilni qo'llab-quvvatlamaydi (masalan amhar yo'q) — shuning
+uchun har bir provayderda `supports(source, target)` bor: mos kelmasa u
+nomzod bo'lmaydi va bu XATO hisoblanmaydi (circuit breaker'ga tushmaydi).
+
+**2-daraja — Gemini (arzon, hajm kuzatilmaydi).** 1-daraja tugagach
+ishlatiladi. Cheklovi BELGI hajmi emas, so'rov TEZLIGI (RPM/RPD), shu
+sababli kalitlar orasida oddiy tasodifiy tanlov. 2026-09 dan sozlanmagan
+(`.env`da o'chirilgan) — kerak bo'lsa kalitni qaytarish kifoya.
+
+**Timeout:** `aiohttp.ClientTimeout` `asyncio.TimeoutError` ko'taradi, u
+`aiohttp.ClientError`ning bolasi EMAS — ilgari shu sababli timeout'lar
+logda BO'SH sabab bilan yozilardi (2026-09-10 gacha Gemini xatolarining
+62% i). Endi har bir chaqiruvda alohida ushlanadi.
 """
 
 from __future__ import annotations
 
+import asyncio
 import random
 from datetime import datetime, timezone
 from typing import Optional
@@ -40,14 +49,53 @@ GOOGLE_CODE_MAP = {"zh": "zh-CN"}
 AZURE_URL = "https://api.cognitive.microsofttranslator.com/translate"
 AZURE_CODE_MAP = {"zh": "zh-Hans"}
 
+# DeepL: `:fx` bilan tugaydigan kalit — bepul (Free) reja, alohida host.
+DEEPL_FREE_URL = "https://api-free.deepl.com/v2/translate"
+DEEPL_PRO_URL = "https://api.deepl.com/v2/translate"
+# DeepL manba kodi oddiy ("EN"), maqsad kodi esa ba'zi tillarda variant
+# talab qiladi ("EN" maqsad sifatida RAD ETILADI — EN-GB/EN-US kerak).
+DEEPL_TARGET_MAP = {"en": "EN-US", "pt": "PT-BR", "zh": "ZH-HANS"}
+# `/v2/languages` javobi (2026-09-11), bazadagi kodlar bilan kesishmasi.
+# Amhar (am) YO'Q — bizning 4-eng katta yo'nalishimiz — u Azure/Google'da qoladi.
+DEEPL_LANGS = frozenset({
+    "af", "ar", "az", "be", "bg", "bn", "bs", "ca", "cs", "cy", "da", "de",
+    "el", "en", "es", "et", "eu", "fa", "fi", "fr", "ga", "gl", "gu", "ha",
+    "he", "hi", "hr", "ht", "hu", "hy", "id", "ig", "is", "it", "ja", "jv",
+    "ka", "kk", "ko", "ky", "la", "lb", "ln", "lt", "lv", "mg", "mi", "mk",
+    "ml", "mn", "mr", "ms", "mt", "my", "nb", "ne", "nl", "oc", "om", "pa",
+    "pl", "ps", "pt", "qu", "ro", "ru", "sa", "sk", "sl", "sq", "sr", "st",
+    "su", "sv", "sw", "ta", "te", "tg", "th", "tk", "tl", "tn", "tr", "ts",
+    "tt", "uk", "ur", "uz", "vi", "wo", "xh", "yi", "zh", "zu",
+})
 
-def _month_start() -> datetime:
+
+def _timeout_error() -> RuntimeError:
+    return RuntimeError(f"timeout {TIMEOUT}s")
+
+
+def deepl_supports(source: str, target: str) -> bool:
+    if target not in DEEPL_LANGS:
+        return False
+    return source == "auto" or source in DEEPL_LANGS
+
+
+def _supports_all(_source: str, _target: str) -> bool:
+    return True
+
+
+def _period_start(period: str = "month") -> datetime:
+    """Bepul hajm hisoblanadigan davr boshi: `month` (Google/Azure/DeepL)
+    yoki `day` (MyMemory — kunlik limit)."""
     now = datetime.now(timezone.utc)
+    if period == "day":
+        return now.replace(hour=0, minute=0, second=0, microsecond=0)
     return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
 
-async def provider_key_usage(session: AsyncSession, provider: str) -> dict[int, int]:
-    """Shu oy har bir kalit necha BELGI tarjima qilganini qaytaradi.
+async def provider_key_usage(
+    session: AsyncSession, provider: str, period: str = "month"
+) -> dict[int, int]:
+    """Joriy davrda har bir kalit necha BELGI tarjima qilganini qaytaradi.
 
     Faqat muvaffaqiyatli tarjimalar hisoblanadi — muvaffaqiyatsiz urinish
     provayder tarafida odatda to'lovga (billing) tushmaydi.
@@ -60,7 +108,7 @@ async def provider_key_usage(session: AsyncSession, provider: str) -> dict[int, 
         .where(
             Translation.provider == provider,
             Translation.status == "success",
-            Translation.created_at >= _month_start(),
+            Translation.created_at >= _period_start(period),
         )
         .group_by(Translation.provider_key_index)
     )
@@ -68,7 +116,11 @@ async def provider_key_usage(session: AsyncSession, provider: str) -> dict[int, 
 
 
 async def pick_key(
-    session: AsyncSession, provider: str, keys: list[str], free_limit_chars: int
+    session: AsyncSession,
+    provider: str,
+    keys: list[str],
+    free_limit_chars: int,
+    period: str = "month",
 ) -> Optional[tuple[int, str]]:
     """Eng kam ishlatilgan, hali bepul hajmidan oshmagan kalitni tanlaydi.
 
@@ -77,7 +129,7 @@ async def pick_key(
     """
     if not keys or free_limit_chars <= 0:
         return None
-    usage = await provider_key_usage(session, provider)
+    usage = await provider_key_usage(session, provider, period)
     candidates = [i for i in range(len(keys)) if usage.get(i, 0) < free_limit_chars]
     if not candidates:
         return None
@@ -98,6 +150,8 @@ async def call_google(text: str, source: str, target: str, api_key: str) -> str:
             async with client.post(GOOGLE_URL, params={"key": api_key}, json=payload) as response:
                 status = response.status
                 data = await response.json(content_type=None)
+    except asyncio.TimeoutError as exc:
+        raise _timeout_error() from exc
     except aiohttp.ClientError as exc:
         # aiohttp'ning o'z istisnolari ba'zan to'liq so'rov URL'ini (kalit
         # bilan) xato matniga qo'shadi — logga tushishidan oldin tozalanadi.
@@ -139,6 +193,8 @@ async def call_azure(text: str, source: str, target: str, api_key: str) -> str:
             ) as response:
                 status = response.status
                 data = await response.json(content_type=None)
+    except asyncio.TimeoutError as exc:
+        raise _timeout_error() from exc
     except aiohttp.ClientError as exc:
         raise RuntimeError(redact_secrets(str(exc))) from exc
 
@@ -183,6 +239,8 @@ async def call_gemini(text: str, source: str, target: str, api_key: str) -> str:
             async with client.post(url, json=payload, headers=headers) as response:
                 status = response.status
                 data = await response.json(content_type=None)
+    except asyncio.TimeoutError as exc:
+        raise _timeout_error() from exc
     except aiohttp.ClientError as exc:
         raise RuntimeError(redact_secrets(str(exc))) from exc
 
@@ -207,19 +265,139 @@ async def call_gemini(text: str, source: str, target: str, api_key: str) -> str:
     return (parts[0].get("text") or "").strip()
 
 
+async def call_deepl(text: str, source: str, target: str, api_key: str) -> str:
+    """DeepL API v2. Bepul kalit (`...:fx`) alohida hostda ishlaydi."""
+    url = DEEPL_FREE_URL if api_key.endswith(":fx") else DEEPL_PRO_URL
+    payload: dict = {
+        "text": [text],
+        "target_lang": DEEPL_TARGET_MAP.get(target, target.upper()),
+    }
+    if source != "auto":
+        payload["source_lang"] = source.upper()
+
+    headers = {"Authorization": f"DeepL-Auth-Key {api_key}"}
+    timeout = aiohttp.ClientTimeout(total=TIMEOUT)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as client:
+            async with client.post(url, json=payload, headers=headers) as response:
+                status = response.status
+                data = await response.json(content_type=None)
+    except asyncio.TimeoutError as exc:
+        raise _timeout_error() from exc
+    except aiohttp.ClientError as exc:
+        raise RuntimeError(redact_secrets(str(exc))) from exc
+
+    if not isinstance(data, dict):
+        raise RuntimeError(f"DeepL noto'g'ri javob qaytardi (HTTP {status})")
+    if status >= 400 or "message" in data and "translations" not in data:
+        # DeepL xatoni {"message": "..."} shaklida qaytaradi (456 — oylik
+        # hajm tugadi, 429 — tezlik, 403 — kalit).
+        raise RuntimeError(f"DeepL HTTP {status}: {data.get('message', 'xato')}")
+
+    translations = data.get("translations") or []
+    if not translations:
+        raise RuntimeError("DeepL bo'sh javob qaytardi")
+    return translations[0].get("text", "")
+
+
+MYMEMORY_URL = "https://api.mymemory.translated.net/get"
+MYMEMORY_CODE_MAP = {"zh": "zh-CN"}
+# MyMemory bitta so'rovda 500 belgidan oshiqni rad etadi ("QUERY LENGTH
+# LIMIT EXCEEDED") — uzunroq matn unga umuman yuborilmaydi (`max_chars`).
+MYMEMORY_MAX_CHARS = 500
+
+
+async def call_mymemory(text: str, source: str, target: str, api_key: str) -> str:
+    """MyMemory (translated.net) — bepul, KUNLIK limit (email bilan 50k
+    belgi/kun, emailsiz 5k). `api_key` bu yerda — `de` parametri (email).
+
+    Xatoni HTTP 200 bilan ham qaytaradi: `responseStatus` != 200 va
+    matni `translatedText`da ("'AUTO' IS AN INVALID SOURCE LANGUAGE...",
+    "MYMEMORY WARNING: YOU USED ALL AVAILABLE FREE TRANSLATIONS...").
+    Manba tili noma'lum bo'lsa `autodetect` (`auto` EMAS — rad etiladi).
+    """
+    src = "autodetect" if source == "auto" else MYMEMORY_CODE_MAP.get(source, source)
+    params = {
+        "q": text,
+        "langpair": f"{src}|{MYMEMORY_CODE_MAP.get(target, target)}",
+        "de": api_key,
+    }
+    timeout = aiohttp.ClientTimeout(total=TIMEOUT)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as client:
+            async with client.get(MYMEMORY_URL, params=params) as response:
+                status = response.status
+                data = await response.json(content_type=None)
+    except asyncio.TimeoutError as exc:
+        raise _timeout_error() from exc
+    except aiohttp.ClientError as exc:
+        raise RuntimeError(redact_secrets(str(exc))) from exc
+
+    if not isinstance(data, dict):
+        raise RuntimeError(f"MyMemory noto'g'ri javob qaytardi (HTTP {status})")
+    response_data = data.get("responseData") or {}
+    translated = (response_data.get("translatedText") or "").strip()
+    api_status = data.get("responseStatus")
+    if api_status not in (200, "200") or status >= 400:
+        raise RuntimeError(f"MyMemory {api_status}: {translated or data.get('responseDetails') or 'xato'}")
+    if data.get("quotaFinished"):
+        raise RuntimeError("MyMemory kunlik hajmi tugadi")
+    if translated.upper().startswith("MYMEMORY WARNING"):
+        raise RuntimeError(translated[:200])
+    if not translated:
+        raise RuntimeError("MyMemory bo'sh javob qaytardi")
+    return translated
+
+
 # ── 1-daraja: bepul hajmi kuzatiladigan provayderlar ──────────────────
-# Provayder nomi -> (kalitlar ro'yxati, oylik bepul belgi hajmi, chaqiruv
-# funksiyasi). `translation.py` bularni bepul hajmi tugamagunicha ishlatadi.
+# Provayder nomi -> kalitlar, bepul belgi hajmi (va davri: oy/kun), chaqiruv
+# funksiyasi, til/uzunlik tekshiruvi, ustunlik. `translation.py` bularni
+# bepul hajmi tugamagunicha ishlatadi.
+#
+#   priority 0 — asosiy sifatli provayderlar, o'zaro TASODIFIY;
+#   priority 1 — faqat 0-guruh yo'q/tugagan/yiqilgan bo'lsa (MyMemory —
+#                sifati pastroq, lekin `deep_translator` scraping'idan
+#                ancha ishonchli va rasmiy API).
 FREE_TIER_PROVIDER_CONFIG: dict[str, dict] = {
     "google_translate": {
+        "label": "Google Translate",
         "keys": lambda: settings.GOOGLE_TRANSLATE_KEYS,
         "free_limit": lambda: settings.GOOGLE_TRANSLATE_FREE_MONTHLY_CHARS,
+        "period": "month",
         "call": call_google,
+        "supports": _supports_all,
+        "max_chars": None,
+        "priority": 0,
     },
     "azure_translator": {
+        "label": "Azure Translator",
         "keys": lambda: settings.AZURE_TRANSLATOR_KEYS,
         "free_limit": lambda: settings.AZURE_TRANSLATOR_FREE_MONTHLY_CHARS,
+        "period": "month",
         "call": call_azure,
+        "supports": _supports_all,
+        "max_chars": None,
+        "priority": 0,
+    },
+    "deepl": {
+        "label": "DeepL",
+        "keys": lambda: settings.DEEPL_API_KEYS,
+        "free_limit": lambda: settings.DEEPL_FREE_MONTHLY_CHARS,
+        "period": "month",
+        "call": call_deepl,
+        "supports": deepl_supports,
+        "max_chars": None,
+        "priority": 0,
+    },
+    "mymemory": {
+        "label": "MyMemory",
+        "keys": lambda: settings.MYMEMORY_EMAILS,
+        "free_limit": lambda: settings.MYMEMORY_FREE_DAILY_CHARS,
+        "period": "day",
+        "call": call_mymemory,
+        "supports": _supports_all,
+        "max_chars": MYMEMORY_MAX_CHARS,
+        "priority": 1,
     },
 }
 

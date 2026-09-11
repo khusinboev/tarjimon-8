@@ -119,6 +119,31 @@ class Settings(BaseSettings):
     def AZURE_TRANSLATOR_KEYS(self) -> List[str]:
         return [k.strip() for k in self.AZURE_TRANSLATOR_KEYS_RAW.split(",") if k.strip()]
 
+    # DeepL (https://www.deepl.com/pro-api) — 1-darajaning uchinchi a'zosi.
+    # Bepul kalit `:fx` bilan tugaydi va alohida hostda ishlaydi (kod buni
+    # o'zi aniqlaydi). Bepul reja 2026-09 holatiga 1,000,000 belgi/oy
+    # beradi (`/v2/usage` shuni ko'rsatdi) — `.env`da shunga mos qo'ying.
+    # DIQQAT: DeepL amhar (am) tilini qo'llab-quvvatlamaydi — kod buni
+    # o'zi bilib, am so'rovlarini unga yubormaydi (`deepl_supports`).
+    DEEPL_API_KEYS_RAW: str = Field(default="", alias="DEEPL_API_KEYS")
+    DEEPL_FREE_MONTHLY_CHARS: int = Field(default=500_000)
+
+    @property
+    def DEEPL_API_KEYS(self) -> List[str]:
+        return [k.strip() for k in self.DEEPL_API_KEYS_RAW.split(",") if k.strip()]
+
+    # MyMemory (https://mymemory.translated.net/doc/spec.php) — bepul,
+    # KUNLIK limit: email berilsa 50,000 belgi/kun (emailsiz 5,000).
+    # "Kalit" — aynan shu email (`de` parametri). Sifati Azure/DeepL'dan
+    # pastroq, shuning uchun faqat asosiy uchtasi yo'q/tugagan/yiqilgan
+    # bo'lsa ishlatiladi (priority 1), lekin `deep_translator`dan oldin.
+    MYMEMORY_EMAILS_RAW: str = Field(default="", alias="MYMEMORY_EMAILS")
+    MYMEMORY_FREE_DAILY_CHARS: int = Field(default=50_000)
+
+    @property
+    def MYMEMORY_EMAILS(self) -> List[str]:
+        return [k.strip() for k in self.MYMEMORY_EMAILS_RAW.split(",") if k.strip()]
+
     # Gemini (LLM orqali tarjima) — Google/Azure'ning BEPUL hajmi tugagach
     # ishlatiladigan ARZON ikkinchi daraja (Google Cloud Translation'dan
     # taxminan 40-150 barobar arzon). Google AI Studio'dan olinadi

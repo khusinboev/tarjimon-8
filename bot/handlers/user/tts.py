@@ -10,6 +10,8 @@ from aiogram import F, Router
 from aiogram.types import BufferedInputFile, CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from aiogram.exceptions import TelegramBadRequest
+
 from bot.config.settings import settings
 from bot.database.models import TtsRequest, User
 from bot.database.repositories.language_repository import LanguageRepository
@@ -144,9 +146,27 @@ async def send_voice(
         await message.answer(t.TTS_ERRORS.get(exc.code, t.TTS_ERROR_DEFAULT))
         return False
 
-    sent = await message.answer_voice(
-        BufferedInputFile(result.audio, filename="tarjima.mp3")
-    )
+    try:
+        sent = await message.answer_voice(
+            BufferedInputFile(result.audio, filename="tarjima.mp3")
+        )
+    except TelegramBadRequest as exc:
+        # Foydalanuvchi Telegram maxfiylik sozlamasida ovozli xabarlarni
+        # taqiqlagan (Premium imkoniyati) — bu bizning xatomiz emas, lekin
+        # ilgari ushlanmasdan crash bo'lib, foydalanuvchi jim qolardi va
+        # TTS kvotasi ham sarflanib ketardi.
+        if "VOICE_MESSAGES_FORBIDDEN" not in str(exc):
+            raise
+        await quota.release_tts(user.id)
+        await events.log(
+            EventType.TTS_FAILED,
+            user_id=user.id,
+            session_id=session_id,
+            translation_id=translation_id,
+            error_code="voice_forbidden",
+        )
+        await message.answer(t.TTS_ERRORS["voice_forbidden"])
+        return False
 
     file_id = sent.voice.file_id if sent.voice else None
     if file_id:

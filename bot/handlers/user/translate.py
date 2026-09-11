@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from types import ModuleType
 from typing import Optional
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
 from aiogram.types import Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -391,8 +393,27 @@ async def handle_photo(
         session_id=session_id,
     )
 
-    photo_file = await message.bot.download(message.photo[-1].file_id)
-    image_bytes = photo_file.read()
+    try:
+        photo_file = await message.bot.download(message.photo[-1].file_id)
+        image_bytes = photo_file.read()
+    except (TelegramNetworkError, TelegramBadRequest, asyncio.TimeoutError) as exc:
+        # Telegram'dan rasmni olib bo'lmadi (tarmoq timeout — 1.4GB'lik
+        # serverda katta rasmda uchraydi). Ilgari ushlanmasdan crash
+        # bo'lib, foydalanuvchi jim qolardi va rasm kvotasi sarflanib
+        # ketardi — OCR chaqirilmagani uchun band qilingan joy qaytariladi.
+        await quota.release_image(user.id)
+        await events.log(
+            EventType.IMAGE_OCR_FAILED,
+            user_id=user.id,
+            chat_id=message.chat.id,
+            session_id=session_id,
+            error_code="download_failed",
+        )
+        logging.getLogger(__name__).warning(
+            "Rasmni yuklab bo'lmadi (user_id=%s): %s", user.id, exc
+        )
+        await message.answer(t.IMAGE_DOWNLOAD_FAILED)
+        return
 
     try:
         result = await extract_text(session, image_bytes)

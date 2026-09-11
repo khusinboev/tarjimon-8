@@ -15,6 +15,7 @@ from bot.config.settings import settings
 from bot.database.redis import get_redis
 from bot.database.repositories.broadcast_repository import BroadcastRepository
 from bot.database.session import AsyncSessionLocal, init_db
+from bot.handlers import errors
 from bot.handlers.admin import panel
 from bot.handlers.user import common, donate, languages, start, subscription
 from bot.handlers.user import support, translate, tts
@@ -111,6 +112,10 @@ async def main() -> None:
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
     dp = Dispatcher(storage=await build_storage(redis))
+
+    # Oxirgi to'siq: handler'da ushlanmagan istisno — foydalanuvchi jim
+    # qolmasin, admin bilsin (izoh: `handlers/errors.py`).
+    dp.errors.register(errors.on_error)
 
     # Kontekst har bir update uchun bir marta: session, user, events, session_id.
     dp.update.outer_middleware(ContextMiddleware(redis))

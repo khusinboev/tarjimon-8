@@ -96,6 +96,7 @@ IMAGE_QUOTA_EXCEEDED = (
 )
 IMAGE_OCR_UNAVAILABLE = "🖼 Terjemahan foto sedang disiapkan — segera tersedia."
 IMAGE_OCR_FAILED = "⚠️ Foto tidak bisa dibaca. Coba foto yang lebih jelas/terang."
+IMAGE_DOWNLOAD_FAILED = "⚠️ Foto tidak bisa diunduh — coba kirim lagi."
 IMAGE_NO_TEXT_FOUND = "🔍 Tidak ada teks yang ditemukan di foto."
 
 RATE_LIMITED = "⏳ Mohon sedikit lebih lambat. Coba lagi beberapa detik."
@@ -129,6 +130,10 @@ TTS_ERRORS = {
     "timeout": "⌛ Suara gagal dibuat — layanan tidak menjawab.",
     "no_voice": "🔇 Suara tidak tersedia untuk bahasa ini.",
     "too_long": "📏 Teks terlalu panjang untuk suara.",
+    "voice_forbidden": (
+        "🔇 Pengaturan privasi Telegram Anda memblokir pesan suara "
+        "(Pengaturan → Privasi → Pesan suara)."
+    ),
 }
 TTS_ERROR_DEFAULT = "⚠️ Tidak bisa membuat suara."
 

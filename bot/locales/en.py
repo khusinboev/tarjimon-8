@@ -97,6 +97,7 @@ IMAGE_QUOTA_EXCEEDED = (
 )
 IMAGE_OCR_UNAVAILABLE = "🖼 Photo translation is being set up — it will be available soon."
 IMAGE_OCR_FAILED = "⚠️ Could not read the photo. Try a clearer or better-lit picture."
+IMAGE_DOWNLOAD_FAILED = "⚠️ Could not download the photo — please send it again."
 IMAGE_NO_TEXT_FOUND = "🔍 No text found in the photo."
 
 RATE_LIMITED = "⏳ A little slower, please. Try again in a few seconds."
@@ -130,6 +131,10 @@ TTS_ERRORS = {
     "timeout": "⌛ Voice was not generated — the service did not respond.",
     "no_voice": "🔇 Voice is not available for this language.",
     "too_long": "📏 The text is too long for voice.",
+    "voice_forbidden": (
+        "🔇 Your Telegram privacy settings block voice messages "
+        "(Settings → Privacy → Voice messages)."
+    ),
 }
 TTS_ERROR_DEFAULT = "⚠️ Could not generate the voice."
 

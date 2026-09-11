@@ -13,6 +13,7 @@ from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.database.models import User, UserSettings
+from bot.utils.telegram import safe_edit_markup, safe_edit_text
 from bot.database.repositories.language_repository import LanguageRepository
 from bot.database.repositories.translation_repository import TranslationRepository
 from bot.keyboards.user import (
@@ -70,7 +71,7 @@ async def back_to_menu(
     callback: CallbackQuery, session: AsyncSession, user: User, t: ModuleType
 ) -> None:
     text, markup = await _menu_text_and_markup(session, user.settings, t)
-    await callback.message.edit_text(text, reply_markup=markup)
+    await safe_edit_text(callback, text, reply_markup=markup)
     await callback.answer()
 
 
@@ -85,9 +86,7 @@ async def pick_slot(
     options = await langs.selectable(include_auto=(slot == "source"))
     prompt = t.PICK_SOURCE if slot == "source" else t.PICK_TARGET
 
-    await callback.message.edit_text(
-        prompt, reply_markup=language_picker(t, options, slot)
-    )
+    await safe_edit_text(callback, prompt, reply_markup=language_picker(t, options, slot))
     await callback.answer()
 
 
@@ -130,7 +129,8 @@ async def set_language(
     source = await langs.by_code(user.settings.source_lang)
     target = await langs.by_code(user.settings.target_lang)
 
-    await callback.message.edit_text(
+    await safe_edit_text(
+        callback,
         t.LANG_SAVED.format(source=lang_label(t, source), target=lang_label(t, target)),
         reply_markup=language_menu(t, source, target),
     )
@@ -193,7 +193,8 @@ async def swap_languages(
     source = await langs.by_code(user.settings.source_lang)
     target = await langs.by_code(user.settings.target_lang)
 
-    await callback.message.edit_text(
+    await safe_edit_text(
+        callback,
         t.LANG_SWAPPED.format(source=lang_label(t, source), target=lang_label(t, target)),
         reply_markup=language_menu(t, source, target),
     )
@@ -269,15 +270,11 @@ async def swap_from_translation(
     voice = await langs.tts_voice(translation.target_lang)
     has_tts = bool(voice)
 
-    try:
-        await callback.message.edit_reply_markup(
-            reply_markup=translation_actions(
-                t, translation.id, has_tts=has_tts, source=source, target=target
-            )
-        )
-    except Exception:
-        # Bir xil klaviaturaga edit qilish Telegram xatosi beradi — zararsiz.
-        pass
+    # Bir xil klaviaturaga edit / eski xabar — zararsiz, `safe_edit_markup` yutadi.
+    await safe_edit_markup(
+        callback,
+        translation_actions(t, translation.id, has_tts=has_tts, source=source, target=target),
+    )
 
     await callback.answer(f"🔄 {direction_label(t, source, target)}")
 

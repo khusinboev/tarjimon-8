@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.database.models import User
 from bot.keyboards.inline import get_subscription_keyboard
+from bot.utils.telegram import safe_edit_markup, safe_edit_text
 from bot.keyboards.user import main_menu
 from bot.services.events import EventService, EventType
 from bot.services.subscription_service import SubscriptionService
@@ -43,16 +44,11 @@ async def check_subscription(
             session_id=session_id,
         )
         await callback.answer("✅", show_alert=False)
-        await callback.message.edit_text(t.SUBSCRIBE_OK)
-        await callback.message.answer(
-            t.SEND_TEXT_PROMPT, reply_markup=main_menu(t)
+        await safe_edit_text(callback, t.SUBSCRIBE_OK)
+        await callback.bot.send_message(
+            callback.from_user.id, t.SEND_TEXT_PROMPT, reply_markup=main_menu(t)
         )
         return
 
     await callback.answer(t.SUBSCRIBE_STILL_MISSING, show_alert=True)
-    try:
-        await callback.message.edit_reply_markup(
-            reply_markup=get_subscription_keyboard(t, missing)
-        )
-    except Exception:
-        pass
+    await safe_edit_markup(callback, get_subscription_keyboard(t, missing))
