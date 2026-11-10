@@ -144,9 +144,13 @@ class Settings(BaseSettings):
     # alohida `tarjimon8-mt` xizmati (`mt/`, `deploy/tarjimon8-mt.service`).
     # Bo'sh bo'lsa — o'chirilgan. Hajm/kalit yo'q, cheklovi faqat CPU.
     # Ustunlik (`priority`): 0 — Google/Azure/DeepL bilan teng (tasodifiy),
-    # 1 — ulardan keyin, MyMemory'dan (2) oldin.
+    # 1 — ulardan keyin, MyMemory'dan (2) oldin; 3 — MyMemory'dan ham keyin,
+    # ya'ni faqat u qila olmaydiganini (500+ belgi, u yiqilgan/kvota tugagan).
+    # 2026-11 o'lchovi: og'zaki chat matnlarida MyMemory hali yaxshiroq —
+    # serverda 3 bilan boshlangan (`mt/README.md`).
     LOCAL_MT_URL: str = Field(default="", description="masalan http://127.0.0.1:8790")
-    LOCAL_MT_TIMEOUT: int = Field(default=30, description="soniya; uzun matn CPU'da sekin")
+    # 1.3B model serverda ~1600 belgini ~16 s da, 4500 belgini ~45 s da qiladi.
+    LOCAL_MT_TIMEOUT: int = Field(default=60, description="soniya; uzun matn CPU'da sekin")
     LOCAL_MT_PRIORITY: int = Field(default=1)
 
     @property

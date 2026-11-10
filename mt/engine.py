@@ -31,6 +31,11 @@ _CLAUSE_SPLIT = re.compile(r"(?<=[,;:])\s+")
 _HAS_LETTER = re.compile(r"[^\W\d_]")
 _PASSTHROUGH = re.compile(r"(?:https?://\S+|www\.\S+|@\w+|#\w+|\S+@\S+\.\w+)")
 
+# Bo'lak boshi/oxiridagi emoji va belgilar (❌, 📚, 🌟) — NLLB lug'atida
+# ko'pi yo'q va tushib qoladi; ajratib olinib, tarjimadan keyin qaytariladi.
+_EDGE_LEAD = re.compile(r"^([^\w\s\"'«“(\[]+)\s*")
+_EDGE_TRAIL = re.compile(r"\s*([^\w\s.,!?…\"'»”)\]]+)$")
+
 MAX_SEGMENT_TOKENS = 200
 MAX_CHUNK_TOKENS = 120
 MIN_DETECT_CHARS = 12
@@ -62,6 +67,28 @@ class Result:
 
 def _is_passthrough(seg: str) -> bool:
     return not _HAS_LETTER.search(_PASSTHROUGH.sub("", seg))
+
+
+def _split_edges(seg: str) -> tuple[str, str, str]:
+    lead = _EDGE_LEAD.match(seg)
+    lead_s = lead.group(1) if lead else ""
+    rest = seg[lead.end():] if lead else seg
+    trail = _EDGE_TRAIL.search(rest)
+    trail_s = trail.group(1) if trail else ""
+    core = rest[: trail.start()] if trail else rest
+    return lead_s, core.strip(), trail_s
+
+
+def _tidy(text: str, target: str) -> str:
+    """NLLB og'zaki (tinish belgisiz) kirishda tokenlarni probel bilan
+    chiqaradi: "minutes ?", "Salom . Sendan", "don ' t", "O ' rnatish", "0: 06"."""
+    if target != "fr":  # fransuzchada "?" oldidan probel — me'yor
+        text = re.sub(r"\s+([?!.,:;%…)\]»”])", r"\1", text)
+    text = re.sub(r"([(\[«“])\s+", r"\1", text)
+    text = re.sub(r"(\w)\s+(['ʻ‘’])\s+(\w)", r"\1\2\3", text)
+    text = re.sub(r"(\d):\s+(\d)", r"\1:\2", text)
+    # "uyimiz.Biz" — kirishdagi probelsiz gap chegarasi chiqishda ham qoladi.
+    return re.sub(r"([a-zа-яʼʻ'])([.!?])([A-ZА-Я])", r"\1\2 \3", text)
 
 
 def _repetitive(tokens: list[str], n: int = 3, limit: int = 4) -> bool:
@@ -204,8 +231,9 @@ class Engine:
             for si, seg in enumerate(segs):
                 if _is_passthrough(seg):
                     continue
-                jobs.append((li, si))
-                batch.append([src_code] + self._tokens(seg) + ["</s>"])
+                lead, core, trail = _split_edges(seg)
+                jobs.append((li, si, lead, trail))
+                batch.append([src_code] + self._tokens(core) + ["</s>"])
 
         if batch:
             with self._lock:
@@ -217,10 +245,15 @@ class Engine:
                         if self._bad(batch[i], o):
                             raise SuspiciousOutput("model chiqishi shubhali (takror/uzun)")
                         outs[i] = o
-            for (li, si), toks in zip(jobs, outs):
+            for (li, si, lead, trail), toks in zip(jobs, outs):
                 ids = [self.tok.token_to_id(t) for t in toks]
-                out_layout[li][si] = self.tok.decode([i for i in ids if i is not None],
-                                                     skip_special_tokens=True).strip()
+                core = _tidy(self.tok.decode([i for i in ids if i is not None],
+                                             skip_special_tokens=True).strip(), target)
+                if lead and not core.startswith(lead):
+                    core = f"{lead} {core}"
+                if trail and not core.endswith(trail):
+                    core = f"{core} {trail}"
+                out_layout[li][si] = core
 
         joiner = "" if target in NO_SPACE_JOIN else " "
         translated = "\n".join(joiner.join(segs) for segs in out_layout).strip()

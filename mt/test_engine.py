@@ -30,6 +30,16 @@ def main() -> int:
     check("passthrough: 12:30 😀", _is_passthrough("12:30 😀"))
     check("passthrough emas: so'z", not _is_passthrough("Salom 😀"))
 
+    from mt.engine import _split_edges, _tidy
+    check("edges: ❌ Bekor qilish", _split_edges("❌ Bekor qilish") == ("❌", "Bekor qilish", ""), str(_split_edges("❌ Bekor qilish")))
+    check("edges: Dars vaqti📚", _split_edges("Dars vaqti📚") == ("", "Dars vaqti", "📚"), str(_split_edges("Dars vaqti📚")))
+    check("edges: oddiy gap.", _split_edges("Salom, dunyo!") == ("", "Salom, dunyo!", ""))
+    for raw, want in [("Can you wait 15 minutes ?", "Can you wait 15 minutes?"),
+                      ("Salom . Sendan", "Salom. Sendan"), ("I don ' t know", "I don't know"),
+                      ("O ' rnatish", "O'rnatish"), ("0: 06", "0:06"), ("uyimiz.Biz", "uyimiz. Biz")]:
+        check(f"tidy: {raw!r}", _tidy(raw, "en") == want, _tidy(raw, "en"))
+    check("tidy fr: probel qoladi", _tidy("Comment ?", "fr") == "Comment ?")
+
     t = time.time()
     e = Engine(os.environ["MT_MODEL_DIR"], threads=4, lid_path=os.environ.get("MT_LID_PATH"))
     print(f"  yuklandi {time.time()-t:.1f}s")
@@ -63,6 +73,11 @@ def main() -> int:
         check("noma'lum til -> Unsupported", False)
     except UnsupportedLanguage:
         check("noma'lum til -> Unsupported", True)
+
+    r = e.translate("❌ Cancel", "en", "uz")
+    check("emoji saqlandi (bosh)", r.text.startswith("❌"), r.text)
+    r = e.translate("We have class now📚", "en", "ru")
+    check("emoji saqlandi (oxir)", r.text.endswith("📚"), r.text)
 
     words = ("This is a long sentence with many words that keeps going without any "
              "punctuation at all and it should still be translated properly ") * 12
