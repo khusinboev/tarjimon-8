@@ -14,6 +14,8 @@ from bot.database.repositories.language_repository import LanguageRepository
 from bot.database.repositories.user_repository import UserRepository
 from bot.keyboards.user import lang_label, main_menu
 from bot.services.events import EventService, EventType
+from bot.services.system_config import get_effective_limits
+from bot.utils.text import html_escape
 
 router = Router(name="start")
 
@@ -71,9 +73,12 @@ async def cmd_start(
     )
 
     template = t.WELCOME if is_new_user else t.WELCOME_BACK
+    # Ism foydalanuvchi tomonidan kiritiladi — "<3 Ali" kabi ism HTML
+    # parse_mode'da xabarni buzadi (TelegramBadRequest) va /start umuman
+    # javob bermay qoladi. Shuning uchun escape qilinadi.
     await message.answer(
         template.format(
-            name=message.from_user.first_name or "friend",
+            name=html_escape(message.from_user.first_name or "friend"),
             source=lang_label(t, source),
             target=lang_label(t, target),
         ),
@@ -121,6 +126,7 @@ async def cmd_invite(
 @router.message(Command("help"))
 async def cmd_help(
     message: Message,
+    session: AsyncSession,
     events: EventService,
     user: User,
     session_id,
@@ -135,9 +141,12 @@ async def cmd_help(
         session_id=session_id,
         menu="help",
     )
+    # Limit admin panelidan o'zgartirilishi mumkin — `.env` standarti emas,
+    # haqiqiy amaldagi qiymat ko'rsatiladi (kvota ham shu bilan hisoblanadi).
+    limits = await get_effective_limits(session)
     await message.answer(
         t.HELP.format(
-            limit=settings.DAILY_TRANSLATION_LIMIT,
+            limit=limits.translation,
             admin=settings.ADMIN_USERNAME,
         ),
         reply_markup=main_menu(t),
