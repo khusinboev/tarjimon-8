@@ -1,5 +1,10 @@
 # Tarjimon-8 — Barqarorlashtirish rejasi
 
+> Holat (2026-11-10): server `193.187.129.197`. 2026-11 da lokal NLLB modeli
+> (`local_mt`, `LOCAL_MT_PRIORITY=3`) qo'shildi — Google/Azure/DeepL hozir
+> yiqilyapti, tarjimani amalda MyMemory va `local_mt` qiladi (`mt/README.md`).
+> Zaxira: `tizor-backup.timer` (DEPLOY.md §4). Quyidagi reja — 2026-09 holati.
+>
 > Holat: **2026-09-11 — P0 (1–4), P1 (5–6), P2 (8) BAJARILDI va deploy qilindi.**
 > Qolgan: P1 §7 (qisqa matn edge-case), P2 §9 (journal), P2 §10 (kunlik hisobot).
 > Qo'shimcha (2026-09-11): 1-darajaga DeepL (1M/oy) va MyMemory (50k/kun,
