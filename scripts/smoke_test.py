@@ -3017,6 +3017,204 @@ async def cleanup() -> None:
             await session.commit()
 
 
+async def test_ocr_resilience() -> None:
+    """OCR: javobni tasniflash, "matn yo'q" xato emasligi, vaqt byudjeti,
+    rasmga bog'liq xatoda kalitlarni behuda aylanmaslik, katta rasm.
+
+    Tarmoqsiz va bazasiz — chaqiruvlar va oylik hisoblar soxtalashtiriladi.
+    """
+    print("\n[18] OCR chidamliligi")
+    from bot.services import ocr as ocr_module
+    from bot.services.ocr import OcrError, parse_ocrspace_response, parse_vision_response
+
+    def _code(fn, *args) -> str:
+        try:
+            fn(*args)
+        except OcrError as exc:
+            return exc.code
+        return "ok"
+
+    ok_page = {"FileParseExitCode": 1, "ParsedText": "Salom\r\ndunyo"}
+    check(
+        "OCR.Space: muvaffaqiyatli sahifa matni olinadi",
+        parse_ocrspace_response(200, {"ParsedResults": [ok_page]}) == "Salom\r\ndunyo",
+    )
+    check(
+        "OCR.Space: matnsiz rasm — xato emas, bo'sh satr",
+        parse_ocrspace_response(
+            200, {"ParsedResults": [{"FileParseExitCode": 1, "ParsedText": ""}]}
+        ) == "",
+    )
+    check(
+        "OCR.Space: E500 -> provider_error",
+        _code(parse_ocrspace_response, 200,
+              {"IsErroredOnProcessing": True, "ErrorMessage": ["E500: Error during OCR"]})
+        == "provider_error",
+    )
+    check(
+        "OCR.Space: E214 (hajm) -> invalid_image ('maximum' so'ziga qaramay)",
+        _code(parse_ocrspace_response, 200, {
+            "IsErroredOnProcessing": True,
+            "ErrorMessage": ["E214: File failed validation. Maximum file size limit 1024 KB exceeded"],
+        }) == "invalid_image",
+    )
+    check(
+        "OCR.Space: soatlik limit (HTTP 403) -> key_error",
+        _code(parse_ocrspace_response, 403,
+              "You may only perform this action upto maximum 180 number of times") == "key_error",
+    )
+    check(
+        "OCR.Space: HTML 503 sahifa -> provider_error",
+        _code(parse_ocrspace_response, 503, None) == "provider_error",
+    )
+    check(
+        "OCR.Space: sahifa timeout'i (-20) -> timeout",
+        _code(parse_ocrspace_response, 200, {"ParsedResults": [
+            {"FileParseExitCode": -20, "ErrorMessage": "Timeout waiting for OCR"}
+        ]}) == "timeout",
+    )
+    check(
+        "Vision: billing/kalit xatosi -> key_error",
+        _code(parse_vision_response, 403,
+              {"error": {"code": 403, "message": "This API method requires billing to be enabled"}})
+        == "key_error",
+    )
+    check(
+        "Vision: matnsiz rasm — xato emas, bo'sh satr",
+        parse_vision_response(200, {"responses": [{}]}) == "",
+    )
+    check(
+        "Vision: fullTextAnnotation matni olinadi",
+        parse_vision_response(200, {"responses": [{"fullTextAnnotation": {"text": " Hi \n"}}]}) == "Hi",
+    )
+
+    originals = {
+        "keys_raw": settings.OCRSPACE_API_KEYS_RAW,
+        "key": settings.OCRSPACE_API_KEY,
+        "vision": settings.GOOGLE_VISION_API_KEY,
+        "free": settings.OCRSPACE_FREE_MONTHLY,
+        "usage": ocr_module._ocrspace_key_usage,
+        "vision_usage": ocr_module._vision_monthly_usage,
+        "call_ocrspace": ocr_module._call_ocrspace,
+        "call_vision": ocr_module._call_google_vision,
+        "budget": ocr_module.OCR_TOTAL_BUDGET,
+        "timeout": ocr_module.OCR_TIMEOUT,
+        "min_attempt": ocr_module.OCR_MIN_ATTEMPT_SECONDS,
+    }
+    calls: list[str] = []
+
+    async def _no_usage(_session) -> dict:
+        return {}
+
+    async def _vision_usage(_session) -> int:
+        return 0
+
+    async def _vision_ok(_image_bytes: bytes) -> str:
+        calls.append("vision")
+        return "vision matni"
+
+    async def _ocrspace_invalid_image(_image_bytes: bytes, api_key: str) -> str:
+        calls.append(api_key)
+        raise OcrError("invalid_image", "E301: Unable to recognize the file type")
+
+    async def _ocrspace_hangs(_image_bytes: bytes, api_key: str) -> str:
+        calls.append(api_key)
+        await asyncio.sleep(5)
+        return "kech"
+
+    async def _ocrspace_raw_timeout(_image_bytes: bytes, api_key: str) -> str:
+        calls.append(api_key)
+        raise asyncio.TimeoutError()
+
+    ocr_module._ocrspace_key_usage = _no_usage
+    ocr_module._vision_monthly_usage = _vision_usage
+    ocr_module._call_google_vision = _vision_ok
+    settings.OCRSPACE_FREE_MONTHLY = 25000
+    settings.OCRSPACE_API_KEY = ""
+    settings.OCRSPACE_API_KEYS_RAW = "keyA,keyB,keyC"
+    try:
+        # Rasmga bog'liq xato -> qolgan OCR.Space kalitlari sinalmaydi,
+        # darhol Vision.
+        calls.clear()
+        settings.GOOGLE_VISION_API_KEY = "test-key"
+        ocr_module._call_ocrspace = _ocrspace_invalid_image
+        result = await ocr_module.extract_text(None, b"x")
+        check(
+            "invalid_image -> boshqa kalit sinalmaydi, Vision'ga o'tadi",
+            calls == ["keyA", "vision"] and result.provider == "google_vision",
+            f"calls={calls}",
+        )
+
+        # Vision yo'q, provayder osilib qoldi -> umumiy byudjet ichida
+        # `timeout` bilan tugaydi (3 x timeout kutilmaydi).
+        calls.clear()
+        settings.GOOGLE_VISION_API_KEY = ""
+        ocr_module.OCR_TOTAL_BUDGET = 0.6
+        ocr_module.OCR_MIN_ATTEMPT_SECONDS = 0.3
+        ocr_module._call_ocrspace = _ocrspace_hangs
+        started = asyncio.get_running_loop().time()
+        try:
+            await ocr_module.extract_text(None, b"x")
+            check("osilgan provayder -> xato", False, "OcrError kutilgan edi")
+        except OcrError as exc:
+            elapsed = asyncio.get_running_loop().time() - started
+            check(
+                "osilgan provayder -> byudjet ichida timeout",
+                exc.code == "timeout" and elapsed < 2 and len(calls) == 1,
+                f"code={exc.code}, {elapsed:.2f}s, calls={len(calls)}",
+            )
+        ocr_module.OCR_TOTAL_BUDGET = originals["budget"]
+        ocr_module.OCR_MIN_ATTEMPT_SECONDS = originals["min_attempt"]
+
+        # Xom asyncio.TimeoutError (bo'sh str) -> `timeout` kodi va sababli
+        # xabar; boshqa kalitlar sinaladi (kalitga bog'liq bo'lishi mumkin).
+        calls.clear()
+        ocr_module._call_ocrspace = _ocrspace_raw_timeout
+        try:
+            await ocr_module.extract_text(None, b"x")
+            check("xom timeout -> xato", False, "OcrError kutilgan edi")
+        except OcrError as exc:
+            check(
+                "xom TimeoutError -> 'timeout' kodi, xabar bo'sh emas",
+                exc.code == "timeout" and str(exc).strip() != "" and len(calls) == 3,
+                f"code={exc.code}, calls={len(calls)}",
+            )
+
+        # OCR.Space chegarasidan katta rasm: Vision yo'q -> image_too_large,
+        # OCR.Space umuman chaqirilmaydi; Vision bor -> Vision.
+        big = b"\0" * (ocr_module.OCRSPACE_MAX_BYTES + 1)
+        calls.clear()
+        try:
+            await ocr_module.extract_text(None, big)
+            check("katta rasm -> xato", False, "OcrError kutilgan edi")
+        except OcrError as exc:
+            check(
+                "katta rasm, Vision yo'q -> image_too_large (OCR.Space chaqirilmaydi)",
+                exc.code == "image_too_large" and calls == [],
+                f"code={exc.code}, calls={calls}",
+            )
+        settings.GOOGLE_VISION_API_KEY = "test-key"
+        result = await ocr_module.extract_text(None, big)
+        check(
+            "katta rasm, Vision bor -> Vision, 'kvota tugagan' bayrog'i yo'q",
+            result.provider == "google_vision" and not result.ocrspace_quota_exhausted
+            and calls == ["vision"],
+            f"calls={calls}",
+        )
+    finally:
+        settings.OCRSPACE_API_KEYS_RAW = originals["keys_raw"]
+        settings.OCRSPACE_API_KEY = originals["key"]
+        settings.GOOGLE_VISION_API_KEY = originals["vision"]
+        settings.OCRSPACE_FREE_MONTHLY = originals["free"]
+        ocr_module._ocrspace_key_usage = originals["usage"]
+        ocr_module._vision_monthly_usage = originals["vision_usage"]
+        ocr_module._call_ocrspace = originals["call_ocrspace"]
+        ocr_module._call_google_vision = originals["call_vision"]
+        ocr_module.OCR_TOTAL_BUDGET = originals["budget"]
+        ocr_module.OCR_TIMEOUT = originals["timeout"]
+        ocr_module.OCR_MIN_ATTEMPT_SECONDS = originals["min_attempt"]
+
+
 async def main() -> None:
     print("=" * 60)
     print("Tarjimon-8 dud sinovi")
@@ -3055,6 +3253,7 @@ async def main() -> None:
     await test_support_parsing()
     await test_content_extraction()
     await test_fallback_pin_admin_report()
+    await test_ocr_resilience()
 
     await cleanup()
     await engine.dispose()
