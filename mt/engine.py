@@ -2,8 +2,8 @@
 
 Asosiy qarorlar:
 - NLLB gap darajasida o'qitilgan: uzun matn qatorlarga, qatorlar gaplarga
-  bo'linadi, qo'shni gaplar ~120 tokengacha qayta birlashtiriladi (juda
-  qisqa bo'lak gallyutsinatsiya qiladi), hammasi BITTA batch'da tarjima
+  bo'linadi, juda qisqa gaplar qo'shnisiga qo'shiladi (alohida qisqa
+  bo'lak gallyutsinatsiya qiladi), hammasi BITTA batch'da tarjima
   qilinadi va qayta yig'iladi (qator tuzilishi saqlanadi).
 - Harfsiz bo'laklar (raqam, emoji, URL, @username) tarjimaga berilmaydi —
   NLLB ularda "gallyutsinatsiya" qiladi.
@@ -38,6 +38,7 @@ _EDGE_TRAIL = re.compile(r"\s*([^\w\s.,!?…\"'»”)\]]+)$")
 
 MAX_SEGMENT_TOKENS = 200
 MAX_CHUNK_TOKENS = 120
+MIN_CHUNK_TOKENS = 8
 MIN_DETECT_CHARS = 12
 MIN_DETECT_PROB = 0.60
 
@@ -163,8 +164,8 @@ class Engine:
             if not line:
                 layout.append([])
                 continue
-            # Qo'shni gaplar MAX_CHUNK_TOKENS gacha BIRLASHTIRILADI: juda qisqa
-            # alohida bo'lak ("Привет!") NLLB'da gallyutsinatsiyaga olib keladi
+            # Qisqa gap (< MIN_CHUNK_TOKENS) qo'shnisiga BIRLASHTIRILADI: alohida
+            # juda qisqa bo'lak ("Привет!") NLLB'da gallyutsinatsiya qiladi
             # ("Salom! - Qaniydi!"). Tarjima qilinmaydigan bo'lak (URL) zanjirni uzadi.
             segs: list[str] = []
             current = ""
@@ -177,7 +178,12 @@ class Engine:
                         current = ""
                         continue
                     candidate = f"{current} {piece}".strip()
-                    if current and len(self._tokens(candidate)) > MAX_CHUNK_TOKENS:
+                    # Faqat qisqa gap qo'shiladi/qo'shib olinadi: uzun bo'laklar
+                    # batch parallelligini yo'qotadi (554 belgi: 120 token
+                    # chegarasi bilan 19 s, gapma-gap ~6 s — serverda o'lchangan).
+                    short = (len(self._tokens(current)) < MIN_CHUNK_TOKENS
+                             or len(self._tokens(piece)) < MIN_CHUNK_TOKENS)
+                    if current and (not short or len(self._tokens(candidate)) > MAX_CHUNK_TOKENS):
                         segs.append(current)
                         current = piece
                     else:
