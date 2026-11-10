@@ -3319,6 +3319,48 @@ async def test_no_db_transaction_during_provider_call() -> None:
         TranslationService.translate = original_translate  # type: ignore[method-assign]
 
 
+async def test_mymemory_entities() -> None:
+    """MyMemory javobidagi HTML-entity'lar dekodlanadi (`&#39;` foydalanuvchiga chiqmasin)."""
+    print("\n[MyMemory] HTML-entity dekodlash")
+    import bot.services.translation_providers as tp
+
+    class _Resp:
+        status = 200
+
+        async def json(self, content_type=None):
+            return {"responseStatus": 200,
+                    "responseData": {"translatedText": "Xayrli tong, dam olish kunlaringiz qanday o&#39;tdi? &quot;A&amp;B&quot;"}}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    class _Client:
+        def __init__(self, *a, **k):
+            pass
+
+        def get(self, *a, **k):
+            return _Resp()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    original = tp.aiohttp.ClientSession
+    tp.aiohttp.ClientSession = _Client
+    try:
+        out = await tp.call_mymemory("Good morning", "en", "uz", "smoke@example.com")
+    finally:
+        tp.aiohttp.ClientSession = original
+    check("&#39; -> '", "o'tdi" in out and "&#39;" not in out, out)
+    check("&quot;/&amp; ham dekodlanadi", '"A&B"' in out, out)
+    check("handler escape'i bitta marta: &amp; -> &", html_escape(out).count("&amp;") == 1, html_escape(out))
+
+
 async def cleanup() -> None:
     async with AsyncSessionLocal() as session:
         from sqlalchemy import delete
@@ -3582,6 +3624,7 @@ async def main() -> None:
     await test_content_extraction()
     await test_fallback_pin_admin_report()
     await test_ocr_resilience()
+    await test_mymemory_entities()
 
     await cleanup()
     await engine.dispose()
