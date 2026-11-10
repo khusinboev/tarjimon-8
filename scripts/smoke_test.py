@@ -3264,7 +3264,7 @@ async def test_no_db_transaction_during_provider_call() -> None:
                 msg.sent[:1] == [t.TRANSLATING_LONG_TEXT] and "deleted" in msg.sent,
                 str(msg.sent),
             )
-            check("xato xabari yuborildi", t.ERRORS["provider_error"] in msg.sent)
+            check("xato xabari yuborildi", t.ERRORS.get("provider_error", t.ERROR_DEFAULT) in msg.sent)
             failed = (
                 await session.execute(
                     select(func.count(Translation.id)).where(
