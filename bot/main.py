@@ -18,7 +18,7 @@ from bot.database.session import AsyncSessionLocal, init_db
 from bot.handlers import errors
 from bot.handlers.admin import panel
 from bot.handlers.user import common, donate, languages, start, subscription
-from bot.handlers.user import support, translate, tts
+from bot.handlers.user import membership, support, translate, tts
 from bot.middlewares.context import ContextMiddleware
 from bot.middlewares.subscription import SubscriptionMiddleware
 from bot.services.translation import PROVIDERS as TRANSLATION_PROVIDERS
@@ -131,6 +131,8 @@ async def main() -> None:
     #    murojaat matni sifatida emas
     #  - `translate` eng oxirida: uning `F.text` filtri juda keng
     dp.include_router(start.router)
+    # `my_chat_member` — boshqa update turi, tartibga bog'liq emas.
+    dp.include_router(membership.router)
     dp.include_router(subscription.router)
     dp.include_router(languages.router)
     dp.include_router(common.router)
