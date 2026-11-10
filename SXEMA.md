@@ -1,6 +1,8 @@
 # Tarjimon-8 — Ma'lumotlar bazasi arxitekturasi
 
 > Maqsad: 37k user bilan ishlaydigan, kengaytirishga moyil, va **kelajakda AI/ML uchun ma'lumot to'playdigan** struktura.
+>
+> Holat: 2026-11-10 — **17 jadval** (`bot/database/models.py`), migratsiyalar **001–018** (`alembic/versions/`).
 
 ---
 
@@ -16,16 +18,16 @@ Yangi maydon kerak bo'lsa — migratsiyasiz `meta` ga yoziladi. Barqarorlashgand
 PG'da `ENUM` ga yangi qiymat qo'shish jadval qulfini talab qiladi. `VARCHAR` + `CHECK` da esa constraint almashtiriladi, xolos.
 
 **4. Tashqi kalitlar `users.id` ga, `telegram_id` ga emas.**
-`telegram_id` — tabiiy kalit, lekin user o'chib qayta yozilishi mumkin. Ichki `BIGINT id` barqaror. *(Hozirgi `tarjimon-8` sxemasida FK'lar `telegram_id` ga qaragan — buni tuzatamiz.)*
+`telegram_id` — tabiiy kalit, lekin user o'chib qayta yozilishi mumkin. Ichki `BIGINT id` barqaror.
 
 **5. Issiq va sovuq ma'lumot ajratilgan.**
 Bot ishlashi uchun kerakli jadvallar (`users`, `user_settings`) kichik va tez. Analitik jadvallar (`events`, `translations`) katta va faqat yoziladi.
 
 **6. Maxfiylik ML dan ustun.**
-`user_settings.save_history` va `allow_training` — ikki alohida flag. ML eksporti faqat `allow_training = true` bo'lganlarni oladi.
+`user_settings.save_history` va `allow_training` — ikki alohida flag. ML eksporti faqat `allow_training = true` bo'lganlarni oladi. *(2026-11: ikkalasini o'zgartiradigan UI hali yo'q — ustunlar tayyor, hammada standart `true`.)*
 
 **7. Vaqt — har doim `TIMESTAMPTZ`, UTC.**
-Hozirgi bazada `timestamp without time zone` — bu xato manba. Yangi sxemada hammasi TZ-aware.
+Eski bazada `timestamp without time zone` edi — xato manbai. Bu sxemada hammasi TZ-aware.
 
 ---
 
@@ -66,35 +68,42 @@ Users bilan 1:1. Alohida jadval, chunki tez-tez o'zgaradi va `users` ni shishirm
 | `user_id` | BIGINT PK FK users.id | |
 | `source_lang` | VARCHAR(10) | `auto` |
 | `target_lang` | VARCHAR(10) | `uz` |
-| `interface_lang` | VARCHAR(10) | `uz` |
+| `interface_lang` | VARCHAR(10) | `en` — Telegram tilidan avtomatik (uz/en/id), user o'zgartirmaydi |
 | `tts_enabled` | BOOL | `true` |
 | `tts_auto` | BOOL | `false` — tarjimadan keyin avtomatik ovoz |
 | `tts_voice` | VARCHAR(64) | NULL |
 | `save_history` | BOOL | `true` — **maxfiylik** |
 | `allow_training` | BOOL | `true` — **ML roziligi** |
-| `daily_limit_override` | INT | NULL — admin bergan alohida limit |
+| `daily_limit_override` | INT | NULL — admin bergan alohida tarjima limiti |
+| `tts_limit_override` | INT | NULL — alohida ovoz limiti (010) |
+| `image_limit_override` | INT | NULL — alohida rasm limiti (011) |
+| `premium_until` | TIMESTAMPTZ | NULL — bot ichidagi VIP muddati (Telegram Premium emas) (010) |
+| `referral_bonus_granted` | BOOL | `false` — referal bonusi ikki marta berilmasin (010) |
 | `updated_at` | TIMESTAMPTZ | |
 | `meta` | JSONB | |
 
 #### `languages`
-Statik ma'lumotnoma (hozirgi bazada 21 ta).
+Statik ma'lumotnoma — **23 til** (`auto` dan tashqari): 002 da 21 ta, 006 da amhar (`am`), 009 da oromo (`om`). TTS ovozi 18 tilda bor (ky/tg/tk/om da yo'q).
 
-`code` PK · `name_uz` · `name_en` · `name_native` · `flag` · `supports_tts` · `supports_detection` · `is_active` · `sort_order`
+`code` PK · `name_uz` · `name_en` · `name_native` · `flag` · `supports_tts` · `supports_detection` · `tts_voice` · `is_active` · `sort_order` · `meta`
 
 ---
 
 ### Blok 2 — Tarjima (ML uchun asosiy qiymat)
 
 #### `translations`
-**Bu jadval — loyihaning eng qimmatli aktivi.** Har bir qator = parallel korpus juftligi. Hozir 155k ta bor, oyiga +25k.
+**Bu jadval — loyihaning eng qimmatli aktivi.** Har bir qator = parallel korpus juftligi. Migratsiyada 155k ta kelgan, 2026-08-31 da ~195k.
 
 | Ustun | Tur | Izoh |
 |---|---|---|
 | `id` | BIGSERIAL PK | |
 | `user_id` | BIGINT FK users.id | |
 | `chat_id` | BIGINT | Telegram chat (guruh bo'lsa boshqa) |
-| `chat_type` | VARCHAR(20) | `private` / `group` / `supergroup` / `inline` |
-| `input_kind` | VARCHAR(20) | `text` / `voice` / `photo` / `forward` / `inline` |
+| `chat_type` | VARCHAR(20) | `private` / `group` / `supergroup` / `channel` / `inline` |
+| `input_kind` | VARCHAR(20) | `text` / `photo` / `caption` / `post` / `poll` / `checklist` / `video` / `audio` / `animation` / `video_note` / `paid_media` / `document` / `voice` / `forward` / `inline` (008) |
+| `source_message_id` | BIGINT | Manba xabar (`chat_id` bilan birga) |
+| `media_file_id` / `media_file_unique_id` | TEXT / VARCHAR(64) | Media manbasi (018); `unique_id` bo'yicha qisman indeks |
+| `media_mime_type` / `media_file_size` / `media_file_name` | | (018) |
 | `source_lang_requested` | VARCHAR(10) | `auto` yoki aniq kod |
 | `source_lang_detected` | VARCHAR(10) | Haqiqatda aniqlangan |
 | `target_lang` | VARCHAR(10) | |
@@ -102,18 +111,21 @@ Statik ma'lumotnoma (hozirgi bazada 21 ta).
 | `target_text` | TEXT | |
 | `source_hash` | CHAR(64) | SHA-256(normallashtirilgan matn + til juftligi) — **kesh va dedup** |
 | `source_chars` / `target_chars` | INT | |
-| `provider` | VARCHAR(32) | `deep_translator` / `google` / kelajakda `claude` |
-| `provider_model` | VARCHAR(64) | NULL — AI'ga o'tganda to'ladi |
+| `provider` | VARCHAR(32) | Bajargan dvigatel: `google_translate` / `azure_translator` / `deepl` / `mymemory` / `local_mt` / `gemini` / `deep_translator` / `cache` |
+| `provider_model` | VARCHAR(64) | NULL |
+| `provider_key_index` | INT | Provayderning qaysi kaliti (0-based) — oylik bepul hajm hisobi (014) |
+| `ocr_provider` / `ocr_key_index` | VARCHAR(32) / INT | Faqat `photo`: `ocrspace` / `google_vision` va kalit (011, 012) |
 | `status` | VARCHAR(20) | `success` / `error` / `timeout` |
-| `error_code` | VARCHAR(64) | |
+| `error_code` / `error_message` | VARCHAR(64) / TEXT | |
 | `latency_ms` | INT | |
 | `cache_hit` | BOOL | Redis'dan kelganmi |
 | `created_at` | TIMESTAMPTZ | |
 | `meta` | JSONB | |
 
 Indekslar:
-- `(user_id, created_at DESC)` — tarix ko'rsatish
+- `(user_id, created_at)` — user bo'yicha so'rovlar
 - `source_hash` — kesh qidiruvi
+- `(provider, provider_key_index, created_at)` va `(input_kind, ocr_provider, ocr_key_index, created_at)` — oylik bepul hajm hisobi
 - `(source_lang_detected, target_lang)` — til juftligi statistikasi
 - `created_at` BRIN — analitik skanlar uchun arzon
 - `status` (partial: `WHERE status <> 'success'`) — xatolar monitoringi
@@ -138,7 +150,7 @@ Signal turlari:
 |---|---|---|
 | `copied` | Nusxa oldi | ➕ yaxshi tarjima |
 | `tts_played` | Ovozda eshitdi | ➕ qiziqish |
-| `favorited` | Sevimlilarga qo'shdi | ➕➕ juda yaxshi |
+| `favorited` / `unfavorited` | Sevimlilarga qo'shdi / olib tashladi (UI hali yo'q; migratsiyadan kelgan) | ➕➕ / ➖ |
 | `retranslated` | 60 soniya ichida qayta yubordi | ➖ yomon tarjima |
 | `lang_switched_after` | Tarjimadan keyin tilni o'zgartirdi | ➖ noto'g'ri til aniqlangan |
 | `reported` | Shikoyat qildi | ➖➖ |
@@ -147,7 +159,7 @@ Signal turlari:
 > Bu jadval — hozirgi tizimda umuman yo'q narsa. Aynan shu tufayli "qaysi tarjimalar yomon" degan savolga javob yo'q. Uni birinchi kundan yig'ish kerak, chunki keyin orqaga qaytarib to'plab bo'lmaydi.
 
 #### `tts_requests`
-| `id` · `user_id` · `translation_id` (NULL) · `text` · `lang` · `voice` · `provider` · `duration_ms` · `file_size` · `telegram_file_id` · `status` · `error_code` · `latency_ms` · `created_at` · `meta` |
+| `id` · `user_id` · `translation_id` (NULL) · `text` · `text_hash` · `lang` · `voice` · `provider` · `duration_ms` · `file_size` · `telegram_file_id` · `status` · `error_code` · `latency_ms` · `created_at` · `meta` |
 
 `telegram_file_id` saqlanadi — bir xil matn qayta so'ralsa, Telegram'ning o'z fayli qayta yuboriladi (tez va bepul).
 
@@ -191,36 +203,122 @@ Indekslar:
 | `translate.quota_exceeded` | `{limit, used}` |
 | `tts.requested` / `tts.succeeded` / `tts.failed` | `{translation_id, lang, chars}` |
 | `feedback.given` | `{translation_id, signal}` |
-| `history.viewed` | `{page}` |
 | `menu.opened` | `{menu}` |
 | `button.clicked` | `{callback_data, screen}` |
 | `inline.query` | `{chars, lang_pair}` |
 | `broadcast.delivered` | `{broadcast_id}` |
 | `error.unhandled` | `{exc_type, handler}` |
+| `image.ocr_*` / `image.quota_exceeded` | rasm tarjimasi (011) |
+| `support.*`, `donate.*`, `premium.granted`, `user.referred`, `referral.bonus_granted` | murojaat, homiylik, VIP, referal |
+
+To'liq ro'yxat: `bot/services/events.py` (`EventType`).
 
 > **Nega bitta keng jadval, har voqea uchun alohida emas:** yangi voqea turi qo'shish migratsiya talab qilmaydi — shunchaki yangi `event_type` yoziladi. Bu "kengaytirishga moyil" degani. Kamchiligi — tip xavfsizligi yo'q; buni Python tarafda `EventType` konstanta klassi bilan qoplaymiz.
 
 **Bo'laklash (partitioning) haqida:** hozircha kerak emas. Hisob: ~150k voqea/oy = 1.8M/yil. PostgreSQL 14 buni indekslar bilan yillar davomida muammosiz olib boradi. `events` 20M qatordan oshganda oylik `RANGE` bo'laklashga o'tamiz — `created_at` BRIN indeksi shu o'tishni oldindan tayyorlab qo'yadi.
 
 #### `daily_usage`
-Kunlik limit hisobi (50 ta/kun). Alohida jadval — `events` dan `COUNT(*)` qilish qimmat.
+Kunlik limit hisobi. Alohida jadval — `events` dan `COUNT(*)` qilish qimmat.
 
-| `user_id` + `date` PK · `translations_count` · `tts_count` · `chars_count` · `updated_at` |
+| `user_id` + `date` PK · `translations_count` · `tts_count` · `images_count` (011) · `chars_count` · `updated_at` |
 
 Redis'da ham dublikat turadi (tezlik uchun), PG — haqiqat manbai.
 
 ---
 
-### Blok 4 — Boshqaruv (tarjimon-8 da tayyor)
+### Blok 4 — Boshqaruv
 
-- `channels` — majburiy obuna kanallari
-- `broadcasts` / `broadcast_deliveries` — xabar tarqatish
-- `chats` — bot qo'shilgan guruhlar (`chat_id`, `title`, `type`, `member_count`, `is_active`, `added_by`)
-- `admin_actions` — admin nima qilgani (audit): `admin_id`, `action`, `target_type`, `target_id`, `payload`, `created_at`
+#### `system_settings`
+Yagona qator (`id=1`) — admin paneldan o'zgartiriladigan umumiy limitlar (011): `daily_translation_limit` · `daily_tts_limit` · `daily_image_limit_free` · `daily_image_limit_vip` · `updated_at`. `NULL` — `.env` dagi qiymat ishlaydi. `user_settings.*_override` dan farqi: bu HAMMA uchun standart.
+
+#### `channels`
+Majburiy obuna kanallari: `channel_id` (unique) · `channel_username` · `channel_title` · `button_text` · `button_url` · `is_active` · `priority` · `added_by` → users · `created_at` · `updated_at` · `meta`.
+
+#### `broadcasts`
+| Ustun | Izoh |
+|---|---|
+| `id`, `created_by` → users | |
+| `mode` | `copy` / `forward` |
+| `status` | `created` / `running` / `pause_requested` / `paused` / `cancel_requested` / `cancelled` / `completed` / `failed` |
+| `content_preview` | |
+| `src_chat_id` / `src_message_id` | Manba xabar — pauza va restartdan keyin davom ettirish uchun (013) |
+| `cursor_user_id` | Oxirgi ishlangan `users.id` — davom shu yerdan (013) |
+| `active_seconds` | Faqat haqiqiy yuborish vaqti — tezlik/qolgan vaqt hisobi (013) |
+| `total_targets` / `success_count` / `failed_count` | |
+| `error` | `failed` sababi |
+| `created_at` / `started_at` / `finished_at` / `meta` | |
+
+Bir vaqtda faqat **bitta faol** tarqatish — `ux_broadcasts_single_active` qisman unique indeks (015). Restartda `running`/`*_requested` qatorlar `paused` ga o'tkaziladi.
+
+#### `broadcast_deliveries`
+`broadcast_id` → broadcasts (CASCADE) · `user_id` → users · `status` (`delivered` / `failed` / `blocked` / `skipped`) · `error` · `created_at`.
+
+#### `chats`
+Bot qo'shilgan guruhlar: `chat_id` (unique) · `title` · `username` · `type` · `member_count` · `is_active` · `added_by` · `source_lang` / `target_lang` · `created_at` · `last_seen_at` · `meta`.
+
+#### `support_messages` (007, 018)
+Adminga murojaat yozishmasi. Har yetkazilgan xabar = bitta qator (bir necha adminga ketsa — har biriga alohida).
+
+| Ustun | Izoh |
+|---|---|
+| `id`, `user_id` → users (CASCADE) | |
+| `direction` | `in` — userdan adminga, `out` — admindan userga |
+| `text` | Media bo'lsa belgi (`[🖼 rasm]`) |
+| `admin_chat_id` / `admin_message_id` / `user_chat_id` / `user_message_id` | Faqat tarix/audit uchun (017 dan beri suhbatni aniqlashda ishlatilmaydi, indekslari o'chirilgan) |
+| `media_kind` / `media_file_id` / `media_file_unique_id` / `media_mime_type` / `media_file_size` / `media_file_name` | (018) |
+| `created_at` / `meta` | |
+
+#### `admin_reply_targets` (016)
+Admin "↩️ Javob yozish" tugmasini bosib tanlagan suhbat: `admin_chat_id` PK · `target_user_id` → users · `set_at`. Har admin uchun bitta qator; keyingi oddiy xabari shu userga ketadi. Sabab: Telegram eski xabarlar uchun `reply_to_message` ni uzatmasligi mumkin (2026-08-27 voqeasi).
+
+#### `donations` (005)
+Telegram Stars homiyligi — o'chirilmaydi, o'zgartirilmaydi (faqat qaytarishda `status`).
+
+`id` · `user_id` → users · `stars` (> 0) · `currency` (`XTR`) · `telegram_payment_charge_id` (unique — takroriy xabar va `refundStarPayment` uchun) · `provider_payment_charge_id` · `invoice_payload` · `status` (`paid` / `refunded`) · `refunded_at` · `created_at` · `meta`.
+
+#### `admin_actions`
+Audit izi (`📜 Audit`): `admin_id` → users · `action` · `target_type` · `target_id` · `payload` JSONB · `created_at`.
 
 ---
 
-## Migratsiya: eski → yangi
+## Tarjima provayderlari
+
+`bot/services/translation.py` + `translation_providers.py`. Har so'rov avval Redis keshidan qidiriladi (`provider='cache'`), keyin zanjir:
+
+| Tartib | Provayder | Shart | Holat (2026-11-10) |
+|---|---|---|---|
+| 0 (tasodifiy) | `google_translate`, `azure_translator`, `deepl` | Kalit bor, oylik bepul hajm tugamagan; DeepL `am` ni qilmaydi | Uchchalasi yiqilyapti (Google rate-limit, Azure kalit yaroqsiz, DeepL kvota) — kalitlar saqlanadi |
+| 2 | `mymemory` | ≤ 500 belgi, 50k belgi/kun | Amalda asosiy |
+| `LOCAL_MT_PRIORITY` (prod: 3) | `local_mt` | `LOCAL_MT_URL` bor | NLLB-200 1.3B, `mt/README.md` |
+| keyin | `gemini` | `GEMINI_API_KEYS` bor | O'chirilgan (kalit yo'q) |
+| oxirgi | `deep_translator` | har doim | Scraper, hozir yiqiladi |
+
+Bir xil ustunlikdagilar tasodifiy tartibda. Kalit 2 daqiqada 3 marta yiqilsa 5 daqiqaga chetlanadi (`circuit_breaker.py`); til mos kelmasligi xato hisoblanmaydi. 15 daqiqada xato ≥10% bo'lsa adminga ogohlantirish (`error_rate.py`). Oylik hajm `translations` dan `(provider, provider_key_index)` bo'yicha sanaladi.
+
+---
+
+## Migratsiyalar
+
+| № | Nima |
+|---|---|
+| 001–004 | Asosiy sxema, 21 til, server default'lar, `interface_lang` to'ldirish |
+| 005 | `donations` |
+| 006 / 009 | Amhar / oromo tillari |
+| 007 | `support_messages` |
+| 008 | `input_kind` kengaytirildi (caption, post, poll, …) |
+| 010 | VIP (`premium_until`), referal bayrog'i, `tts_limit_override` |
+| 011 | Rasm tarjimasi: `ocr_provider`, `images_count`, `image_limit_override`, `system_settings` |
+| 012 | `ocr_key_index` |
+| 013 | Tarqatishni pauza/davom ettirish ustunlari |
+| 014 | `provider_key_index` |
+| 015 | Bitta faol tarqatish (qisman unique indeks) |
+| 016 | `admin_reply_targets` |
+| 017 | Murojaat reply-indekslari o'chirildi |
+| 018 | Media fayl identifikatorlari (`translations`, `support_messages`) |
+
+---
+
+## Migratsiya: eski → yangi (2026-08, bajarilgan)
 
 ```
 PostgreSQL `tarjimon`          SQLite fayl              Yangi `tarjimon8`
@@ -248,7 +346,7 @@ groups (35)                 ─────────────────�
 - `translation_history.is_favorite` → `translation_signals(signal='favorited')`
 - `users_tts` sozlamasi → `user_settings.tts_enabled`
 
-**Xavfsizlik:** eski `tarjimon` bazasi va SQLite fayli **qo'l tegizilmaydi**. Yangi baza `tarjimon8` nomi bilan yonida yaratiladi. Muammo chiqsa — `t4.service` ni qaytarib yoqish kifoya.
+Migratsiya eski serverda bajarilgan; `t4.service` endi yo'q.
 
 ---
 
@@ -281,9 +379,9 @@ WHERE us.allow_training = true
 
 ---
 
-## Birinchi reliz doirasi
+## Birinchi reliz doirasi (2026-07, tarix)
 
-Kelishilgan: **faqat matn tarjimasi + TTS**, lug'at va gamification yo'q.
+Kelishilgan edi: **faqat matn tarjimasi + TTS**, lug'at va gamification yo'q. Keyin qo'shilganlar: homiylik, murojaat, VIP/referal, rasm tarjimasi (005–018).
 
 | Jadval | 1-relizda |
 |---|---|
@@ -295,5 +393,4 @@ Kelishilgan: **faqat matn tarjimasi + TTS**, lug'at va gamification yo'q.
 | `chats`, `admin_actions` | ✅ |
 | lug'at / mashq / gamification jadvallari | ❌ keyinga |
 
-Tarjima provayderi: **`deep-translator`** (boshqa botlar bilan bir xil).
-`provider` / `provider_model` ustunlari sxemada bor — kelajakda AI qo'shilsa, migratsiyasiz ishlaydi.
+O'shanda provayder faqat `deep-translator` edi; hozirgi zanjir — [Tarjima provayderlari](#tarjima-provayderlari).
