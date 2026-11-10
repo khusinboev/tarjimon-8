@@ -185,6 +185,10 @@ async def _translate(
             # urinish hisoblanadi).
             await quota.release_translation(user.id, chars=len(text))
         # Muvaffaqiyatsiz urinish ham yoziladi — provayder sog'lig'ini kuzatish uchun.
+        # `exc.provider` — oxirgi sinalgan provayder (`TranslationService`
+        # qo'yadi); servisga yetmasdan yiqilgan holatlarda (bo'sh matn va
+        # h.k.) yo'q, unda standart zaxira nomi yoziladi.
+        failed_provider = exc.provider or settings.TRANSLATION_PROVIDER
         await repo.create(
             user_id=user.id,
             chat_id=message.chat.id,
@@ -196,7 +200,7 @@ async def _translate(
             source_text=text,
             source_hash=source_hash,
             source_chars=len(text),
-            provider=settings.TRANSLATION_PROVIDER,
+            provider=failed_provider,
             ocr_provider=ocr_provider,
             ocr_key_index=ocr_key_index,
             status="timeout" if exc.code == "timeout" else "error",
@@ -209,7 +213,7 @@ async def _translate(
             chat_id=message.chat.id,
             session_id=session_id,
             error_code=exc.code,
-            provider=settings.TRANSLATION_PROVIDER,
+            provider=failed_provider,
         )
         await message.answer(t.ERRORS.get(exc.code, t.ERROR_DEFAULT))
         return
@@ -440,10 +444,13 @@ async def handle_photo(
             # "not_configured" — doimiy holat (OCR umuman sozlanmagan),
             # alohida ogohlantirish shart emas. Boshqa har qanday xato —
             # rasmdan tarjima BUTUNLAY ishlamayapti degani.
+            # Xato matni provayderdan keladi (`<`/`&` bo'lishi mumkin) —
+            # escape qilinmasa Telegram alertning o'zini rad etadi va
+            # admin hech narsa ko'rmaydi.
             await alert_admins_once(
                 message.bot, redis, "ocr_all_failed",
                 f"🆘 <b>Rasmdan tarjima ishlamayapti</b> — oxirgi xato: "
-                f"{exc.code} — {exc}",
+                f"{html_escape(exc.code)} — {html_escape(str(exc)[:300])}",
             )
         text = t.IMAGE_OCR_UNAVAILABLE if exc.code == "not_configured" else t.IMAGE_OCR_FAILED
         await message.answer(text)
