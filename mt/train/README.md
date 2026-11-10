@@ -40,6 +40,18 @@ tarjima qilinmagan, noto'g'ri yozuv/til belgisi.
 python -m mt.train.evaluate --model <ct2 model> --test prepared/test.jsonl --out baseline.json
 ```
 
+Bazaviy natija — NLLB-1.3B (o'qitilmagan), beam 2, 2026-11-10 test to'plami:
+
+| yo'nalish | n | chrF++ | BLEU |
+|---|---|---|---|
+| en→uz | 300 | 60.56 | 36.26 |
+| uz→en | 300 | 59.32 | 40.05 |
+| ru→uz | 300 | 48.91 | 23.05 |
+| uz→ru | 300 | 40.56 | 20.09 |
+| en→ru | 81 | 58.10 | 39.82 |
+| ru→en | 66 | 61.21 | 41.79 |
+| **umumiy** | 1347 | **54.18** | |
+
 ## 4. O'qitish (GPU)
 
 ```bash
