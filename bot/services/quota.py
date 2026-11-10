@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from bot.config.settings import settings
 from bot.database.redis import atomic_rate_incr
 from bot.database.repositories.usage_repository import UsageRepository
+from bot.database.session import AsyncSessionLocal
 from bot.services.events import utcnow
 from bot.services.system_config import get_effective_limits
 
@@ -191,6 +192,28 @@ class QuotaService:
 
     async def release_image(self, user_id: int) -> None:
         await self.usage.release(user_id, "images_count")
+
+    async def _release_detached(self, user_id: int, field: str, *, chars: int = 0) -> None:
+        """Band qilingan joyni ALOHIDA, qisqa tranzaksiyada qaytaradi.
+
+        Tarjima/OCR oqimida kvota provayder chaqiruvidan OLDIN commit
+        qilinadi (ulanish 15–60 s band bo'lmasin). Demak keyin xato bo'lsa
+        middleware'ning rollback'i uni qaytara OLMAYDI — qaytarish o'z
+        tranzaksiyasida, o'zi commit bilan bo'lishi shart. Asosiy sessiya
+        holatiga bog'liq emas (u xato tranzaksiyada qolib ketgan bo'lsa ham
+        ishlaydi); asosiy sessiyadagi keshlangan `DailyUsage` nusxasi
+        eskirtiriladi, keyin kimdir o'qisa eski sonni ko'rmasin.
+        """
+        async with AsyncSessionLocal() as own:
+            await UsageRepository(own).release(user_id, field, chars=chars)
+            await own.commit()
+        self.usage.expire_cached(user_id)
+
+    async def release_translation_detached(self, user_id: int, chars: int = 0) -> None:
+        await self._release_detached(user_id, "translations_count", chars=chars)
+
+    async def release_image_detached(self, user_id: int) -> None:
+        await self._release_detached(user_id, "images_count")
 
     async def hit_rate_limit(self, user_id: int) -> bool:
         """Flood himoyasi. Redis yo'q bo'lsa — o'tkazib yuboradi (fail-open).

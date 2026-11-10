@@ -77,7 +77,17 @@ class Settings(BaseSettings):
         return f"redis://{auth}{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_FSM_DB}"
 
     # ── Tarjima ───────────────────────────────────────────────
+    # Oxirgi (3-daraja) zaxira provayderning NOMI — orqaga moslik uchun
+    # saqlanadi (main.py `PROVIDERS` bo'yicha tekshiradi, handler
+    # muvaffaqiyatsiz yozuvda provayder nomi bo'lmasa shuni yozadi).
     TRANSLATION_PROVIDER: str = Field(default="deep_translator")
+    # 3-daraja zaxira (`deep_translator`, Google veb-sahifasini scraping)
+    # ISHLATILSINMI. 2026-10/11 da u 100% `rate_limited` qaytardi — 30 kunda
+    # 1,103 muvaffaqiyatsiz urinish, har biri 15 s gacha bekor kutish
+    # (3 urinish + pauzalar, oqimni bekor qilib bo'lmaydi). Standart O'CHIQ:
+    # 1-/2-daraja natija bermasa foydalanuvchi darhol xato oladi va admin
+    # `all_tiers_down` alertini ko'radi. Google yana ochilsa `true` qiling.
+    DEEP_TRANSLATOR_ENABLED: bool = Field(default=False)
     TRANSLATION_TIMEOUT: int = Field(default=15, description="soniya")
     TRANSLATION_MAX_CHARS: int = Field(default=4500)
     TRANSLATION_CACHE_TTL: int = Field(default=86400, description="soniya, 24 soat")

@@ -21,7 +21,8 @@ FAQAT ANIQ TUGMA bosilgach yuboriladi, boshqa hech qanday holatda emas:
     murojaat sarlavhasidagi "↩️ Javob yozish" tugmasi → shu suhbat
     `admin_reply_targets`da (FSM EMAS, oddiy DB qatori) "tanlanadi" →
     keyingi xabar shu foydalanuvchiga ketadi (bir martalik — yuborilgach
-    darhol o'chadi, yana yozish uchun tugma QAYTA bosilishi kerak).
+    darhol o'chadi, yana yozish uchun tugma QAYTA bosilishi kerak; 30
+    daqiqadan eski pin e'tiborga olinmaydi — `PIN_TTL`).
     Tugmasiz oddiy xabar (yoki reply) hech qachon foydalanuvchiga
     ketmaydi — faqat pin orqali.
 
@@ -40,6 +41,7 @@ Murojaat matni ikki joyga tushadi:
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta, timezone
 from types import ModuleType
 
 from aiogram import F, Router
@@ -47,16 +49,18 @@ from aiogram.dispatcher.event.bases import SkipHandler
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config.settings import settings
-from bot.database.models import User
+from bot.database.models import AdminReplyTarget, User
 from bot.database.repositories.support_repository import SupportRepository
 from bot.keyboards.inline import contact_send_again_keyboard, support_reply_keyboard
 from bot.keyboards.user import cancel_menu, main_menu
 from bot import locales
 from bot.locales import CANCEL_BUTTONS, CONTACT_BUTTONS, RESERVED_BUTTONS
-from bot.services.events import EventService, EventType
+from bot.services.admin_access import is_env_admin
+from bot.services.events import EventService, EventType, utcnow
 from bot.states.support import SupportStates
 from bot.utils.media import extract_media
 from bot.utils.text import html_escape, truncate
@@ -317,8 +321,44 @@ async def send_again(
         await callback.message.answer(t.CONTACT_PROMPT, reply_markup=cancel_menu(t))
 
 
+# "↩️ Javob yozish" tanlovining (pin) amal qilish muddati. Ilgari pin
+# muddatsiz edi: admin tugmani bosib, yozishni unutsa, KEYINGI oddiy
+# matni (masalan soatlar o'tib, tarjima uchun yozgani) tasodifan o'sha
+# foydalanuvchiga ketib qolardi. Endi `admin_reply_targets.set_at`
+# (pin qo'yilgan/yangilangan vaqt — `set_pinned_target` uni har safar
+# yangilaydi) shu muddatdan eski bo'lsa pin e'tiborga olinmaydi va
+# o'chiriladi. Sozlama emas, modul konstantasi — `.env`ga chiqarish
+# shart bo'lsa `settings.py`ga ko'chiring.
+PIN_TTL = timedelta(minutes=30)
+
+
+def is_pin_expired(
+    set_at: datetime | None, now: datetime | None = None, ttl: timedelta = PIN_TTL
+) -> bool:
+    """Pin muddati o'tganmi. `set_at` yo'q bo'lsa — xavfsiz tomonga, o'tgan.
+
+    Vaqt mintaqasisiz (`naive`) qiymat UTC deb olinadi — `timestamptz`
+    ustuni odatda mintaqali qaytadi, bu faqat ehtiyot chorasi.
+    """
+    if set_at is None:
+        return True
+    if set_at.tzinfo is None:
+        set_at = set_at.replace(tzinfo=timezone.utc)
+    now = now or utcnow()
+    return now - set_at > ttl
+
+
+def _target_name(target: User) -> str:
+    return target.first_name or (
+        f"@{target.username}" if target.username else str(target.telegram_id)
+    )
+
+
 def _is_admin(telegram_id: int) -> bool:
-    return telegram_id in settings.ADMIN_USER_IDS
+    # Faqat `.env` — panel bilan bir xil ishonch chegarasi (DB roli
+    # foydalanuvchiga xabar yuborish huquqini BERMAYDI). Izoh:
+    # `bot/services/admin_access.py`.
+    return is_env_admin(telegram_id)
 
 
 @router.callback_query(
@@ -345,10 +385,12 @@ async def pick_reply_target(callback: CallbackQuery, session: AsyncSession) -> N
         return
 
     await support.set_pinned_target(callback.from_user.id, target_user_id)
-    name = target.first_name or (f"@{target.username}" if target.username else str(target.telegram_id))
+    name = _target_name(target)
+    minutes = int(PIN_TTL.total_seconds() // 60)
     await callback.answer()
     await callback.message.answer(
-        f"↩️ Endi <b>{html_escape(name)}</b>ga yozyapsiz — keyingi xabaringiz shunga yuboriladi."
+        f"↩️ Endi <b>{html_escape(name)}</b>ga yozyapsiz — keyingi xabaringiz "
+        f"shunga yuboriladi (tanlov {minutes} daqiqa amal qiladi)."
     )
 
 
@@ -438,7 +480,9 @@ async def admin_reply(
     xabari o'sha foydalanuvchiga boradi. BIR MARTALIK: yuborilgach pin
     darhol o'chadi, yana yozish uchun tugma QAYTA bosilishi kerak
     (`qolgan hollarda xabar yuborolmaydi` — ataylab shunday, tasodifan
-    boshqa foydalanuvchiga ketib qolmasin deb).
+    boshqa foydalanuvchiga ketib qolmasin deb). Pin `PIN_TTL`dan eski
+    bo'lsa — e'tiborga olinmaydi, admin ogohlantiriladi va xabar oddiy
+    oqimga (tarjima) qaytadi.
 
     Har qanday tur uzatiladi: matn, rasm, ovoz, hujjat.
     """
@@ -450,7 +494,26 @@ async def admin_reply(
     # — aks holda admin panelidagi matn kiritishlarni yoki o'zining oddiy
     # tarjimalarini ushlab qolgan bo'lardik.
     if await state.get_state() is None and not _is_reserved(message):
-        target = await support.get_pinned_target(message.chat.id)
+        # Avval faqat vaqtni o'qiymiz (yengil so'rov): pin yo'q bo'lsa —
+        # oldingidek bitta so'rov bilan chiqamiz.
+        set_at = await session.scalar(
+            select(AdminReplyTarget.set_at).where(
+                AdminReplyTarget.admin_chat_id == message.chat.id
+            )
+        )
+        if set_at is not None:
+            # `get_pinned_target` pinni HAR DOIM o'chiradi (bir martalik) —
+            # muddati o'tgan pin ham shu yerda tozalanadi.
+            target = await support.get_pinned_target(message.chat.id)
+            if target is not None and is_pin_expired(set_at):
+                minutes = int(PIN_TTL.total_seconds() // 60)
+                await message.reply(
+                    f"⏳ <b>{html_escape(_target_name(target))}</b>ga javob "
+                    f"tanlovi muddati o'tgan ({minutes} daqiqadan ko'p) — bu "
+                    "xabar foydalanuvchiga YUBORILMADI va oddiy xabar sifatida "
+                    "ishlanadi. Javob berish uchun «↩️ Javob yozish»ni qayta bosing."
+                )
+                target = None
 
     if target is None:
         raise SkipHandler

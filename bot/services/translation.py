@@ -11,8 +11,11 @@ tezligi (RPM/RPD) bo'lgani uchun oylik hisob shart emas — kalitlar orasida
 oddiy tasodifiy tanlov.
 
 3-daraja: `deep_translator` — bepul, lekin Google veb-sahifasini scraping
-qilgani uchun ishonchsiz oxirgi zaxira. Yuqoridagi ikkala daraja ham
-yo'q/tugagan/xato bersa shunga qaytiladi.
+qilgani uchun ishonchsiz oxirgi zaxira. 2026-10/11 da 100% `rate_limited`
+qaytardi (30 kunda 1,103 muvaffaqiyatsiz urinish, har biri 15 s gacha
+bekor kutish), shuning uchun STANDART O'CHIQ (`DEEP_TRANSLATOR_ENABLED`).
+Yoqilsa, yuqoridagi ikkala daraja ham yo'q/tugagan/xato bersa shunga
+qaytiladi; o'chiq bo'lsa shu nuqtada yakuniy `TranslationError` ko'tariladi.
 
 Batafsil: `bot/services/translation_providers.py`. Baza sxemasida
 `provider`/`provider_model`/`provider_key_index` ustunlari allaqachon bor.
@@ -23,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import threading
 import time
 from dataclasses import dataclass
 from typing import Optional, Protocol
@@ -37,8 +41,10 @@ from bot.services.circuit_breaker import OPEN_SECONDS, CircuitBreaker
 from bot.services.translation_providers import (
     CHEAP_PROVIDER_CONFIG,
     FREE_TIER_PROVIDER_CONFIG,
+    UNLIMITED_CHARS,
     ProviderDeclined,
     pick_key,
+    record_key_usage,
 )
 from bot.utils.text import chunk, content_hash, html_escape, normalize
 
@@ -103,6 +109,44 @@ class TranslationProvider(Protocol):
     def supports(self, code: str) -> bool: ...
 
 
+# `deep_translator.GoogleTranslator.translate` `requests.get(...)`ni
+# TIMEOUT'SIZ chaqiradi — kutubxona uni berishga yo'l qo'ymaydi. Oqimda
+# osilib qolgan so'rovni `asyncio.wait_for` bekor qila olmaydi (faqat
+# kutishni to'xtatadi, oqim yashab qoladi). Shuning uchun kutubxona
+# modulidagi `requests` nomi — faqat `get`ga timeout qo'shadigan shim
+# bilan almashtiriladi; qiymat oqim-lokal (`_REQUEST_TIMEOUT.value`),
+# `_translate_piece` har urinishdan oldin qolgan vaqtni yozadi.
+_REQUEST_TIMEOUT = threading.local()
+_SHIM_LOCK = threading.Lock()
+
+
+class _TimedRequests:
+    def __init__(self, module, default: float):
+        self._module = module
+        self._default = default
+
+    def get(self, *args, **kwargs):
+        kwargs.setdefault("timeout", getattr(_REQUEST_TIMEOUT, "value", self._default))
+        return self._module.get(*args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._module, name)
+
+
+def _install_requests_timeout() -> None:
+    """`deep_translator.google.requests`ni bir marta shim bilan almashtiradi
+    (idempotent; kutubxona bo'lmasa yoki tuzilishi o'zgargan bo'lsa — jim)."""
+    with _SHIM_LOCK:
+        try:
+            import deep_translator.google as dg
+        except Exception:
+            return
+        current = getattr(dg, "requests", None)
+        if current is None or isinstance(current, _TimedRequests):
+            return
+        dg.requests = _TimedRequests(current, float(settings.TRANSLATION_TIMEOUT))
+
+
 class DeepTranslatorProvider:
     """`deep-translator` ustidagi async o'ram.
 
@@ -131,16 +175,25 @@ class DeepTranslatorProvider:
     def supports(self, code: str) -> bool:
         return True
 
-    def _translate_piece(self, translator, piece: str) -> str:
+    def _translate_piece(self, translator, piece: str, deadline: float) -> str:
         """Bitta bo'lakni tarjima qiladi va Google'ning xato sahifasini
         haqiqiy tarjima deb qabul qilmaydi (izoh: yuqorida `_looks_like_google_error_page`).
 
         Ikkala nosozlik turi ham (istisno bilan yiqilish VA sukut bo'yicha
         xato sahifa qaytarish) qayta urinishga o'tkaziladi — sababi bir xil
         (Google band/bloklagan), demak davolash ham bir xil.
+
+        `deadline` (monotonic) — umumiy muddat: `asyncio.wait_for` oqimni
+        BEKOR QILA OLMAYDI, shuning uchun har HTTP so'rovga qolgan vaqt
+        timeout qilib beriladi va muddat o'tgach qayta urinilmaydi — aks
+        holda oqim 3 × (javobsiz so'rov) davomida osilib qolardi.
         """
         last_error: Exception = TranslationError("provider_error", "Noma'lum xato")
         for attempt in range(self.MAX_ATTEMPTS):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TranslationError("timeout", "Provayder javob bermadi")
+            _REQUEST_TIMEOUT.value = remaining
             try:
                 result = translator.translate(piece)
             except Exception as exc:
@@ -158,6 +211,8 @@ class DeepTranslatorProvider:
                     return result
 
             if attempt < self.MAX_ATTEMPTS - 1:
+                if deadline - time.monotonic() <= self.RETRY_DELAY:
+                    break
                 time.sleep(self.RETRY_DELAY)
 
         raise last_error
@@ -165,11 +220,13 @@ class DeepTranslatorProvider:
     def _translate_sync(self, text: str, source: str, target: str) -> str:
         from deep_translator import GoogleTranslator
 
+        _install_requests_timeout()
         translator = GoogleTranslator(source=self._map(source), target=self._map(target))
+        deadline = time.monotonic() + self.timeout
 
         # Provayderning belgi limiti — uzun matn bo'laklab yuboriladi.
         pieces = chunk(text, 4500)
-        out = [self._translate_piece(translator, piece) for piece in pieces]
+        out = [self._translate_piece(translator, piece, deadline) for piece in pieces]
         return "\n".join(out) if len(out) > 1 else out[0]
 
     async def translate(self, text: str, source: str, target: str) -> str:
@@ -187,6 +244,9 @@ class DeepTranslatorProvider:
             lowered = message.lower()
             if "invalid destination" in lowered or "invalid source" in lowered:
                 raise TranslationError("invalid_language", message) from exc
+            # `requests` timeout'i (shim orqali) — "Read timed out" shaklida keladi.
+            if "timed out" in lowered or "timeout" in lowered:
+                raise TranslationError("timeout", message) from exc
             if "too many requests" in lowered or "429" in message:
                 raise TranslationError("provider_rate_limited", message) from exc
             raise TranslationError("provider_error", message) from exc
@@ -221,8 +281,10 @@ class TranslationService:
         provider_cls = PROVIDERS.get(settings.TRANSLATION_PROVIDER)
         if provider_cls is None:
             raise ValueError(f"Noma'lum tarjima provayderi: {settings.TRANSLATION_PROVIDER}")
-        # Har doim mavjud, oxirgi zaxira — pullik provayderlar yo'q/tugagan/
-        # xato bersa shunga qaytiladi.
+        # Oxirgi zaxira — pullik provayderlar yo'q/tugagan/xato bersa shunga
+        # qaytiladi, lekin FAQAT `DEEP_TRANSLATOR_ENABLED` bo'lsa (`_dispatch`).
+        # Obyekt har doim yaratiladi (tarmoqsiz, arzon) — nom va
+        # `TRANSLATION_PROVIDER` tekshiruvi (main.py) o'zgarishsiz qolsin.
         self.deep_provider: TranslationProvider = provider_cls(settings.TRANSLATION_TIMEOUT)
         self.redis = redis
         # Faqat kvota/limit ogohlantirishlarini adminga yuborish uchun —
@@ -279,8 +341,11 @@ class TranslationService:
             max_chars = cfg.get("max_chars")
             if max_chars and text_len > max_chars:
                 continue
+            # Hajm hisobi Redis'da keshlanadi (`USAGE_CACHE_TTL`) — DB'ga
+            # har so'rovda emas, provayder boshiga ~daqiqada bir marta.
             picked = await pick_key(
-                session, name, keys, cfg["free_limit"](), cfg.get("period", "month")
+                session, name, keys, cfg["free_limit"](), cfg.get("period", "month"),
+                redis=self.redis,
             )
             if picked is None:
                 period_label = "bugun" if cfg.get("period") == "day" else "bu oy"
@@ -373,7 +438,7 @@ class TranslationService:
     ) -> tuple[str, str, Optional[int], Optional[str]]:
         """Uch daraja: 1) Google/Azure/DeepL (bepul hajmi tugamagan bo'lsa,
         tasodifiy), 2) Gemini (arzon, tasodifiy kalit), 3) `deep_translator`
-        (oxirgi, bepul-lekin-ishonchsiz zaxira).
+        (oxirgi, bepul-lekin-ishonchsiz zaxira — faqat `DEEP_TRANSLATOR_ENABLED`).
 
         Qaytaradi: `(tarjima, provayder, kalit_indeksi, model)` — `model`
         faqat buni aytadigan provayderda (lokal NLLB) bor, qolganida `None`.
@@ -386,11 +451,17 @@ class TranslationService:
         last_free_error: Optional[str] = None
         last_free_provider: Optional[str] = None
         for name, index, api_key in free_candidates:
+            cfg = FREE_TIER_PROVIDER_CONFIG[name]
             translated, error, model = await self._attempt(
-                name, index, api_key, FREE_TIER_PROVIDER_CONFIG[name]["call"],
-                text, source, target,
+                name, index, api_key, cfg["call"], text, source, target,
             )
             if translated is not None:
+                # Keshdagi hajm darhol oshiriladi — DB yozuvi handler'da
+                # keyinroq commit bo'ladi, kesh esa 60 s eskirishi mumkin.
+                if cfg["free_limit"]() < UNLIMITED_CHARS:
+                    await record_key_usage(
+                        self.redis, name, index, len(text), cfg.get("period", "month")
+                    )
                 return translated, name, index, model
             if error is not None:
                 last_free_error, last_free_provider = error, name
@@ -432,8 +503,40 @@ class TranslationService:
                 self.bot, self.redis, f"cheap_tier_failed:{provider_label}",
                 f"🚨 <b>{provider_label}</b> orqali tarjima ishlamayapti — "
                 f"barcha kalitlar xato qaytardi. Oxirgi xato: {html_escape(last_cheap_error[:300])}\n"
-                "Hozircha bepul (ishonchsiz) zaxiraga tushilmoqda.",
+                + (
+                    "Hozircha bepul (ishonchsiz) zaxiraga tushilmoqda."
+                    if settings.DEEP_TRANSLATOR_ENABLED
+                    else "Zaxira (deep_translator) o'chiq — foydalanuvchi xato oladi."
+                ),
             )
+
+        if not settings.DEEP_TRANSLATOR_ENABLED:
+            # 3-daraja o'chiq (standart): har bir so'rovda 15 s gacha bekor
+            # kutish o'rniga darhol yakuniy xato. Kod/provayder — oxirgi
+            # haqiqiy xato bergan provayderdan (handler `exc.code`ni
+            # `translations.error_code`ga, `exc.provider`ni `provider`ga
+            # yozadi); hech kim sinalmagan bo'lsa — `no_provider`.
+            last_error = last_cheap_error or last_free_error
+            last_provider = (
+                last_cheap_provider if last_cheap_error is not None else last_free_provider
+            )
+            if last_error is None:
+                exc = TranslationError(
+                    "no_provider",
+                    "Hech qanday tarjima provayderi mavjud emas (sozlanmagan, "
+                    "hajmi tugagan yoki vaqtincha chetlab o'tilmoqda)",
+                )
+            else:
+                code = "timeout" if last_error.lower().startswith("timeout") else "provider_error"
+                exc = TranslationError(code, last_error, provider=last_provider)
+            await alert_admins_once(
+                self.bot, self.redis, "all_tiers_down",
+                "🆘 <b>Tarjima BUTUNLAY ishlamayapti</b> — 1- va 2-daraja "
+                "(Google/Azure/DeepL/lokal/MyMemory, Gemini) natija bermadi, "
+                "3-daraja (deep_translator) o'chiq. "
+                f"Oxirgi xato: {html_escape(exc.code)} — {html_escape(str(exc)[:300])}",
+            )
+            raise exc
 
         try:
             translated = await self.deep_provider.translate(text, source, target)

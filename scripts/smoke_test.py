@@ -911,8 +911,12 @@ async def test_translation_providers() -> None:
     original_local_url = settings.LOCAL_MT_URL
     original_local_priority = settings.LOCAL_MT_PRIORITY
     original_local_call = tp.FREE_TIER_PROVIDER_CONFIG["local_mt"]["call"]
+    original_deep_enabled = settings.DEEP_TRANSLATOR_ENABLED
     # Quyidagi sinovlar lokal servis O'CHIQ deb yozilgan; uniki alohida blokda.
     settings.LOCAL_MT_URL = ""
+    # 3-daraja o'chiq (standart) — haqiqiy tarmoq chaqiruvi bo'lmasin,
+    # "hamma tugadi" holati darhol TranslationError bilan yakunlanishi kutiladi.
+    settings.DEEP_TRANSLATOR_ENABLED = False
 
     usage_by_provider: dict[str, dict[int, int]] = {}
 
@@ -986,24 +990,16 @@ async def test_translation_providers() -> None:
             candidates = await service._pick_free_tier_candidates(session, "auto", "en", 5)
             check("hamma kalit tugagan -> nomzod yo'q", candidates == [])
 
-            # 1-daraja (Google/Azure) tugagan, Gemini ham sozlanmagan — endi
-            # `deep_translator` haqiqiy tarmoq chaqiruvi qiladi. Google o'zi
-            # vaqti-vaqti bilan band/bloklangan bo'lishi mumkin (2026-08-24/25
-            # voqeasi) — bu holatda `TranslationError` ko'tariladi, bu ham
-            # TO'G'RI xulq (fallback chaqirilgani isbotlangan), shuning uchun
-            # smoke_test'ni yiqitmaydi.
+            # 1-daraja (Google/Azure) tugagan, Gemini ham sozlanmagan, 3-daraja
+            # o'chiq (DEEP_TRANSLATOR_ENABLED=false) — darhol `no_provider`.
             try:
                 _, provider_name, _, _ = await service._dispatch(session, "salom", "auto", "en")
-                check(
-                    "hamma pullik tugagan, Gemini yo'q -> bepul provayderga (haqiqiy chaqiruv)",
-                    provider_name == "deep_translator",
-                    provider_name,
-                )
+                check("hamma pullik tugagan, Gemini yo'q, zaxira o'chiq -> xato", False, provider_name)
             except TranslationError as exc:
                 check(
-                    "hamma pullik tugagan, Gemini yo'q -> bepul provayderga urinildi (u xato qaytardi)",
-                    True,
-                    f"deep_translator ham hozir ishlamadi: {exc.code}",
+                    "hamma pullik tugagan, Gemini yo'q, zaxira o'chiq -> no_provider",
+                    exc.code == "no_provider",
+                    exc.code,
                 )
 
             # 2-daraja: 1-daraja hali tugagan holatda Gemini sozlansa, shu ishlatiladi.
@@ -1015,20 +1011,16 @@ async def test_translation_providers() -> None:
                 f"{provider_name}, {key_index}, {text_out}",
             )
 
-            # Gemini ham ishlamasa (xato) -> oxirgi zaxira `deep_translator`ga o'tadi.
+            # Gemini ham ishlamasa (xato), zaxira o'chiq -> xatoda Gemini ko'rinadi.
             tp.CHEAP_PROVIDER_CONFIG["gemini"]["call"] = fake_gemini_fails
             try:
                 _, provider_name, _, _ = await service._dispatch(session, "salom", "auto", "en")
-                check(
-                    "Gemini ham ishlamasa -> bepul provayderga (haqiqiy chaqiruv)",
-                    provider_name == "deep_translator",
-                    provider_name,
-                )
+                check("Gemini ham ishlamasa, zaxira o'chiq -> xato", False, provider_name)
             except TranslationError as exc:
                 check(
-                    "Gemini ham ishlamasa -> bepul provayderga urinildi (u xato qaytardi)",
-                    True,
-                    f"deep_translator ham hozir ishlamadi: {exc.code}",
+                    "Gemini ham ishlamasa, zaxira o'chiq -> provider_error (gemini)",
+                    exc.code == "provider_error" and exc.provider == "gemini",
+                    f"{exc.code}, {exc.provider}",
                 )
             tp.CHEAP_PROVIDER_CONFIG["gemini"]["call"] = fake_gemini
             settings.GEMINI_API_KEYS_RAW = ""
@@ -1153,6 +1145,7 @@ async def test_translation_providers() -> None:
                 declined.append(True)
             check("qisqa auto matn HTTP'siz rad etiladi", declined == [True])
     finally:
+        settings.DEEP_TRANSLATOR_ENABLED = original_deep_enabled
         settings.LOCAL_MT_URL = original_local_url
         settings.LOCAL_MT_PRIORITY = original_local_priority
         tp.FREE_TIER_PROVIDER_CONFIG["local_mt"]["call"] = original_local_call
@@ -1317,9 +1310,13 @@ async def test_audit_fixes_2026_11() -> None:
         "gemini": settings.GEMINI_API_KEYS_RAW,
         "local_url": settings.LOCAL_MT_URL,
         "local_priority": settings.LOCAL_MT_PRIORITY,
+        "deep_enabled": settings.DEEP_TRANSLATOR_ENABLED,
     }
     tr_module.alert_admins_once = fake_alert
     tp.provider_key_usage = fake_usage
+    # Bu sinov 3-darajani soxta (`FakeDeepOk/Down`) bilan tekshiradi —
+    # zanjir unga yetib borishi uchun yoqilgan bo'lishi kerak.
+    settings.DEEP_TRANSLATOR_ENABLED = True
     tp.FREE_TIER_PROVIDER_CONFIG["mymemory"]["call"] = fake_mymemory
     settings.GOOGLE_TRANSLATE_API_KEYS_RAW = ""
     settings.AZURE_TRANSLATOR_KEYS_RAW = ""
@@ -1384,7 +1381,10 @@ async def test_audit_fixes_2026_11() -> None:
             # 6c. Lokal muvaffaqiyat — model nomi natijaga tushadi; `str`
             # qaytaradigan provayderda model None.
             tp.FREE_TIER_PROVIDER_CONFIG["local_mt"]["call"] = fake_local_with_model
-            service = TranslationService(redis=None)  # yangi breaker (avvalgisi ochiq)
+            # Breaker xotirasi endi barcha nusxalar uchun umumiy — yangi
+            # servis yaratish yetmaydi, holat aniq tozalanadi.
+            service.breaker.reset_memory()
+            service = TranslationService(redis=None)
             service.deep_provider = FakeDeepOk()
             text_out, provider_name, _, model = await service._dispatch(session, "hello there", "auto", "uz")
             check(
@@ -1433,6 +1433,232 @@ async def test_audit_fixes_2026_11() -> None:
         settings.GEMINI_API_KEYS_RAW = saved["gemini"]
         settings.LOCAL_MT_URL = saved["local_url"]
         settings.LOCAL_MT_PRIORITY = saved["local_priority"]
+        settings.DEEP_TRANSLATOR_ENABLED = saved["deep_enabled"]
+
+
+async def test_translation_service_cleanup() -> None:
+    """2026-11 audit (tarjima servisi tozalash) — regressiya qo'riqchilari.
+
+    1) cheksiz limitli provayder (lokal) oylik SUM so'rovini chaqirmaydi;
+    2) hajm hisobi Redis'da keshlanadi, muvaffaqiyat keshni oshiradi,
+       Redis nosoz bo'lsa DB'ga tushiladi; 3) `DEEP_TRANSLATOR_ENABLED=false`
+       -> 3-daraja CHAQIRILMAYDI, yakuniy xato darhol, `all_tiers_down`
+       alerti bor; 4) breaker xotirasi servis nusxalari orasida umumiy;
+       5) errors.py tarmoq shovqinini ajratadi.
+    """
+    print("\n[7e] Tarjima servisi tozalash (2026-11)")
+    import time as _time
+
+    from aiogram.exceptions import TelegramForbiddenError, TelegramNetworkError
+
+    from bot.handlers import errors as errors_module
+    from bot.services import translation as tr_module
+    from bot.services import translation_providers as tp
+    from bot.services.circuit_breaker import FAILURE_THRESHOLD, CircuitBreaker
+    from bot.services.translation import TranslationService
+
+    usage_calls: list[str] = []
+    usage_value: dict[int, int] = {0: 100, 1: 150}
+
+    async def counting_usage(_session, provider: str, _period: str = "month") -> dict:
+        usage_calls.append(provider)
+        return dict(usage_value)
+
+    class FakeRedis:
+        """Hash buyruqlari — `pick_key`/`record_key_usage` uchun yetarli."""
+
+        def __init__(self):
+            self.store: dict[str, dict[str, str]] = {}
+
+        async def hgetall(self, key):
+            return dict(self.store.get(key, {}))
+
+        async def hset(self, key, mapping):
+            self.store.setdefault(key, {}).update({k: str(v) for k, v in mapping.items()})
+
+        async def expire(self, _key, _ttl):
+            return True
+
+        async def exists(self, key):
+            return 1 if key in self.store else 0
+
+        async def hincrby(self, key, field, amount):
+            bucket = self.store.setdefault(key, {})
+            bucket[field] = str(int(bucket.get(field, "0")) + amount)
+
+    class BrokenRedis(FakeRedis):
+        async def hgetall(self, _key):
+            raise ConnectionError("redis down")
+
+        async def hset(self, _key, mapping):
+            raise ConnectionError("redis down")
+
+    sent: list[tuple[str, str]] = []
+
+    async def fake_alert(_bot, _redis, key: str, text: str) -> None:
+        sent.append((key, text))
+
+    deep_calls: list[str] = []
+
+    class FakeDeep:
+        name = "deep_translator"
+
+        async def translate(self, text, _source, _target) -> str:
+            deep_calls.append(text)
+            return f"deep:{text}"
+
+    async def fake_mymemory_fails(_text, _source, _target, _api_key) -> str:
+        raise RuntimeError("MyMemory 429: band")
+
+    async def fake_mymemory_timeout(_text, _source, _target, _api_key) -> str:
+        raise RuntimeError("timeout 15s")
+
+    saved = {
+        "usage": tp.provider_key_usage,
+        "alert": tr_module.alert_admins_once,
+        "mymemory_call": tp.FREE_TIER_PROVIDER_CONFIG["mymemory"]["call"],
+        "google": settings.GOOGLE_TRANSLATE_API_KEYS_RAW,
+        "azure": settings.AZURE_TRANSLATOR_KEYS_RAW,
+        "deepl": settings.DEEPL_API_KEYS_RAW,
+        "mymemory": settings.MYMEMORY_EMAILS_RAW,
+        "gemini": settings.GEMINI_API_KEYS_RAW,
+        "local_url": settings.LOCAL_MT_URL,
+        "deep_enabled": settings.DEEP_TRANSLATOR_ENABLED,
+    }
+    tp.provider_key_usage = counting_usage
+    tr_module.alert_admins_once = fake_alert
+    settings.GOOGLE_TRANSLATE_API_KEYS_RAW = ""
+    settings.AZURE_TRANSLATOR_KEYS_RAW = ""
+    settings.DEEPL_API_KEYS_RAW = ""
+    settings.MYMEMORY_EMAILS_RAW = ""
+    settings.GEMINI_API_KEYS_RAW = ""
+    CircuitBreaker.reset_memory()
+
+    try:
+        async with AsyncSessionLocal() as session:
+            # ── 1. Cheksiz limit -> SUM so'rovi yo'q ──
+            settings.LOCAL_MT_URL = "http://127.0.0.1:1"
+            service = TranslationService(redis=None)
+            usage_calls.clear()
+            candidates = await service._pick_free_tier_candidates(session, "en", "uz", 5)
+            check("lokal MT nomzod", any(c[0] == "local_mt" for c in candidates), str(candidates))
+            check("cheksiz limitda SUM so'rovi CHAQIRILMAYDI", usage_calls == [], str(usage_calls))
+            picked = await tp.pick_key(session, "local_mt", ["local"], 10**15, "month", redis=None)
+            check("pick_key cheksiz -> birinchi kalit, so'rovsiz", picked == (0, "local") and usage_calls == [])
+            settings.LOCAL_MT_URL = ""
+
+            # ── 2. Hajm keshi ──
+            fake_redis = FakeRedis()
+            usage_calls.clear()
+            p1 = await tp.pick_key(session, "google_translate", ["k0", "k1"], 500_000, "month", redis=fake_redis)
+            p2 = await tp.pick_key(session, "google_translate", ["k0", "k1"], 500_000, "month", redis=fake_redis)
+            check("ikki pick_key -> DB bir marta", usage_calls == ["google_translate"], str(usage_calls))
+            check("keshdan ham kam ishlatilgan kalit (k0)", p1 == (0, "k0") and p2 == (0, "k0"), f"{p1}, {p2}")
+            await tp.record_key_usage(fake_redis, "google_translate", 0, 100, "month")
+            p3 = await tp.pick_key(session, "google_translate", ["k0", "k1"], 500_000, "month", redis=fake_redis)
+            check("muvaffaqiyat keshni oshiradi -> endi k1 kamroq", p3 == (1, "k1") and len(usage_calls) == 1, f"{p3}, {usage_calls}")
+            await tp.record_key_usage(fake_redis, "google_translate", 1, 500_000, "month")
+            p4 = await tp.pick_key(session, "google_translate", ["k0", "k1"], 500_000, "month", redis=fake_redis)
+            check("keshda limitga yetgan kalit chetlanadi", p4 == (0, "k0"), str(p4))
+            empty_redis = FakeRedis()
+            usage_value_backup = dict(usage_value)
+            usage_value.clear()
+            usage_calls.clear()
+            await tp.pick_key(session, "azure_translator", ["a0"], 2_000_000, "month", redis=empty_redis)
+            await tp.pick_key(session, "azure_translator", ["a0"], 2_000_000, "month", redis=empty_redis)
+            check("bo'sh hajm ({}) ham keshlanadi", usage_calls == ["azure_translator"], str(usage_calls))
+            usage_value.update(usage_value_backup)
+            usage_calls.clear()
+            p5 = await tp.pick_key(session, "google_translate", ["k0", "k1"], 500_000, "month", redis=BrokenRedis())
+            check("Redis nosoz -> DB'ga tushadi (fail-open)", p5 == (0, "k0") and usage_calls == ["google_translate"], f"{p5}, {usage_calls}")
+            cache_key = tp._usage_cache_key("google_translate", "month")
+            check("kesh kaliti davr boshini o'z ichiga oladi", cache_key.startswith("tr:usage:google_translate:month:20"), cache_key)
+
+            # ── 3. deep_translator o'chiq ──
+            settings.DEEP_TRANSLATOR_ENABLED = False
+            service = TranslationService(redis=None)
+            service.deep_provider = FakeDeep()
+            sent.clear()
+            deep_calls.clear()
+            started = _time.perf_counter()
+            caught = None
+            try:
+                await service._dispatch(session, "hello there", "auto", "uz")
+            except TranslationError as exc:
+                caught = exc
+            elapsed = _time.perf_counter() - started
+            check("zaxira o'chiq, nomzod yo'q -> no_provider", caught is not None and caught.code == "no_provider", repr(caught))
+            check("3-daraja CHAQIRILMAGAN", deep_calls == [])
+            check("xato darhol (<2 s)", elapsed < 2, f"{elapsed:.2f}s")
+            check("all_tiers_down alerti bor", any(k == "all_tiers_down" for k, _ in sent), str([k for k, _ in sent]))
+
+            settings.MYMEMORY_EMAILS_RAW = "smoke@example.com"
+            tp.FREE_TIER_PROVIDER_CONFIG["mymemory"]["call"] = fake_mymemory_fails
+            caught = None
+            try:
+                await service._dispatch(session, "hello there", "auto", "uz")
+            except TranslationError as exc:
+                caught = exc
+            check(
+                "provayder xato bersa -> provider_error, exc.provider = mymemory",
+                caught is not None and caught.code == "provider_error" and caught.provider == "mymemory",
+                repr(caught) + f" provider={getattr(caught, 'provider', None)}",
+            )
+            CircuitBreaker.reset_memory()
+            tp.FREE_TIER_PROVIDER_CONFIG["mymemory"]["call"] = fake_mymemory_timeout
+            caught = None
+            try:
+                await service._dispatch(session, "hello there", "auto", "uz")
+            except TranslationError as exc:
+                caught = exc
+            check("timeout sababi -> code=timeout (status statistikasi uchun)", caught is not None and caught.code == "timeout", repr(caught))
+            check("3-daraja hali ham chaqirilmagan", deep_calls == [])
+
+            settings.DEEP_TRANSLATOR_ENABLED = True
+            CircuitBreaker.reset_memory()
+            _, provider_name, _, _ = await service._dispatch(session, "hello there", "auto", "uz")
+            check("yoqilsa -> 3-daraja chaqiriladi", provider_name == "deep_translator" and deep_calls == ["hello there"], f"{provider_name}, {deep_calls}")
+            settings.MYMEMORY_EMAILS_RAW = ""
+            settings.DEEP_TRANSLATOR_ENABLED = False
+
+            # ── 4. Breaker nusxalar orasida umumiy ──
+            CircuitBreaker.reset_memory()
+            s1 = TranslationService(redis=None)
+            s2 = TranslationService(redis=None)
+            for _ in range(FAILURE_THRESHOLD):
+                await s1.breaker.record_failure("shared_p", 0)
+            check("bir nusxada ochilgan breaker ikkinchisida ko'rinadi", await s2.breaker.is_open("shared_p", 0))
+            check("boshqa kalitga ta'sir qilmaydi", not await s2.breaker.is_open("shared_p", 1))
+            CircuitBreaker.reset_memory()
+            check("reset_memory tozalaydi", not await s2.breaker.is_open("shared_p", 0))
+
+        # ── 5. errors.py: tarmoq shovqini ──
+        classify = errors_module.classify_error
+        check(
+            "TelegramNetworkError 'Request timeout' -> network",
+            classify(TelegramNetworkError(method=None, message="Request timeout")) == errors_module.NETWORK,
+        )
+        check("CancelledError -> network", classify(asyncio.CancelledError()) == errors_module.NETWORK)
+        check("TimeoutError -> network", classify(TimeoutError()) == errors_module.NETWORK)
+        check("asyncio.TimeoutError -> network", classify(asyncio.TimeoutError()) == errors_module.NETWORK)
+        check(
+            "TelegramForbiddenError -> ignore",
+            classify(TelegramForbiddenError(method=None, message="bot was blocked")) == errors_module.IGNORE,
+        )
+        check("ValueError -> unexpected", classify(ValueError("x")) == errors_module.UNEXPECTED)
+        check("KeyError -> unexpected", classify(KeyError("x")) == errors_module.UNEXPECTED)
+    finally:
+        tp.provider_key_usage = saved["usage"]
+        tr_module.alert_admins_once = saved["alert"]
+        tp.FREE_TIER_PROVIDER_CONFIG["mymemory"]["call"] = saved["mymemory_call"]
+        settings.GOOGLE_TRANSLATE_API_KEYS_RAW = saved["google"]
+        settings.AZURE_TRANSLATOR_KEYS_RAW = saved["azure"]
+        settings.DEEPL_API_KEYS_RAW = saved["deepl"]
+        settings.MYMEMORY_EMAILS_RAW = saved["mymemory"]
+        settings.GEMINI_API_KEYS_RAW = saved["gemini"]
+        settings.LOCAL_MT_URL = saved["local_url"]
+        settings.DEEP_TRANSLATOR_ENABLED = saved["deep_enabled"]
+        CircuitBreaker.reset_memory()
 
 
 async def test_translation_record(user_id: int, result) -> None:
@@ -1867,6 +2093,155 @@ async def test_donate(user_id: int) -> None:
             delete(Donation).where(Donation.user_id == user_id)
         )
         await session.commit()
+
+
+async def test_donate_on_paid_idempotent(user_id: int) -> None:
+    """`on_paid` handleri: bir to'lov ikki marta kelsa — bitta yozuv, bitta VIP.
+
+    `test_donate` faqat DB cheklovini tekshiradi; bu yerda HANDLER o'zi
+    sinovdan o'tadi: Telegram `successful_payment`ni qayta yuborgan holatda
+    (bir xil `telegram_payment_charge_id`) foydalanuvchi ikkala safar
+    rahmat oladi, lekin VIP faqat bir marta beriladi va adminlarga
+    "DB xatosi" ogohlantirishi ketmaydi (takroriy xabar — kutilgan holat).
+
+    Eslatma: ikkinchi chaqiruv Postgres logida bitta `duplicate key`
+    yozuvi qoldiradi — bu ataylab, handlerning aynan shu yo'li sinaladi.
+    """
+    print("\n[13b] Homiylik — on_paid idempotent (takroriy successful_payment)")
+    from types import SimpleNamespace
+
+    from sqlalchemy import delete, update
+
+    from bot.database.models import Donation, User, UserSettings
+    from bot.handlers.user.donate import on_paid
+
+    t = locales.get("uz")
+    charge = "test_charge_smoke_onpaid"
+    stars = settings.QUICK_VIP_STARS
+
+    class _FakeBot:
+        def __init__(self) -> None:
+            self.sent: list[tuple[int, str]] = []
+
+        async def send_message(self, chat_id, text, *args, **kwargs) -> None:
+            self.sent.append((chat_id, text))
+
+    class _FakeMessage:
+        def __init__(self) -> None:
+            self.bot = _FakeBot()
+            self.chat = SimpleNamespace(id=TEST_TELEGRAM_ID, type="private")
+            self.successful_payment = SimpleNamespace(
+                currency="XTR",
+                total_amount=stars,
+                invoice_payload="quickvip",
+                telegram_payment_charge_id=charge,
+                provider_payment_charge_id=None,
+            )
+            self.answers: list[str] = []
+
+        async def answer(self, text, *args, **kwargs) -> None:
+            self.answers.append(text)
+
+    async def _state() -> tuple[int, int, object]:
+        async with AsyncSessionLocal() as s:
+            n_don = (
+                await s.execute(
+                    select(func.count()).select_from(Donation).where(
+                        Donation.telegram_payment_charge_id == charge
+                    )
+                )
+            ).scalar_one()
+            n_grant = (
+                await s.execute(
+                    select(func.count()).select_from(Event).where(
+                        Event.user_id == user_id,
+                        Event.event_type == EventType.PREMIUM_GRANTED,
+                        Event.payload["reason"].astext == "donation",
+                    )
+                )
+            ).scalar_one()
+            until = (
+                await s.execute(
+                    select(UserSettings.premium_until).where(
+                        UserSettings.user_id == user_id
+                    )
+                )
+            ).scalar_one_or_none()
+            return n_don, n_grant, until
+
+    async def _deliver() -> _FakeMessage:
+        # Har bir yetkazish — alohida sessiya, middleware'dagidek: handler
+        # flush qiladi, commit tashqarida.
+        msg = _FakeMessage()
+        async with AsyncSessionLocal() as s:
+            user = (
+                await s.execute(select(User).where(User.id == user_id))
+            ).scalar_one()
+            await on_paid(
+                msg, s, user, EventService(s), None, t, redis=None
+            )
+            await s.commit()
+        return msg
+
+    # Toza boshlanish: VIP yo'q, shu charge yo'q, oldingi grant voqealari yo'q.
+    async with AsyncSessionLocal() as s:
+        await s.execute(delete(Donation).where(Donation.user_id == user_id))
+        await s.execute(
+            delete(Event).where(
+                Event.user_id == user_id,
+                Event.event_type.in_([EventType.PREMIUM_GRANTED, EventType.DONATE_PAID]),
+            )
+        )
+        await s.execute(
+            update(UserSettings)
+            .where(UserSettings.user_id == user_id)
+            .values(premium_until=None)
+        )
+        await s.commit()
+
+    first = await _deliver()
+    n_don, n_grant, until1 = await _state()
+    check("birinchi to'lov yozildi", n_don == 1, f"{n_don} yozuv")
+    check("VIP berildi (premium.granted = 1)", n_grant == 1, str(n_grant))
+    expected_days = settings.QUICK_VIP_DAYS
+    check(
+        f"quickvip -> {expected_days} kun",
+        until1 is not None
+        and abs((until1 - utcnow()).days - expected_days) <= 1,
+        str(until1),
+    )
+    check("foydalanuvchiga rahmat yuborildi", len(first.answers) == 1)
+    check(
+        "adminga 'yangi homiylik' xabari ketdi",
+        len(first.bot.sent) == len(settings.ADMIN_USER_IDS),
+        str(len(first.bot.sent)),
+    )
+
+    # Telegram xuddi shu to'lovni qayta yubordi.
+    second = await _deliver()
+    n_don2, n_grant2, until2 = await _state()
+    check("takroriy xabar ikkinchi yozuv yaratmadi", n_don2 == 1, f"{n_don2} yozuv")
+    check("VIP ikki marta berilmadi", n_grant2 == 1 and until2 == until1, str(until2))
+    check(
+        "takrorda ham foydalanuvchi rahmat oladi",
+        len(second.answers) == 1
+        and second.answers[0] == t.DONATE_THANKS.format(stars=stars),
+    )
+    check(
+        "takrorda admin ogohlantirishi (DB xatosi) ketmadi",
+        not any("To'lov yozilmadi" in text for _, text in second.bot.sent),
+        str(len(second.bot.sent)),
+    )
+
+    # Tozalash — `cleanup()` ham qiladi, lekin keyingi testlar VIP'siz boshlasin.
+    async with AsyncSessionLocal() as s:
+        await s.execute(delete(Donation).where(Donation.user_id == user_id))
+        await s.execute(
+            update(UserSettings)
+            .where(UserSettings.user_id == user_id)
+            .values(premium_until=None)
+        )
+        await s.commit()
 
 
 async def test_broadcast() -> None:
@@ -2582,6 +2957,368 @@ async def test_membership_status() -> None:
         await session.commit()
 
 
+async def test_fallback_pin_admin_report() -> None:
+    """Noma'lum buyruq filtri, pin muddati, yagona admin tekshiruvi va
+    kunlik hisobot (render + idempotentlik) — DB'siz, sof mantiq."""
+    print("\n[*] Fallback / pin TTL / admin_access / kunlik hisobot")
+    from datetime import date, datetime, timedelta, timezone
+    from types import SimpleNamespace
+
+    from bot.handlers.admin import panel
+    from bot.handlers.user import fallback, support
+    from bot.services import admin_access, daily_report
+
+    # ── Fallback filtri ──
+    f = fallback.should_answer_unknown_command
+    check("fallback: /foo shaxsiy chatda — javob", f("/foo", "private"))
+    check("fallback: /foo@Bot arg — javob", f("/foo@SomeBot arg", "private"))
+    check("fallback: guruhda — jim", not f("/foo", "group") and not f("/foo", "supergroup"))
+    check("fallback: oddiy matn — jim", not f("salom", "private"))
+    check("fallback: yo'l (/usr/bin) — buyruq emas", not f("/usr/bin", "private"))
+    check("fallback: yolg'iz / va None — jim", not f("/", "private") and not f(None, "private"))
+    check(
+        "fallback: lokal kaliti hamma tilda",
+        all(getattr(locales.get(c), "UNKNOWN_COMMAND", "") for c in locales.SUPPORTED),
+    )
+    main_src = (Path(__file__).resolve().parent.parent / "bot" / "main.py").read_text()
+    check(
+        "fallback routeri translate'dan KEYIN ulanadi",
+        0 < main_src.find("include_router(translate.router)")
+        < main_src.find("include_router(fallback.router)"),
+    )
+
+    # ── Pin muddati ──
+    now = datetime(2026, 11, 10, 12, 0, tzinfo=timezone.utc)
+    check("pin TTL = 30 daqiqa", support.PIN_TTL == timedelta(minutes=30))
+    check("pin: 29 daqiqa — amal qiladi", not support.is_pin_expired(now - timedelta(minutes=29), now))
+    check("pin: 31 daqiqa — muddati o'tgan", support.is_pin_expired(now - timedelta(minutes=31), now))
+    check("pin: set_at yo'q — o'tgan deb olinadi", support.is_pin_expired(None, now))
+    check(
+        "pin: naive vaqt UTC deb olinadi",
+        not support.is_pin_expired(datetime(2026, 11, 10, 11, 50), now)
+        and support.is_pin_expired(datetime(2026, 11, 10, 11, 0), now),
+    )
+
+    # ── Yagona admin tekshiruvi (imtiyoz oshmasligi) ──
+    outsider = 999_000_777
+    db_admin = SimpleNamespace(role="admin")
+    db_owner = SimpleNamespace(role="owner")
+    plain = SimpleNamespace(role="user")
+    check("admin: None — hech qachon admin emas", not admin_access.is_admin(None, db_admin))
+    check(
+        "admin: DB roli panelga kirish BERMAYDI",
+        not admin_access.is_admin(outsider, db_admin) and not panel.is_admin(outsider),
+    )
+    check(
+        "admin: DB roli obuna/ban chetlab o'tishda hisoblanadi",
+        admin_access.is_admin(outsider, db_admin, include_db_role=True)
+        and admin_access.is_admin(outsider, db_owner, include_db_role=True),
+    )
+    check(
+        "admin: oddiy rol — hech qayerda admin emas",
+        not admin_access.is_admin(outsider, plain, include_db_role=True),
+    )
+    if settings.ADMIN_USER_IDS:
+        env_id = settings.ADMIN_USER_IDS[0]
+        check(
+            "admin: .env admin — ikkala rejimda ham admin",
+            panel.is_admin(env_id)
+            and admin_access.is_admin(env_id, plain, include_db_role=True)
+            and support._is_admin(env_id),
+        )
+
+    # ── Vaqt chegaralari (Toshkent = UTC+5) ──
+    start, end = daily_report.day_bounds_utc(date(2026, 11, 9))
+    check(
+        "hisobot: Toshkent kuni UTC oralig'i",
+        start == datetime(2026, 11, 8, 19, 0, tzinfo=timezone.utc)
+        and end == datetime(2026, 11, 9, 19, 0, tzinfo=timezone.utc),
+    )
+    check(
+        "hisobot: UTC 20:00 = Toshkentda ertasi — oldingi kun to'g'ri",
+        daily_report.previous_tashkent_day(datetime(2026, 11, 9, 20, 0, tzinfo=timezone.utc))
+        == date(2026, 11, 9),
+    )
+    check(
+        "hisobot: 09:00 Toshkent (04:00 UTC) — vaqti keldi",
+        not daily_report.is_due(datetime(2026, 11, 10, 3, 59, tzinfo=timezone.utc))
+        and daily_report.is_due(datetime(2026, 11, 10, 4, 0, tzinfo=timezone.utc)),
+    )
+    wait = daily_report.seconds_until_next_check(datetime(2026, 11, 10, 3, 59, tzinfo=timezone.utc))
+    check("hisobot: keyingi tekshiruvgacha kutish", 1 <= wait <= 60, f"{wait:.0f}s")
+
+    # ── /report argumentlari ──
+    p_now = datetime(2026, 11, 10, 6, 0, tzinfo=timezone.utc)
+    check("/report — kecha", panel.parse_report_args(None, p_now)[0] == date(2026, 11, 9))
+    today = panel.parse_report_args("today", p_now)
+    check("/report today — bugun, hozirgacha", today[0] == date(2026, 11, 10) and today[2] == p_now)
+    check("/report YYYY-MM-DD", panel.parse_report_args("2026-11-01", p_now)[0] == date(2026, 11, 1))
+    check(
+        "/report: kelajak/xato argument rad etiladi",
+        panel.parse_report_args("2026-12-01", p_now) is None
+        and panel.parse_report_args("abc", p_now) is None,
+    )
+
+    # ── Render (soxta raqamlar + escape) ──
+    rep = daily_report.DailyReport(
+        day=date(2026, 11, 9),
+        translations_total=1000,
+        translations_success=970,
+        providers={"mymemory": 500, "local_mt": 300, "cache": 190, "<evil>&": 10},
+        long_total=40,
+        long_success=36,
+        local_mt_p50_ms=812.4,
+        ocr_total=25,
+        ocr_failed=3,
+        tts_requested=120,
+        tts_failed=4,
+        new_users=57,
+        blocked_bot=6,
+        donations_count=2,
+        donations_stars=150,
+    )
+    rep.label = "<b>x</b>"
+    html = daily_report.render(rep)
+    check("render: provayder nomi escape qilingan", "&lt;evil&gt;&amp;" in html and "<evil>" not in html)
+    check("render: yorliq escape qilingan", "&lt;b&gt;x&lt;/b&gt;" in html)
+    check("render: <b> teglari juft", html.count("<b>") == html.count("</b>"))
+    check("render: xato ulushi", "❌ 30 (3.0%)" in html)
+    check("render: uzun matn ulushi", "Uzun (&gt;500): 40 · ✅ 90.0%" in html)
+    check("render: local_mt p50", "p50: 812 ms" in html)
+    check(
+        "render: provayder ulushi va qolgan raqamlar",
+        "mymemory — 500 (50.0%)" in html and "Yangi: 57" in html
+        and "Bloklagan: 6" in html and "TTS: 120 · ❌ 4" in html
+        and "OCR: 25 · ❌ 3" in html and "Homiylik: 2 (150" in html,
+    )
+    empty = daily_report.render(daily_report.DailyReport(day=date(2026, 11, 9)))
+    check("render: bo'sh kun — nolga bo'linish yo'q", "0.0%" in empty and "p50: —" in empty)
+
+    # ── Idempotentlik ──
+    day = date(2026, 11, 9)
+    check("hisobot kaliti", daily_report.idempotency_key(day) == "daily_report:sent:2026-11-09")
+    local: set = set()
+    first = await daily_report.claim_day(None, day, local)
+    second = await daily_report.claim_day(None, day, local)
+    other = await daily_report.claim_day(None, day + timedelta(days=1), local)
+    check("Redis'siz: kuniga bir marta", first and not second and other)
+    await daily_report.release_day(None, day, local)
+    check("Redis'siz: bo'shatilgach qayta egallanadi", await daily_report.claim_day(None, day, local))
+
+    class FakeRedis:
+        def __init__(self):
+            self.data: dict = {}
+            self.ttl: dict = {}
+
+        async def set(self, key, value, ex=None, nx=False):
+            if nx and key in self.data:
+                return None
+            self.data[key] = value
+            self.ttl[key] = ex
+            return True
+
+        async def delete(self, key):
+            self.data.pop(key, None)
+
+    class BrokenRedis:
+        async def set(self, *a, **k):
+            raise ConnectionError("down")
+
+        async def delete(self, *a, **k):
+            raise ConnectionError("down")
+
+    fake = FakeRedis()
+    r1 = await daily_report.claim_day(fake, day, set())
+    r2 = await daily_report.claim_day(fake, day, set())  # "restart" — yangi xotira
+    check("Redis: restartdan keyin ham takror yo'q", r1 and not r2)
+    check(
+        "Redis: kalitda TTL bor",
+        fake.ttl.get(daily_report.idempotency_key(day)) == daily_report.REDIS_KEY_TTL_SECONDS,
+    )
+    await daily_report.release_day(fake, day, set())
+    check("Redis: bo'shatilgach qayta egallanadi", await daily_report.claim_day(fake, day, set()))
+    broken_local: set = set()
+    b1 = await daily_report.claim_day(BrokenRedis(), day, broken_local)
+    b2 = await daily_report.claim_day(BrokenRedis(), day, broken_local)
+    check("Redis nosoz: xotiradagi belgiga o'tadi", b1 and not b2)
+
+async def test_no_db_transaction_during_provider_call() -> None:
+    """P1 (audit 2026-11): provayder chaqiruvi paytida sessiyada OCHIQ
+    TRANZAKSIYA bo'lmasligi kerak — aks holda pool ulanishi (10+20) va
+    `daily_usage` qator qulfi 15–60 s band turardi.
+
+    Haqiqiy handler (`_translate`) haqiqiy sessiya bilan ishga tushiriladi,
+    faqat provayder (`TranslationService.translate`) monkeypatch qilinadi:
+    u chaqirilgan NUQTADA `session.in_transaction()` tekshiriladi. Uch holat:
+    provayder xatosi (kvota qaytariladi), muvaffaqiyat (kvota sarflanadi),
+    kutilmagan xato (kvota qaytariladi, xato yuqoriga ko'tariladi).
+    """
+    print("\n[7c] Provayder chaqiruvida tranzaksiya ushlab turilmaydi")
+    from types import SimpleNamespace
+
+    from sqlalchemy import delete
+
+    from bot.database.models import DailyUsage, User, UserSettings
+    from bot.handlers.user import translate as handler
+    from bot.services.translation import TranslationResult
+
+    telegram_id = TEST_TELEGRAM_ID + 93
+    seen: dict = {}
+    outcome: dict = {}
+
+    class _FakeSent:
+        """`message.answer()` qaytargan xabar — faqat `delete()` kerak."""
+
+        def __init__(self, log: list) -> None:
+            self._log = log
+
+        async def delete(self) -> None:
+            self._log.append("deleted")
+
+    class _FakeBot:
+        async def send_chat_action(self, *args, **kwargs) -> None:
+            return None
+
+        async def send_message(self, *args, **kwargs) -> None:
+            return None
+
+    class _FakeMessage:
+        def __init__(self) -> None:
+            self.bot = _FakeBot()
+            self.chat = SimpleNamespace(id=telegram_id, type="private")
+            self.message_id = 1
+            self.sent: list = []
+
+        async def answer(self, text, **kwargs) -> _FakeSent:
+            self.sent.append(text)
+            return _FakeSent(self.sent)
+
+    real_session_holder: dict = {}
+
+    async def fake_translate(self, session, text, source, target):
+        real_session = real_session_holder["session"]
+        seen["wrapper_in_tx"] = session.in_transaction()
+        seen["real_in_tx"] = real_session.in_transaction()
+        # Servis ichidagi `pick_key` kabi SELECT ham ulanishni qoldirmasin
+        # (handler `StatementScopedSession` beradi — har so'rov o'z commit'i).
+        rows = await session.execute(select(func.count(User.id)))
+        seen["select_result_usable"] = rows.scalar_one() >= 1
+        seen["after_select_in_tx"] = real_session.in_transaction()
+        mode = outcome["mode"]
+        if mode == "fail":
+            raise TranslationError("provider_error", "sinov", provider="deep_translator")
+        if mode == "crash":
+            raise RuntimeError("sinov: kutilmagan xato")
+        return TranslationResult(
+            text="ok", source_lang_detected="uz", provider="deep_translator",
+            provider_model=None, latency_ms=1,
+        )
+
+    original_translate = TranslationService.translate
+    TranslationService.translate = fake_translate  # type: ignore[method-assign]
+    try:
+        async with AsyncSessionLocal() as session:
+            real_session_holder["session"] = session
+            repo = UserRepository(session)
+            user, _ = await repo.get_or_create(telegram_id, first_name="TxSinov")
+            await session.commit()
+            user_id = user.id
+            # Oldingi (yarim yo'lda to'xtagan) ishga tushirishdan qolgan qatorlar
+            # sanoqlarni buzmasin — sinov toza holatdan boshlanadi.
+            from bot.database.models import DailyUsage
+            await session.execute(delete(Translation).where(Translation.user_id == user_id))
+            await session.execute(delete(DailyUsage).where(DailyUsage.user_id == user_id))
+            await session.commit()
+            events = EventService(session)
+            t = locales.get("uz")
+            usage = QuotaService(session).usage
+            # > 500 belgi — "⏳" xabari chiqishi kerak.
+            long_text = "Salom dunyo, bu uzun sinov matni. " * 20
+            check("sinov matni 500 belgidan uzun", len(long_text) > handler.PROGRESS_NOTICE_MIN_CHARS)
+
+            async def run(mode: str, text: str) -> _FakeMessage:
+                outcome["mode"] = mode
+                seen.clear()
+                msg = _FakeMessage()
+                try:
+                    await handler._translate(
+                        msg, session, user, events, None, t, None,
+                        text=text, input_kind="text",
+                    )
+                    await session.commit()  # middleware kabi
+                except RuntimeError:
+                    await session.rollback()  # middleware kabi
+                    seen["raised"] = True
+                return msg
+
+            # 1) Provayder xatosi.
+            msg = await run("fail", long_text)
+            check(
+                "provayder chaqiruvida tranzaksiya yo'q",
+                seen.get("real_in_tx") is False and seen.get("wrapper_in_tx") is False,
+                f"real={seen.get('real_in_tx')} wrapper={seen.get('wrapper_in_tx')}",
+            )
+            check(
+                "servis SELECT'idan keyin ham tranzaksiya yo'q",
+                seen.get("after_select_in_tx") is False and seen.get("select_result_usable"),
+            )
+            row = await usage.get(user_id)
+            used = row.translations_count if row else 0
+            check("provayder xatosida kvota qaytarildi", used == 0, f"used={used}")
+            check(
+                "⏳ xabari yuborildi va o'chirildi",
+                msg.sent[:1] == [t.TRANSLATING_LONG_TEXT] and "deleted" in msg.sent,
+                str(msg.sent),
+            )
+            check("xato xabari yuborildi", t.ERRORS.get("provider_error", t.ERROR_DEFAULT) in msg.sent)
+            failed = (
+                await session.execute(
+                    select(func.count(Translation.id)).where(
+                        Translation.user_id == user_id, Translation.status == "error"
+                    )
+                )
+            ).scalar_one()
+            check("xato qatori yozildi", failed == 1, f"{failed} ta")
+
+            # 2) Muvaffaqiyat.
+            msg = await run("ok", long_text)
+            row = await usage.get(user_id)
+            used = row.translations_count if row else 0
+            check("muvaffaqiyatda kvota sarflandi", used == 1, f"used={used}")
+            check("natija yuborildi", any("<code>ok</code>" in s for s in msg.sent), str(msg.sent))
+            check("muvaffaqiyatda ham ⏳ o'chirildi", "deleted" in msg.sent)
+            ok_rows = (
+                await session.execute(
+                    select(func.count(Translation.id)).where(
+                        Translation.user_id == user_id, Translation.status == "success"
+                    )
+                )
+            ).scalar_one()
+            check("muvaffaqiyat qatori yozildi", ok_rows == 1, f"{ok_rows} ta")
+
+            # 3) Kutilmagan xato — erta commit'dan keyin middleware rollback'i
+            # kvotani qaytara olmaydi, handler o'zi qaytarishi kerak.
+            msg = await run("crash", "qisqa matn")
+            # Middleware kabi rollback'dan so'ng — testning o'z SELECT'laridan OLDIN
+            # (ular yangi tranzaksiyani o'zi ochib qo'yadi).
+            check("handlerdan keyin sessiyada tranzaksiya yo'q", session.in_transaction() is False)
+            check("kutilmagan xato yuqoriga ko'tarildi", seen.get("raised") is True)
+            row = await usage.get(user_id)
+            used = row.translations_count if row else 0
+            check("kutilmagan xatoda ham kvota qaytarildi", used == 1, f"used={used}")
+            check("qisqa matnda ⏳ chiqmaydi", t.TRANSLATING_LONG_TEXT not in msg.sent)
+
+            await session.execute(delete(TranslationSignal).where(TranslationSignal.user_id == user_id))
+            await session.execute(delete(Event).where(Event.user_id == user_id))
+            await session.execute(delete(Translation).where(Translation.user_id == user_id))
+            await session.execute(delete(DailyUsage).where(DailyUsage.user_id == user_id))
+            await session.execute(delete(UserSettings).where(UserSettings.user_id == user_id))
+            await session.execute(delete(User).where(User.id == user_id))
+            await session.commit()
+    finally:
+        TranslationService.translate = original_translate  # type: ignore[method-assign]
+
+
 async def cleanup() -> None:
     async with AsyncSessionLocal() as session:
         from sqlalchemy import delete
@@ -2605,6 +3342,204 @@ async def cleanup() -> None:
             await session.commit()
 
 
+async def test_ocr_resilience() -> None:
+    """OCR: javobni tasniflash, "matn yo'q" xato emasligi, vaqt byudjeti,
+    rasmga bog'liq xatoda kalitlarni behuda aylanmaslik, katta rasm.
+
+    Tarmoqsiz va bazasiz — chaqiruvlar va oylik hisoblar soxtalashtiriladi.
+    """
+    print("\n[18] OCR chidamliligi")
+    from bot.services import ocr as ocr_module
+    from bot.services.ocr import OcrError, parse_ocrspace_response, parse_vision_response
+
+    def _code(fn, *args) -> str:
+        try:
+            fn(*args)
+        except OcrError as exc:
+            return exc.code
+        return "ok"
+
+    ok_page = {"FileParseExitCode": 1, "ParsedText": "Salom\r\ndunyo"}
+    check(
+        "OCR.Space: muvaffaqiyatli sahifa matni olinadi",
+        parse_ocrspace_response(200, {"ParsedResults": [ok_page]}) == "Salom\r\ndunyo",
+    )
+    check(
+        "OCR.Space: matnsiz rasm — xato emas, bo'sh satr",
+        parse_ocrspace_response(
+            200, {"ParsedResults": [{"FileParseExitCode": 1, "ParsedText": ""}]}
+        ) == "",
+    )
+    check(
+        "OCR.Space: E500 -> provider_error",
+        _code(parse_ocrspace_response, 200,
+              {"IsErroredOnProcessing": True, "ErrorMessage": ["E500: Error during OCR"]})
+        == "provider_error",
+    )
+    check(
+        "OCR.Space: E214 (hajm) -> invalid_image ('maximum' so'ziga qaramay)",
+        _code(parse_ocrspace_response, 200, {
+            "IsErroredOnProcessing": True,
+            "ErrorMessage": ["E214: File failed validation. Maximum file size limit 1024 KB exceeded"],
+        }) == "invalid_image",
+    )
+    check(
+        "OCR.Space: soatlik limit (HTTP 403) -> key_error",
+        _code(parse_ocrspace_response, 403,
+              "You may only perform this action upto maximum 180 number of times") == "key_error",
+    )
+    check(
+        "OCR.Space: HTML 503 sahifa -> provider_error",
+        _code(parse_ocrspace_response, 503, None) == "provider_error",
+    )
+    check(
+        "OCR.Space: sahifa timeout'i (-20) -> timeout",
+        _code(parse_ocrspace_response, 200, {"ParsedResults": [
+            {"FileParseExitCode": -20, "ErrorMessage": "Timeout waiting for OCR"}
+        ]}) == "timeout",
+    )
+    check(
+        "Vision: billing/kalit xatosi -> key_error",
+        _code(parse_vision_response, 403,
+              {"error": {"code": 403, "message": "This API method requires billing to be enabled"}})
+        == "key_error",
+    )
+    check(
+        "Vision: matnsiz rasm — xato emas, bo'sh satr",
+        parse_vision_response(200, {"responses": [{}]}) == "",
+    )
+    check(
+        "Vision: fullTextAnnotation matni olinadi",
+        parse_vision_response(200, {"responses": [{"fullTextAnnotation": {"text": " Hi \n"}}]}) == "Hi",
+    )
+
+    originals = {
+        "keys_raw": settings.OCRSPACE_API_KEYS_RAW,
+        "key": settings.OCRSPACE_API_KEY,
+        "vision": settings.GOOGLE_VISION_API_KEY,
+        "free": settings.OCRSPACE_FREE_MONTHLY,
+        "usage": ocr_module._ocrspace_key_usage,
+        "vision_usage": ocr_module._vision_monthly_usage,
+        "call_ocrspace": ocr_module._call_ocrspace,
+        "call_vision": ocr_module._call_google_vision,
+        "budget": ocr_module.OCR_TOTAL_BUDGET,
+        "timeout": ocr_module.OCR_TIMEOUT,
+        "min_attempt": ocr_module.OCR_MIN_ATTEMPT_SECONDS,
+    }
+    calls: list[str] = []
+
+    async def _no_usage(_session) -> dict:
+        return {}
+
+    async def _vision_usage(_session) -> int:
+        return 0
+
+    async def _vision_ok(_image_bytes: bytes) -> str:
+        calls.append("vision")
+        return "vision matni"
+
+    async def _ocrspace_invalid_image(_image_bytes: bytes, api_key: str) -> str:
+        calls.append(api_key)
+        raise OcrError("invalid_image", "E301: Unable to recognize the file type")
+
+    async def _ocrspace_hangs(_image_bytes: bytes, api_key: str) -> str:
+        calls.append(api_key)
+        await asyncio.sleep(5)
+        return "kech"
+
+    async def _ocrspace_raw_timeout(_image_bytes: bytes, api_key: str) -> str:
+        calls.append(api_key)
+        raise asyncio.TimeoutError()
+
+    ocr_module._ocrspace_key_usage = _no_usage
+    ocr_module._vision_monthly_usage = _vision_usage
+    ocr_module._call_google_vision = _vision_ok
+    settings.OCRSPACE_FREE_MONTHLY = 25000
+    settings.OCRSPACE_API_KEY = ""
+    settings.OCRSPACE_API_KEYS_RAW = "keyA,keyB,keyC"
+    try:
+        # Rasmga bog'liq xato -> qolgan OCR.Space kalitlari sinalmaydi,
+        # darhol Vision.
+        calls.clear()
+        settings.GOOGLE_VISION_API_KEY = "test-key"
+        ocr_module._call_ocrspace = _ocrspace_invalid_image
+        result = await ocr_module.extract_text(None, b"x")
+        check(
+            "invalid_image -> boshqa kalit sinalmaydi, Vision'ga o'tadi",
+            calls == ["keyA", "vision"] and result.provider == "google_vision",
+            f"calls={calls}",
+        )
+
+        # Vision yo'q, provayder osilib qoldi -> umumiy byudjet ichida
+        # `timeout` bilan tugaydi (3 x timeout kutilmaydi).
+        calls.clear()
+        settings.GOOGLE_VISION_API_KEY = ""
+        ocr_module.OCR_TOTAL_BUDGET = 0.6
+        ocr_module.OCR_MIN_ATTEMPT_SECONDS = 0.3
+        ocr_module._call_ocrspace = _ocrspace_hangs
+        started = asyncio.get_running_loop().time()
+        try:
+            await ocr_module.extract_text(None, b"x")
+            check("osilgan provayder -> xato", False, "OcrError kutilgan edi")
+        except OcrError as exc:
+            elapsed = asyncio.get_running_loop().time() - started
+            check(
+                "osilgan provayder -> byudjet ichida timeout",
+                exc.code == "timeout" and elapsed < 2 and len(calls) == 1,
+                f"code={exc.code}, {elapsed:.2f}s, calls={len(calls)}",
+            )
+        ocr_module.OCR_TOTAL_BUDGET = originals["budget"]
+        ocr_module.OCR_MIN_ATTEMPT_SECONDS = originals["min_attempt"]
+
+        # Xom asyncio.TimeoutError (bo'sh str) -> `timeout` kodi va sababli
+        # xabar; boshqa kalitlar sinaladi (kalitga bog'liq bo'lishi mumkin).
+        calls.clear()
+        ocr_module._call_ocrspace = _ocrspace_raw_timeout
+        try:
+            await ocr_module.extract_text(None, b"x")
+            check("xom timeout -> xato", False, "OcrError kutilgan edi")
+        except OcrError as exc:
+            check(
+                "xom TimeoutError -> 'timeout' kodi, xabar bo'sh emas",
+                exc.code == "timeout" and str(exc).strip() != "" and len(calls) == 3,
+                f"code={exc.code}, calls={len(calls)}",
+            )
+
+        # OCR.Space chegarasidan katta rasm: Vision yo'q -> image_too_large,
+        # OCR.Space umuman chaqirilmaydi; Vision bor -> Vision.
+        big = b"\0" * (ocr_module.OCRSPACE_MAX_BYTES + 1)
+        calls.clear()
+        try:
+            await ocr_module.extract_text(None, big)
+            check("katta rasm -> xato", False, "OcrError kutilgan edi")
+        except OcrError as exc:
+            check(
+                "katta rasm, Vision yo'q -> image_too_large (OCR.Space chaqirilmaydi)",
+                exc.code == "image_too_large" and calls == [],
+                f"code={exc.code}, calls={calls}",
+            )
+        settings.GOOGLE_VISION_API_KEY = "test-key"
+        result = await ocr_module.extract_text(None, big)
+        check(
+            "katta rasm, Vision bor -> Vision, 'kvota tugagan' bayrog'i yo'q",
+            result.provider == "google_vision" and not result.ocrspace_quota_exhausted
+            and calls == ["vision"],
+            f"calls={calls}",
+        )
+    finally:
+        settings.OCRSPACE_API_KEYS_RAW = originals["keys_raw"]
+        settings.OCRSPACE_API_KEY = originals["key"]
+        settings.GOOGLE_VISION_API_KEY = originals["vision"]
+        settings.OCRSPACE_FREE_MONTHLY = originals["free"]
+        ocr_module._ocrspace_key_usage = originals["usage"]
+        ocr_module._vision_monthly_usage = originals["vision_usage"]
+        ocr_module._call_ocrspace = originals["call_ocrspace"]
+        ocr_module._call_google_vision = originals["call_vision"]
+        ocr_module.OCR_TOTAL_BUDGET = originals["budget"]
+        ocr_module.OCR_TIMEOUT = originals["timeout"]
+        ocr_module.OCR_MIN_ATTEMPT_SECONDS = originals["min_attempt"]
+
+
 async def main() -> None:
     print("=" * 60)
     print("Tarjimon-8 dud sinovi")
@@ -2624,12 +3559,16 @@ async def main() -> None:
     result = await test_translation()
     await test_translation_providers()
     await test_audit_fixes_2026_11()
+    await test_translation_service_cleanup()
+
+    await test_no_db_transaction_during_provider_call()
     await test_translation_record(user_id, result)
     await test_events(user_id)
     await test_tts()
     await test_keyboards()
     await test_support()
     await test_donate(user_id)
+    await test_donate_on_paid_idempotent(user_id)
     await test_broadcast()
     await test_broadcast_resumable()
     await test_broadcast_runner_guards()
@@ -2641,6 +3580,8 @@ async def main() -> None:
     await test_admin_reply_pin()
     await test_support_parsing()
     await test_content_extraction()
+    await test_fallback_pin_admin_report()
+    await test_ocr_resilience()
 
     await cleanup()
     await engine.dispose()

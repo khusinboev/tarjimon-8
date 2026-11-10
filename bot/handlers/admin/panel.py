@@ -1,9 +1,10 @@
 from aiogram import Bot, Router, F
 import logging
 import re
+from datetime import date
 from typing import Awaitable, Callable
 from aiogram.dispatcher.event.bases import SkipHandler
-from aiogram.filters import Command, StateFilter
+from aiogram.filters import Command, CommandObject, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 from sqlalchemy import select
@@ -24,7 +25,7 @@ from bot.keyboards.admin import (
     admin_global_limits_keyboard,
     back_keyboard,
 )
-from bot.services import broadcast_runner
+from bot.services import admin_access, broadcast_runner, daily_report
 from bot.services.admin_service import AdminService
 from bot.services.broadcast_progress import render_card, render_history_line
 from bot.services.stats import StatsService, render as render_stats
@@ -46,21 +47,17 @@ logger = logging.getLogger(__name__)
 def is_admin(user_id: int) -> bool:
     """Panel kirishi FAQAT `.env`dagi `ADMIN_USER_IDS`ga qaraladi.
 
-    DIQQAT: bu DB'dagi `User.role in ("admin", "owner")`dan MUSTAQIL —
-    o'sha rol faqat ban-immunitet/cheksiz kvota beradi (`quota.py`,
-    `subscription.py`), panelga kirish bermaydi. Ataylab shunday: panel
-    kirishi — ishonch chegarasi, u DB qatoridan (kimdir buzib kirsa
-    o'zgartirishi mumkin) emas, faqat serverga jismoniy/deploy kirish
-    huquqi bo'lgan kishi tahrirlaydigan `.env`dan kelishi kerak. Buni
-    async DB so'roviga aylantirish har bir admin-filtrlangan handlerda
-    HAR BIR xabar uchun so'rov qo'shardi — hozircha faqat bitta admin
-    bor va DB orqali `role='admin'` beradigan hech qanday in-app funksiya
-    yo'q, shuning uchun amaliy nomuvofiqlik yo'q. Ikkinchi admin DB
-    orqali (qo'lda SQL bilan) qo'shilsa, uni `ADMIN_USER_IDS`ga ham
-    qo'shishni unutmang — aks holda ular ban-immun/cheksiz bo'ladi-yu,
-    panelga kira olmaydi.
+    Tekshiruvning o'zi `bot/services/admin_access.py`da (yagona manba),
+    bu yerda `include_db_role=False` — ya'ni DB'dagi `User.role` panelga
+    kirish BERMAYDI. Ataylab shunday: panel kirishi — ishonch chegarasi,
+    u DB qatoridan (kimdir buzib kirsa o'zgartirishi mumkin) emas, faqat
+    serverga deploy kirish huquqi bo'lgan kishi tahrirlaydigan `.env`dan
+    kelishi kerak. DB roli faqat ban-immunitet/obunadan o'tish beradi
+    (`middlewares/subscription.py`, `include_db_role=True`). Ikkinchi
+    admin DB orqali (qo'lda SQL bilan) qo'shilsa, uni `ADMIN_USER_IDS`ga
+    ham qo'shishni unutmang — aks holda u panelga kira olmaydi.
     """
-    return user_id in settings.ADMIN_USER_IDS
+    return admin_access.is_admin(user_id, include_db_role=False)
 
 
 @router.message(Command("admin"), F.from_user.func(lambda u: u and is_admin(u.id)))
@@ -144,6 +141,55 @@ async def show_stats(message: Message):
         data = await StatsService(session).collect()
 
     await message.answer(render_stats(data), reply_markup=admin_main_keyboard())
+
+
+def parse_report_args(args: str | None, now=None) -> tuple:
+    """`/report` argumenti → `(kun, yorliq, until)` yoki `None` (noto'g'ri).
+
+    `/report` — oldingi Toshkent kuni (kunlik avtomatik hisobot bilan bir
+    xil). `/report today` (yoki `bugun`) — bugun, hozirgacha.
+    `/report 2026-11-01` — o'sha kun (kelajak sanasi rad etiladi).
+    """
+    now = now or utcnow()
+    arg = (args or "").strip().lower()
+    today = daily_report.tashkent_today(now)
+    if arg in ("", "yesterday", "kecha"):
+        return daily_report.previous_tashkent_day(now), "", None
+    if arg in ("today", "bugun"):
+        return today, "bugun, hozirgacha", now
+    try:
+        day = date.fromisoformat(arg)
+    except ValueError:
+        return None
+    if day > today:
+        return None
+    if day == today:
+        return today, "bugun, hozirgacha", now
+    return day, "", None
+
+
+@router.message(Command("report"), F.from_user.func(lambda u: u and is_admin(u.id)))
+async def show_daily_report(message: Message, command: CommandObject):
+    """Kunlik hisobotni talab bo'yicha — faqat so'ragan adminga.
+
+    Avtomatik yuborishning idempotentlik kalitiga TEGMAYDI: qo'lda
+    ko'rish 09:00 dagi rejali hisobotni bekor qilmaydi.
+    """
+    parsed = parse_report_args(command.args)
+    if parsed is None:
+        await message.answer(
+            "Foydalanish: /report — kecha, /report today — bugun (hozirgacha), "
+            "/report YYYY-MM-DD — o'sha kun."
+        )
+        return
+    day, label, until = parsed
+    try:
+        text = await daily_report.build_report_text(day, label=label, until=until)
+    except Exception:
+        logger.exception("/report: hisobotni tayyorlab bo'lmadi")
+        await message.answer("⚠️ Hisobotni tayyorlab bo'lmadi — loglarni tekshiring.")
+        return
+    await message.answer(text)
 
 
 @router.message(F.text == "📜 Audit", F.from_user.func(lambda u: u and is_admin(u.id)))

@@ -249,3 +249,13 @@ RELAUNCH = (
     "🗣 <b>Bahasa Anda</b> — antarmuka mengikuti bahasa Telegram Anda\n\n"
     "Kirim teks apa pun untuk mencoba 👇"
 )
+
+# ── Perintah tidak dikenal (handlers/user/fallback.py) — AWAL ──
+UNKNOWN_COMMAND = (
+    "🤔 Perintah tidak dikenal. Kirim /help untuk melihat perintah yang "
+    "tersedia, atau kirim teks apa saja untuk diterjemahkan."
+)
+# ── Perintah tidak dikenal — AKHIR ──
+
+# ── Uzun matn: tarjima davomida ko'rsatiladigan "⏳" xabari (translate.py) ──
+TRANSLATING_LONG_TEXT = "⏳ Sedang menerjemahkan, mohon tunggu…"
