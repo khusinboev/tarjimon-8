@@ -256,3 +256,6 @@ UNKNOWN_COMMAND = (
     "tersedia, atau kirim teks apa saja untuk diterjemahkan."
 )
 # ── Perintah tidak dikenal — AKHIR ──
+
+# ── Uzun matn: tarjima davomida ko'rsatiladigan "⏳" xabari (translate.py) ──
+TRANSLATING_LONG_TEXT = "⏳ Sedang menerjemahkan, mohon tunggu…"

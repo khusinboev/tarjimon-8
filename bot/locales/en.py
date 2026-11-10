@@ -257,3 +257,6 @@ UNKNOWN_COMMAND = (
     "or just send any text to translate it."
 )
 # ── Unknown command — END ──
+
+# ── Uzun matn: tarjima davomida ko'rsatiladigan "⏳" xabari (translate.py) ──
+TRANSLATING_LONG_TEXT = "⏳ Translating, one moment…"

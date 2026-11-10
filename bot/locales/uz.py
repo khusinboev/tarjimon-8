@@ -257,3 +257,6 @@ UNKNOWN_COMMAND = (
     "yoki tarjima uchun shunchaki matn yuboring."
 )
 # ── Noma'lum buyruq — OXIRI ──
+
+# ── Uzun matn: tarjima davomida ko'rsatiladigan "⏳" xabari (translate.py) ──
+TRANSLATING_LONG_TEXT = "⏳ Tarjima qilinmoqda, biroz kuting…"
