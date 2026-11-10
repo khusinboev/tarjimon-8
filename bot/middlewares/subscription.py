@@ -15,6 +15,7 @@ from aiogram.types import CallbackQuery, Message, TelegramObject
 
 from bot.config.settings import settings
 from bot.keyboards.inline import get_subscription_keyboard
+from bot.services.admin_access import is_admin as check_admin
 from bot.services.events import EventType
 from bot.services.subscription_service import SubscriptionService
 
@@ -38,8 +39,11 @@ class SubscriptionMiddleware(BaseMiddleware):
             return await handler(event, data)
 
         tg_user = data.get("event_from_user")
-        is_admin = user.role in ("admin", "owner") or (
-            tg_user and tg_user.id in settings.ADMIN_USER_IDS
+        # `.env` YOKI DB roli — faqat ban/obunadan o'tish uchun ("yumshoq"
+        # imtiyoz). Panel kirishi bundan MUSTAQIL (`.env` faqat) — izoh:
+        # `bot/services/admin_access.py`.
+        is_admin = check_admin(
+            tg_user.id if tg_user else None, user, include_db_role=True
         )
 
         # Admin tomonidan taqiqlangan — tarjima va boshqa oqimlar yopiq.

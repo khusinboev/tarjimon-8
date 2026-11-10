@@ -2582,6 +2582,192 @@ async def test_membership_status() -> None:
         await session.commit()
 
 
+async def test_fallback_pin_admin_report() -> None:
+    """Noma'lum buyruq filtri, pin muddati, yagona admin tekshiruvi va
+    kunlik hisobot (render + idempotentlik) — DB'siz, sof mantiq."""
+    print("\n[*] Fallback / pin TTL / admin_access / kunlik hisobot")
+    from datetime import date, datetime, timedelta, timezone
+    from types import SimpleNamespace
+
+    from bot.handlers.admin import panel
+    from bot.handlers.user import fallback, support
+    from bot.services import admin_access, daily_report
+
+    # ── Fallback filtri ──
+    f = fallback.should_answer_unknown_command
+    check("fallback: /foo shaxsiy chatda — javob", f("/foo", "private"))
+    check("fallback: /foo@Bot arg — javob", f("/foo@SomeBot arg", "private"))
+    check("fallback: guruhda — jim", not f("/foo", "group") and not f("/foo", "supergroup"))
+    check("fallback: oddiy matn — jim", not f("salom", "private"))
+    check("fallback: yo'l (/usr/bin) — buyruq emas", not f("/usr/bin", "private"))
+    check("fallback: yolg'iz / va None — jim", not f("/", "private") and not f(None, "private"))
+    check(
+        "fallback: lokal kaliti hamma tilda",
+        all(getattr(locales.get(c), "UNKNOWN_COMMAND", "") for c in locales.SUPPORTED),
+    )
+    main_src = (Path(__file__).resolve().parent.parent / "bot" / "main.py").read_text()
+    check(
+        "fallback routeri translate'dan KEYIN ulanadi",
+        0 < main_src.find("include_router(translate.router)")
+        < main_src.find("include_router(fallback.router)"),
+    )
+
+    # ── Pin muddati ──
+    now = datetime(2026, 11, 10, 12, 0, tzinfo=timezone.utc)
+    check("pin TTL = 30 daqiqa", support.PIN_TTL == timedelta(minutes=30))
+    check("pin: 29 daqiqa — amal qiladi", not support.is_pin_expired(now - timedelta(minutes=29), now))
+    check("pin: 31 daqiqa — muddati o'tgan", support.is_pin_expired(now - timedelta(minutes=31), now))
+    check("pin: set_at yo'q — o'tgan deb olinadi", support.is_pin_expired(None, now))
+    check(
+        "pin: naive vaqt UTC deb olinadi",
+        not support.is_pin_expired(datetime(2026, 11, 10, 11, 50), now)
+        and support.is_pin_expired(datetime(2026, 11, 10, 11, 0), now),
+    )
+
+    # ── Yagona admin tekshiruvi (imtiyoz oshmasligi) ──
+    outsider = 999_000_777
+    db_admin = SimpleNamespace(role="admin")
+    db_owner = SimpleNamespace(role="owner")
+    plain = SimpleNamespace(role="user")
+    check("admin: None — hech qachon admin emas", not admin_access.is_admin(None, db_admin))
+    check(
+        "admin: DB roli panelga kirish BERMAYDI",
+        not admin_access.is_admin(outsider, db_admin) and not panel.is_admin(outsider),
+    )
+    check(
+        "admin: DB roli obuna/ban chetlab o'tishda hisoblanadi",
+        admin_access.is_admin(outsider, db_admin, include_db_role=True)
+        and admin_access.is_admin(outsider, db_owner, include_db_role=True),
+    )
+    check(
+        "admin: oddiy rol — hech qayerda admin emas",
+        not admin_access.is_admin(outsider, plain, include_db_role=True),
+    )
+    if settings.ADMIN_USER_IDS:
+        env_id = settings.ADMIN_USER_IDS[0]
+        check(
+            "admin: .env admin — ikkala rejimda ham admin",
+            panel.is_admin(env_id)
+            and admin_access.is_admin(env_id, plain, include_db_role=True)
+            and support._is_admin(env_id),
+        )
+
+    # ── Vaqt chegaralari (Toshkent = UTC+5) ──
+    start, end = daily_report.day_bounds_utc(date(2026, 11, 9))
+    check(
+        "hisobot: Toshkent kuni UTC oralig'i",
+        start == datetime(2026, 11, 8, 19, 0, tzinfo=timezone.utc)
+        and end == datetime(2026, 11, 9, 19, 0, tzinfo=timezone.utc),
+    )
+    check(
+        "hisobot: UTC 20:00 = Toshkentda ertasi — oldingi kun to'g'ri",
+        daily_report.previous_tashkent_day(datetime(2026, 11, 9, 20, 0, tzinfo=timezone.utc))
+        == date(2026, 11, 9),
+    )
+    check(
+        "hisobot: 09:00 Toshkent (04:00 UTC) — vaqti keldi",
+        not daily_report.is_due(datetime(2026, 11, 10, 3, 59, tzinfo=timezone.utc))
+        and daily_report.is_due(datetime(2026, 11, 10, 4, 0, tzinfo=timezone.utc)),
+    )
+    wait = daily_report.seconds_until_next_check(datetime(2026, 11, 10, 3, 59, tzinfo=timezone.utc))
+    check("hisobot: keyingi tekshiruvgacha kutish", 1 <= wait <= 60, f"{wait:.0f}s")
+
+    # ── /report argumentlari ──
+    p_now = datetime(2026, 11, 10, 6, 0, tzinfo=timezone.utc)
+    check("/report — kecha", panel.parse_report_args(None, p_now)[0] == date(2026, 11, 9))
+    today = panel.parse_report_args("today", p_now)
+    check("/report today — bugun, hozirgacha", today[0] == date(2026, 11, 10) and today[2] == p_now)
+    check("/report YYYY-MM-DD", panel.parse_report_args("2026-11-01", p_now)[0] == date(2026, 11, 1))
+    check(
+        "/report: kelajak/xato argument rad etiladi",
+        panel.parse_report_args("2026-12-01", p_now) is None
+        and panel.parse_report_args("abc", p_now) is None,
+    )
+
+    # ── Render (soxta raqamlar + escape) ──
+    rep = daily_report.DailyReport(
+        day=date(2026, 11, 9),
+        translations_total=1000,
+        translations_success=970,
+        providers={"mymemory": 500, "local_mt": 300, "cache": 190, "<evil>&": 10},
+        long_total=40,
+        long_success=36,
+        local_mt_p50_ms=812.4,
+        ocr_total=25,
+        ocr_failed=3,
+        tts_requested=120,
+        tts_failed=4,
+        new_users=57,
+        blocked_bot=6,
+        donations_count=2,
+        donations_stars=150,
+    )
+    rep.label = "<b>x</b>"
+    html = daily_report.render(rep)
+    check("render: provayder nomi escape qilingan", "&lt;evil&gt;&amp;" in html and "<evil>" not in html)
+    check("render: yorliq escape qilingan", "&lt;b&gt;x&lt;/b&gt;" in html)
+    check("render: <b> teglari juft", html.count("<b>") == html.count("</b>"))
+    check("render: xato ulushi", "❌ 30 (3.0%)" in html)
+    check("render: uzun matn ulushi", "Uzun (&gt;500): 40 · ✅ 90.0%" in html)
+    check("render: local_mt p50", "p50: 812 ms" in html)
+    check(
+        "render: provayder ulushi va qolgan raqamlar",
+        "mymemory — 500 (50.0%)" in html and "Yangi: 57" in html
+        and "Bloklagan: 6" in html and "TTS: 120 · ❌ 4" in html
+        and "OCR: 25 · ❌ 3" in html and "Homiylik: 2 (150" in html,
+    )
+    empty = daily_report.render(daily_report.DailyReport(day=date(2026, 11, 9)))
+    check("render: bo'sh kun — nolga bo'linish yo'q", "0.0%" in empty and "p50: —" in empty)
+
+    # ── Idempotentlik ──
+    day = date(2026, 11, 9)
+    check("hisobot kaliti", daily_report.idempotency_key(day) == "daily_report:sent:2026-11-09")
+    local: set = set()
+    first = await daily_report.claim_day(None, day, local)
+    second = await daily_report.claim_day(None, day, local)
+    other = await daily_report.claim_day(None, day + timedelta(days=1), local)
+    check("Redis'siz: kuniga bir marta", first and not second and other)
+    await daily_report.release_day(None, day, local)
+    check("Redis'siz: bo'shatilgach qayta egallanadi", await daily_report.claim_day(None, day, local))
+
+    class FakeRedis:
+        def __init__(self):
+            self.data: dict = {}
+            self.ttl: dict = {}
+
+        async def set(self, key, value, ex=None, nx=False):
+            if nx and key in self.data:
+                return None
+            self.data[key] = value
+            self.ttl[key] = ex
+            return True
+
+        async def delete(self, key):
+            self.data.pop(key, None)
+
+    class BrokenRedis:
+        async def set(self, *a, **k):
+            raise ConnectionError("down")
+
+        async def delete(self, *a, **k):
+            raise ConnectionError("down")
+
+    fake = FakeRedis()
+    r1 = await daily_report.claim_day(fake, day, set())
+    r2 = await daily_report.claim_day(fake, day, set())  # "restart" — yangi xotira
+    check("Redis: restartdan keyin ham takror yo'q", r1 and not r2)
+    check(
+        "Redis: kalitda TTL bor",
+        fake.ttl.get(daily_report.idempotency_key(day)) == daily_report.REDIS_KEY_TTL_SECONDS,
+    )
+    await daily_report.release_day(fake, day, set())
+    check("Redis: bo'shatilgach qayta egallanadi", await daily_report.claim_day(fake, day, set()))
+    broken_local: set = set()
+    b1 = await daily_report.claim_day(BrokenRedis(), day, broken_local)
+    b2 = await daily_report.claim_day(BrokenRedis(), day, broken_local)
+    check("Redis nosoz: xotiradagi belgiga o'tadi", b1 and not b2)
+
+
 async def cleanup() -> None:
     async with AsyncSessionLocal() as session:
         from sqlalchemy import delete
@@ -2641,6 +2827,7 @@ async def main() -> None:
     await test_admin_reply_pin()
     await test_support_parsing()
     await test_content_extraction()
+    await test_fallback_pin_admin_report()
 
     await cleanup()
     await engine.dispose()
