@@ -86,17 +86,28 @@ tozalangani — qo'shimcha.
 
 ## 4. O'qitish (GPU)
 
+Laptop muhiti tayyor (2026-11-11): `../train-venv` (torch cu128, transformers 5.22,
+peft 0.21), asosiy model fp16 da `../hf-base/nllb-200-distilled-1.3B-fp16`
+(5.5 GB fp32 -> 2.7 GB; disk tor). Butun zanjir CPU'da 2 qadam bilan sinalgan:
+o'qitish -> merge -> CT2 int8 -> `mt.engine` tarjimasi ishladi.
+
+Oldin NVIDIA drayveri (kernel 7.2.15 uchun modul yo'q edi):
+`sudo apt install -y system76-driver-nvidia && sudo system76-power graphics hybrid`, reboot,
+`nvidia-smi` ishlashini tekshiring.
+
 ```bash
-pip install torch --index-url https://download.pytorch.org/whl/cu128
-pip install -r mt/train/requirements.txt
-python -m mt.train.finetune --data prepared/ --out ckpt/ --max-steps 50   # tutun sinovi
-python -m mt.train.finetune --data prepared/ --out ckpt/ --epochs 1
+cd tarjimon-8
+B=../hf-base/nllb-200-distilled-1.3B-fp16
+# tutun sinovi (GPU, ~1 daqiqa)
+../train-venv/bin/python -m mt.train.finetune --data ../data/curated --out ../data/ckpt --base $B --max-steps 50 --eval-steps 50 --eval-limit 50
+# to'liq (1 epoch, RTX 4050 6 GB; OOM bo'lsa --max-tokens 2000)
+../train-venv/bin/python -m mt.train.finetune --data ../data/curated --out ../data/ckpt --base $B --epochs 1
 ```
 
 ## 5. Qo'shish, o'girish, tekshirish, deploy
 
 ```bash
-python -m mt.train.merge_and_convert --adapter ckpt/best --out nllb-1.3B-tarjimon-v1-ct2-int8
+python -m mt.train.merge_and_convert --adapter ../data/ckpt/best --base $B --out ../models/nllb-1.3B-tarjimon-v1-ct2-int8
 python -m mt.train.evaluate --model nllb-1.3B-tarjimon-v1-ct2-int8 --test prepared/test.jsonl --out v1.json
 # FLORES (rasmiy matn) pasaymaganini ham tekshiring — bench/run_bench.py
 ```

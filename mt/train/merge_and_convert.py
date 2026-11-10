@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import argparse
 import shutil
-import subprocess
 import tempfile
 from pathlib import Path
 
@@ -37,8 +36,12 @@ def main() -> None:
         AutoTokenizer.from_pretrained(args.base).save_pretrained(tmp)
         if out.exists():
             shutil.rmtree(out)
-        subprocess.run(["ct2-transformers-converter", "--model", tmp, "--output_dir", str(out),
-                        "--quantization", "int8", "--copy_files", "tokenizer.json"], check=True)
+        # Python API — `ct2-transformers-converter` PATH'dan boshqa venv'nikini
+        # (torch'siz) olib qolishi mumkin; bu yerda doim joriy muhit ishlatiladi.
+        from ctranslate2.converters import TransformersConverter
+
+        TransformersConverter(tmp, copy_files=["tokenizer.json"], low_cpu_mem_usage=True).convert(
+            str(out), quantization="int8", force=True)
     print("tayyor:", out)
 
 
