@@ -25,6 +25,20 @@ class SubscriptionService:
         Check if user is subscribed to all required channels.
         Returns list of channels user is NOT subscribed to.
         Redis cache: if user was fully subscribed recently, skip API calls.
+
+        DIQQAT — ATAYLAB FAIL-CLOSED: `is_subscribed` standart `False`dan
+        boshlanadi va Telegram API xato/timeout bersa ham shunday qoladi
+        (aylanish tugagach `not_subscribed`ga qo'shiladi). Bu botning
+        boshqa joylaridagi (`quota.py`ning rate-limiter'i, Redis kesh)
+        FAIL-OPEN siyosatidan ATAYLAB farq qiladi: majburiy obuna odatda
+        kanal egasi bilan kelishuv/monetizatsiya bo'lgani uchun, Telegram
+        vaqtincha nosoz bo'lganda TEKSHIRUVNI butunlay o'chirib qo'yish
+        (hamma o'tib ketaveradi) obuna talabini soatlab bekor qilib
+        qo'yishi mumkin — bu esa spam-himoyasi vaqtincha to'xtashidan
+        ancha jiddiyroq oqibat. Agar kelajakda bu siyosat noto'g'ri
+        tuyulsa (masalan Telegram nosozligi haqiqiy foydalanuvchilarni
+        botdan butunlay to'saversa) — buni ONGLI ravishda o'zgartiring,
+        tasodifan emas.
         """
         cache_key = f"sub:{user_id}"
         try:

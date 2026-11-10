@@ -1,0 +1,7 @@
+# Lokal tarjima servisi (`mt/`) — botdan ALOHIDA venv: /home/tarjimon8/mt-venv
+ctranslate2==4.8.5
+tokenizers==0.23.3
+aiohttp==3.10.11
+fasttext==0.9.3
+# fasttext 0.9.3 numpy 2 bilan `predict()`da yiqiladi
+numpy==1.26.4

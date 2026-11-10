@@ -17,8 +17,12 @@ if config.config_file_name is not None:
 # Metadata for autogenerate support
 target_metadata = Base.metadata
 
-# Database URL from settings
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL.replace('+asyncpg', '+psycopg2'))
+# Database URL from settings. Faqat offline rejim (`run_migrations_offline`,
+# odatiy oqimda ishlatilmaydi) shuni o'qiydi — online rejim (asosiy yo'l,
+# pastda) `run_async_migrations()` ichida ASYNC URL bilan qayta yozadi.
+# `settings.SYNC_DATABASE_URL` — sinxron drayverga (`+asyncpg` ->
+# `+psycopg2`) almashtirishning YAGONA joyi, shu yerda qayta yozilmasin.
+config.set_main_option("sqlalchemy.url", settings.SYNC_DATABASE_URL)
 
 
 def run_migrations_offline() -> None:

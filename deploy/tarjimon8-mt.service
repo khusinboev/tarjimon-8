@@ -1,0 +1,48 @@
+[Unit]
+Description=Tarjimon-8 lokal tarjima modeli (NLLB-200, CTranslate2, CPU)
+After=network.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+# Imtiyozsiz vaqtinchalik foydalanuvchi — faqat o'qiydi, hech narsa yozmaydi.
+DynamicUser=yes
+WorkingDirectory=/home/tarjimon8/app
+Environment=MT_MODEL_DIR=/home/tarjimon8/models/nllb-200-distilled-1.3B-ct2-int8
+Environment=MT_LID_PATH=/home/tarjimon8/models/lid/lid.176.ftz
+Environment=MT_HOST=127.0.0.1
+Environment=MT_PORT=8790
+Environment=MT_THREADS=3
+Environment=MT_BEAM=2
+Environment=MT_MAX_QUEUE=8
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/tarjimon8/mt-venv/bin/python -m mt.server
+
+Restart=on-failure
+RestartSec=10s
+
+# Boshqa loyihalarga (bot, tizor-bot, Postgres) xalal bermasin:
+# - RAM qattiq chegarasi (model ~1.5 GB);
+# - CPU: ko'pi bilan 3 yadro, va band paytda boshqalardan keyin.
+MemoryMax=2560M
+MemorySwapMax=0
+CPUQuota=300%
+CPUWeight=30
+Nice=10
+IOWeight=30
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tarjimon8-mt
+
+[Install]
+WantedBy=multi-user.target

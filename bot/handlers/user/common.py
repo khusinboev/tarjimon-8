@@ -1,27 +1,53 @@
-from aiogram import Router, F
+from __future__ import annotations
+
+from types import ModuleType
+
+from aiogram import F, Router
+from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
-from bot.database.session import AsyncSessionLocal
-from bot.services.subscription_service import SubscriptionService
-from bot.keyboards.inline import get_subscription_keyboard
 
-router = Router()
+from bot.config.settings import settings
+from bot.database.models import User
+from bot.keyboards.user import main_menu
+from bot.locales import HELP_BUTTONS
+from bot.services.events import EventService, EventType
+
+router = Router(name="common")
 
 
-@router.message(F.text)
-async def handle_text_message(message: Message):
-    """Handle any text message from users"""
-    async with AsyncSessionLocal() as session:
-        service = SubscriptionService(session, message.bot)
-        not_subscribed = await service.check_user_subscriptions(message.from_user.id)
-
-    if not_subscribed:
-        await message.answer(
-            "❗️ Botdan foydalanish uchun quyidagi kanallarga obuna bo'lishingiz kerak:",
-            reply_markup=get_subscription_keyboard(not_subscribed),
-        )
-        return
-
-    await message.answer(
-        "📩 Xabaringiz qabul qilindi!\n"
-        "Tez orada javob beramiz."
+@router.message(F.text.in_(HELP_BUTTONS))
+async def show_help(
+    message: Message,
+    user: User,
+    events: EventService,
+    session_id,
+    state: FSMContext,
+    t: ModuleType,
+) -> None:
+    await state.clear()
+    await events.log(
+        EventType.MENU_OPENED,
+        user_id=user.id,
+        chat_id=message.chat.id,
+        session_id=session_id,
+        menu="help",
     )
+    await message.answer(
+        t.HELP.format(
+            limit=settings.DAILY_TRANSLATION_LIMIT,
+            admin=settings.ADMIN_USERNAME,
+        ),
+        reply_markup=main_menu(t),
+    )
+
+
+@router.message(Command("developer"))
+async def show_developer(message: Message, t: ModuleType) -> None:
+    """Dasturchi kontakti.
+
+    Ommaviy buyruq — shuning uchun foydalanuvchi tilida chiqadi va username
+    `settings` dan olinadi. Ilgari admin panelida qattiq yozilgan begona
+    username turgan edi.
+    """
+    await message.answer(t.DEVELOPER.format(admin=settings.ADMIN_USERNAME))
