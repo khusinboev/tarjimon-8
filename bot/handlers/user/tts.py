@@ -19,6 +19,7 @@ from bot.database.repositories.translation_repository import TranslationReposito
 from bot.keyboards.user import quota_exceeded_keyboard
 from bot.services.events import EventService, EventType
 from bot.services.quota import QuotaService, resolve_limit_override
+from bot.services import tts_health
 from bot.services.tts import TtsError, TtsService
 from bot.utils.text import text_hash, truncate
 
@@ -117,6 +118,12 @@ async def send_voice(
     try:
         result = await service.synthesize(text, voice)
     except TtsError as exc:
+        # Provayder salomatligi statistikasi — 2026-10-12 da TTS bir oy jim
+        # yiqilib yurgan. Kiritish xatolari (`too_long` va h.k.) provayder
+        # aybi emas, ular hisobga kirmaydi.
+        if exc.code in ("timeout", "provider_error", "empty_result"):
+            await tts_health.record(redis, ok=False)
+            await tts_health.check_and_alert(message.bot, redis, last_error=str(exc))
         # Band qilingan joy ortga qaytariladi — muvaffaqiyatsiz urinish
         # kvotadan sarflanmasligi kerak (kesh file_id ishlamay qolib,
         # qayta generatsiya qilinayotgan bo'lsa ham xavotir yo'q — bitta
@@ -145,6 +152,8 @@ async def send_voice(
         )
         await message.answer(t.TTS_ERRORS.get(exc.code, t.TTS_ERROR_DEFAULT))
         return False
+
+    await tts_health.record(redis, ok=True)
 
     try:
         sent = await message.answer_voice(

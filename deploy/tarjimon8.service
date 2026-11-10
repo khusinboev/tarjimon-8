@@ -10,8 +10,12 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
-User=root
-Group=root
+# Imtiyozsiz tizim foydalanuvchisi (2026-11 auditi: root sifatida ishlash bot
+# yoki kutubxona buzilsa butun serverni — boshqa loyihalarni ham — xavfga qo'yardi).
+# Bot diskka yozmaydi: kod/venv root'niki (faqat o'qiladi), `.env` — root:tarjimon8 640.
+# Bir martalik tayyorgarlik: DEPLOY.md "Imtiyozsiz foydalanuvchi".
+User=tarjimon8
+Group=tarjimon8
 WorkingDirectory=/home/tarjimon8/app
 EnvironmentFile=/home/tarjimon8/app/.env
 ExecStart=/home/tarjimon8/venv/bin/python -m bot.main
@@ -25,11 +29,13 @@ StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=tarjimon8
 
-# Minimal himoya — bot faqat o'z papkasiga yozishi kerak.
 NoNewPrivileges=true
 PrivateTmp=true
-ProtectSystem=full
-ProtectHome=false
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 
 [Install]
 WantedBy=multi-user.target

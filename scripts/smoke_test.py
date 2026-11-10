@@ -993,7 +993,7 @@ async def test_translation_providers() -> None:
             # TO'G'RI xulq (fallback chaqirilgani isbotlangan), shuning uchun
             # smoke_test'ni yiqitmaydi.
             try:
-                _, provider_name, _ = await service._dispatch(session, "salom", "auto", "en")
+                _, provider_name, _, _ = await service._dispatch(session, "salom", "auto", "en")
                 check(
                     "hamma pullik tugagan, Gemini yo'q -> bepul provayderga (haqiqiy chaqiruv)",
                     provider_name == "deep_translator",
@@ -1008,7 +1008,7 @@ async def test_translation_providers() -> None:
 
             # 2-daraja: 1-daraja hali tugagan holatda Gemini sozlansa, shu ishlatiladi.
             settings.GEMINI_API_KEYS_RAW = "gemkey1"
-            text_out, provider_name, key_index = await service._dispatch(session, "salom", "auto", "en")
+            text_out, provider_name, key_index, _ = await service._dispatch(session, "salom", "auto", "en")
             check(
                 "1-daraja tugagan, Gemini sozlangan -> Gemini ishlatiladi",
                 provider_name == "gemini" and key_index == 0 and text_out == "gemini:gemkey1",
@@ -1018,7 +1018,7 @@ async def test_translation_providers() -> None:
             # Gemini ham ishlamasa (xato) -> oxirgi zaxira `deep_translator`ga o'tadi.
             tp.CHEAP_PROVIDER_CONFIG["gemini"]["call"] = fake_gemini_fails
             try:
-                _, provider_name, _ = await service._dispatch(session, "salom", "auto", "en")
+                _, provider_name, _, _ = await service._dispatch(session, "salom", "auto", "en")
                 check(
                     "Gemini ham ishlamasa -> bepul provayderga (haqiqiy chaqiruv)",
                     provider_name == "deep_translator",
@@ -1034,7 +1034,7 @@ async def test_translation_providers() -> None:
             settings.GEMINI_API_KEYS_RAW = ""
 
             usage_by_provider["azure_translator"] = {}
-            text_out, provider_name, key_index = await service._dispatch(session, "salom", "auto", "en")
+            text_out, provider_name, key_index, _ = await service._dispatch(session, "salom", "auto", "en")
             check(
                 "faqat Azure tekin qolgan -> aniq Azure tanlanadi",
                 provider_name == "azure_translator" and key_index == 0 and text_out == "azure:akey1",
@@ -1045,7 +1045,7 @@ async def test_translation_providers() -> None:
             tp.FREE_TIER_PROVIDER_CONFIG["google_translate"]["call"] = fake_google_fails
             seen = set()
             for _ in range(5):
-                _, provider_name, _ = await service._dispatch(session, "salom", "auto", "en")
+                _, provider_name, _, _ = await service._dispatch(session, "salom", "auto", "en")
                 seen.add(provider_name)
             check(
                 "google ishlamasa (xato) azure'ga o'tadi, deep_translator'ga emas",
@@ -1097,7 +1097,7 @@ async def test_translation_providers() -> None:
             usage_by_provider["mymemory"] = {}
             settings.AZURE_TRANSLATOR_KEYS_RAW = ""
             settings.DEEPL_API_KEYS_RAW = ""
-            text_out, provider_name, key_index = await service._dispatch(session, "salom", "auto", "en")
+            text_out, provider_name, key_index, _ = await service._dispatch(session, "salom", "auto", "en")
             check(
                 "asosiylar yo'q -> MyMemory ishlatiladi (deep_translator emas)",
                 provider_name == "mymemory" and text_out == "mymemory:smoke@example.com",
@@ -1134,7 +1134,7 @@ async def test_translation_providers() -> None:
             settings.AZURE_TRANSLATOR_KEYS_RAW = ""
             settings.GOOGLE_TRANSLATE_API_KEYS_RAW = ""
             settings.LOCAL_MT_PRIORITY = 1
-            text_out, provider_name, _ = await service._dispatch(session, "hello", "en", "uz")
+            text_out, provider_name, _, _ = await service._dispatch(session, "hello", "en", "uz")
             check("asosiylar yo'q -> lokal ishlatiladi", provider_name == "local_mt", f"{provider_name}, {text_out}")
 
             async def fake_local_declines(_text, _source, _target, _api_key) -> str:
@@ -1142,7 +1142,7 @@ async def test_translation_providers() -> None:
 
             tp.FREE_TIER_PROVIDER_CONFIG["local_mt"]["call"] = fake_local_declines
             for _ in range(5):
-                text_out, provider_name, _ = await service._dispatch(session, "hello there", "auto", "uz")
+                text_out, provider_name, _, _ = await service._dispatch(session, "hello there", "auto", "uz")
             check("lokal rad etsa -> keyingi provayder (MyMemory)", provider_name == "mymemory", provider_name)
             check("rad etish breaker'ni OCHMAYDI", not await service.breaker.is_open("local_mt", 0))
 
@@ -1203,6 +1203,236 @@ async def test_translation_providers() -> None:
         await session.execute(delete(UserSettings).where(UserSettings.user_id == test_user.id))
         await session.execute(delete(User).where(User.id == test_user.id))
         await session.commit()
+
+
+async def test_audit_fixes_2026_11() -> None:
+    """2026-11 audit tuzatishlari — regressiya qo'riqchilari.
+
+    1) /start — ismdagi `<`/`&` xabarni buzmasin; 2) admin alertlaridagi
+    provayder xato matni escape qilinsin (aks holda alert jim yo'qoladi);
+    3) lokal modelning RAD ETISHI "provayder ishlamayapti" alertini
+    tetiklamasin; 4) lokal MT 503 `busy` — nosozlik emas; 5) /help amaldagi
+    limitni ko'rsatsin; 6) muvaffaqiyatsiz yozuvda oxirgi sinalgan provayder
+    va lokal muvaffaqiyatda model nomi bo'lsin.
+    """
+    print("\n[7d] Audit tuzatishlari (2026-11)")
+    import inspect
+
+    from bot.handlers.user import start as start_handlers
+    from bot.services import translation as tr_module
+    from bot.services import translation_providers as tp
+    from bot.services.translation import TranslationService
+
+    # ── 1. /start: ism escape ──
+    for code in sorted(locales.SUPPORTED):
+        t = locales.get(code)
+        rendered = t.WELCOME.format(name=html_escape("<3 Ali & Co"), source="A", target="B")
+        check(
+            f"{code}: WELCOME'da ism escape qilinadi",
+            "&lt;3 Ali &amp; Co" in rendered and "<3" not in rendered,
+        )
+    src_start = inspect.getsource(start_handlers.cmd_start)
+    check(
+        "cmd_start ismni html_escape orqali o'tkazadi",
+        "html_escape(message.from_user.first_name" in src_start,
+    )
+
+    # ── 5. /help: admin o'zgartirgan amaldagi limit ──
+    src_help = inspect.getsource(start_handlers.cmd_help)
+    check(
+        "cmd_help amaldagi limitni ko'rsatadi (.env standarti emas)",
+        "get_effective_limits" in src_help and "DAILY_TRANSLATION_LIMIT" not in src_help,
+    )
+
+    # ── 4. Lokal MT javobini tahlil qilish (HTTP'siz) ──
+    def outcome(status: int, data) -> str:
+        try:
+            result = tp.interpret_local_mt_response(status, data)
+        except tp.ProviderDeclined:
+            return "declined"
+        except RuntimeError:
+            return "error"
+        return f"ok:{result}"
+
+    check("503 busy -> rad etish (breaker'ga tushmaydi)", outcome(503, {"error": "busy"}) == "declined")
+    check("422 detection_failed -> rad etish", outcome(422, {"error": "detection_failed"}) == "declined")
+    check("500 internal -> nosozlik", outcome(500, {"error": "internal"}) == "error")
+    check("503 busy'siz -> nosozlik", outcome(503, {"error": "down"}) == "error")
+    check("JSON bo'lmagan javob -> nosozlik", outcome(200, "<html>") == "error")
+    check(
+        "200 -> (matn, model)",
+        outcome(200, {"text": " Salom ", "model": "nllb-600m"}) == "ok:('Salom', 'nllb-600m')",
+    )
+    check("200 modelsiz -> model None", outcome(200, {"text": "Salom"}) == "ok:('Salom', None)")
+
+    # ── 6a. TranslationError provayder nomini tashiydi ──
+    check("TranslationError.provider standart None", TranslationError("x").provider is None)
+    check(
+        "TranslationError.provider beriladi",
+        TranslationError("x", "m", provider="deep_translator").provider == "deep_translator",
+    )
+
+    # ── 2, 3, 6b: alert yo'li — soxta provayderlar bilan ──
+    sent: list[tuple[str, str]] = []
+
+    async def fake_alert(_bot, _redis, key: str, text: str) -> None:
+        sent.append((key, text))
+
+    async def fake_usage(_session, _provider: str, _period: str = "month") -> dict:
+        return {}
+
+    async def fake_mymemory(_text, _source, _target, api_key) -> str:
+        return f"mymemory:{api_key}"
+
+    async def fake_local_declines(_text, _source, _target, _api_key):
+        raise tp.ProviderDeclined("band (navbat to'la)")
+
+    async def fake_local_fails(_text, _source, _target, _api_key):
+        raise RuntimeError("lokal MT HTTP 500: <html>Error</html> & co")
+
+    async def fake_local_with_model(text, _source, _target, _api_key):
+        return f"local:{text}", "nllb-ft-v1"
+
+    class FakeDeepOk:
+        """3-daraja soxta — haqiqiy tarmoq chaqiruvi bo'lmasin."""
+
+        name = "deep_translator"
+
+        async def translate(self, text, _source, _target) -> str:
+            return f"deep:{text}"
+
+    class FakeDeepDown(FakeDeepOk):
+        async def translate(self, _text, _source, _target) -> str:
+            raise TranslationError("provider_blocked", "Google <b>500</b> & xato sahifa")
+
+    saved = {
+        "alert": tr_module.alert_admins_once,
+        "usage": tp.provider_key_usage,
+        "local_call": tp.FREE_TIER_PROVIDER_CONFIG["local_mt"]["call"],
+        "mymemory_call": tp.FREE_TIER_PROVIDER_CONFIG["mymemory"]["call"],
+        "google": settings.GOOGLE_TRANSLATE_API_KEYS_RAW,
+        "azure": settings.AZURE_TRANSLATOR_KEYS_RAW,
+        "deepl": settings.DEEPL_API_KEYS_RAW,
+        "mymemory": settings.MYMEMORY_EMAILS_RAW,
+        "gemini": settings.GEMINI_API_KEYS_RAW,
+        "local_url": settings.LOCAL_MT_URL,
+        "local_priority": settings.LOCAL_MT_PRIORITY,
+    }
+    tr_module.alert_admins_once = fake_alert
+    tp.provider_key_usage = fake_usage
+    tp.FREE_TIER_PROVIDER_CONFIG["mymemory"]["call"] = fake_mymemory
+    settings.GOOGLE_TRANSLATE_API_KEYS_RAW = ""
+    settings.AZURE_TRANSLATOR_KEYS_RAW = ""
+    settings.DEEPL_API_KEYS_RAW = ""
+    settings.GEMINI_API_KEYS_RAW = ""
+    # MyMemory O'CHIQ — lokal 1-darajadagi YAGONA nomzod (haqiqatda 500+
+    # belgili matnda shunday bo'ladi: MyMemory `max_chars`dan chetlanadi).
+    # Aynan shu holatda rad etish ilgari soxta alert berardi.
+    settings.MYMEMORY_EMAILS_RAW = ""
+    settings.LOCAL_MT_URL = "http://127.0.0.1:1"
+    settings.LOCAL_MT_PRIORITY = 1
+
+    try:
+        async with AsyncSessionLocal() as session:
+            # 3. Rad etish — alert YO'Q, zanjir 3-darajaga (soxta deep) o'tadi.
+            tp.FREE_TIER_PROVIDER_CONFIG["local_mt"]["call"] = fake_local_declines
+            service = TranslationService(redis=None)
+            service.deep_provider = FakeDeepOk()
+            attempt = await service._attempt(
+                "local_mt", 0, "local", fake_local_declines, "hello there", "auto", "uz"
+            )
+            check("_attempt: rad etish -> (None, None, None), xato emas", attempt == (None, None, None), str(attempt))
+            sent.clear()
+            _, provider_name, _, _ = await service._dispatch(session, "hello there", "auto", "uz")
+            check("lokal (yagona nomzod) rad etsa -> zaxiraga o'tadi", provider_name == "deep_translator", provider_name)
+            check(
+                "lokal rad etishi 'ishlamayapti' alertini TETIKLAMAYDI",
+                not any(key.startswith("free_tier_failed") for key, _ in sent),
+                str([k for k, _ in sent]),
+            )
+            check("rad etish breaker'ni OCHMAYDI", not await service.breaker.is_open("local_mt", 0))
+
+            # 2. Haqiqiy xato — alert BOR va provayder xato matni escape qilingan.
+            tp.FREE_TIER_PROVIDER_CONFIG["local_mt"]["call"] = fake_local_fails
+            sent.clear()
+            _, provider_name, _, _ = await service._dispatch(session, "hello there", "auto", "uz")
+            check("lokal xato bersa -> zaxiraga o'tadi", provider_name == "deep_translator", provider_name)
+            tier_alerts = [text for key, text in sent if key == "free_tier_failed:local_mt"]
+            check("lokal xatosi 'ishlamayapti' alertini tetiklaydi", len(tier_alerts) == 1, str([k for k, _ in sent]))
+            if tier_alerts:
+                text = tier_alerts[0]
+                check(
+                    "tier alertida xato matni escape qilingan, <b>provayder</b> tegi saqlangan",
+                    "&lt;html&gt;Error&lt;/html&gt; &amp; co" in text
+                    and "<html>" not in text
+                    and "<b>local_mt</b>" in text,
+                    text,
+                )
+            # Breaker: yana 2 ta xato -> ochiladi, `circuit_open` alerti ham escape qilingan.
+            sent.clear()
+            for _ in range(2):
+                await service._attempt("local_mt", 0, "local", fake_local_fails, "hello there", "auto", "uz")
+            cb_alerts = [text for key, text in sent if key == "circuit_open:local_mt:0"]
+            check("3 ketma-ket xato -> circuit_open alerti", len(cb_alerts) == 1, str([k for k, _ in sent]))
+            if cb_alerts:
+                check(
+                    "circuit_open alertida xato matni escape qilingan",
+                    "&lt;html&gt;" in cb_alerts[0] and "<html>" not in cb_alerts[0] and "<b>local_mt</b>" in cb_alerts[0],
+                    cb_alerts[0],
+                )
+
+            # 6c. Lokal muvaffaqiyat — model nomi natijaga tushadi; `str`
+            # qaytaradigan provayderda model None.
+            tp.FREE_TIER_PROVIDER_CONFIG["local_mt"]["call"] = fake_local_with_model
+            service = TranslationService(redis=None)  # yangi breaker (avvalgisi ochiq)
+            service.deep_provider = FakeDeepOk()
+            text_out, provider_name, _, model = await service._dispatch(session, "hello there", "auto", "uz")
+            check(
+                "lokal (matn, model) qaytarsa -> model natijada",
+                provider_name == "local_mt" and text_out == "local:hello there" and model == "nllb-ft-v1",
+                f"{provider_name}, {text_out}, {model}",
+            )
+            settings.LOCAL_MT_URL = ""
+            settings.MYMEMORY_EMAILS_RAW = "smoke@example.com"
+            _, provider_name, _, model = await service._dispatch(session, "hello there", "auto", "uz")
+            check("str qaytaradigan provayderda model None", provider_name == "mymemory" and model is None, f"{provider_name}, {model}")
+
+            # 6b. Hamma daraja yo'q, deep_translator ham yiqildi -> xatoda
+            # provayder nomi bor, `all_tiers_down` alerti escape qilingan.
+            settings.MYMEMORY_EMAILS_RAW = ""
+            service = TranslationService(redis=None)
+            service.deep_provider = FakeDeepDown()
+            sent.clear()
+            caught = None
+            try:
+                await service._dispatch(session, "hello there", "auto", "uz")
+            except TranslationError as exc:
+                caught = exc
+            check(
+                "deep_translator yiqilsa -> exc.provider = deep_translator",
+                caught is not None and caught.provider == "deep_translator",
+                repr(caught),
+            )
+            down_alerts = [text for key, text in sent if key == "all_tiers_down"]
+            check(
+                "all_tiers_down alertida xato matni escape qilingan",
+                len(down_alerts) == 1
+                and "Google &lt;b&gt;500&lt;/b&gt; &amp; xato sahifa" in down_alerts[0]
+                and "<b>Tarjima BUTUNLAY ishlamayapti</b>" in down_alerts[0],
+                str(down_alerts),
+            )
+    finally:
+        tr_module.alert_admins_once = saved["alert"]
+        tp.provider_key_usage = saved["usage"]
+        tp.FREE_TIER_PROVIDER_CONFIG["local_mt"]["call"] = saved["local_call"]
+        tp.FREE_TIER_PROVIDER_CONFIG["mymemory"]["call"] = saved["mymemory_call"]
+        settings.GOOGLE_TRANSLATE_API_KEYS_RAW = saved["google"]
+        settings.AZURE_TRANSLATOR_KEYS_RAW = saved["azure"]
+        settings.DEEPL_API_KEYS_RAW = saved["deepl"]
+        settings.MYMEMORY_EMAILS_RAW = saved["mymemory"]
+        settings.GEMINI_API_KEYS_RAW = saved["gemini"]
+        settings.LOCAL_MT_URL = saved["local_url"]
+        settings.LOCAL_MT_PRIORITY = saved["local_priority"]
 
 
 async def test_translation_record(user_id: int, result) -> None:
@@ -1489,6 +1719,68 @@ async def test_resilience() -> None:
         if keys:
             await client.delete(*keys)
         await client.aclose()
+
+
+async def test_tts_health() -> None:
+    """TTS xato-darajasi ogohlantirishi — sof mantiq, xotiradagi soxta Redis."""
+    print("\n[7d] TTS salomatligi — xato darajasi ogohlantirishi")
+    from bot.services import tts_health
+
+    # Sof qaror mantig'i.
+    check("kam so'rovda jim (4/4 xato)", not tts_health.should_alert(0, 4))
+    check("aynan 50% — jim", not tts_health.should_alert(3, 3))
+    check(">50% va >=5 so'rov — ogohlantiradi", tts_health.should_alert(2, 3))
+    check("hammasi yiqilsa — ogohlantiradi", tts_health.should_alert(0, 5))
+    check("sog'lom — jim", not tts_health.should_alert(20, 1))
+
+    # Dinamik xato matni HTML'ni buzmasligi kerak.
+    text = tts_health.alert_text(0, 5, "403 <b>&")
+    check("xato matni ekranlanadi", "&lt;b&gt;&amp;" in text and "<b>&" not in text, text)
+
+    # Redis yo'q — jim, xatosiz.
+    await tts_health.record(None, ok=False)
+    check("Redis yo'q — ogohlantirish yo'q", await tts_health.check_and_alert(None, None) is False)
+
+    class _FakeRedis:
+        """`atomic_rate_incr` (eval), `mget` va `set(nx=)` uchun yetarli."""
+
+        def __init__(self):
+            self.data: dict = {}
+
+        async def eval(self, _script, _n, key, _ttl):
+            self.data[key] = int(self.data.get(key, 0)) + 1
+            return self.data[key]
+
+        async def mget(self, *keys):
+            return [self.data.get(k) for k in keys]
+
+        async def set(self, key, value, ex=None, nx=False):
+            if nx and key in self.data:
+                return None
+            self.data[key] = value
+            return True
+
+    class _FakeBot:
+        def __init__(self):
+            self.sent: list = []
+
+        async def send_message(self, chat_id, text):
+            self.sent.append((chat_id, text))
+
+    redis, bot = _FakeRedis(), _FakeBot()
+    prefix = "smoke:tts:stat"
+    for _ in range(2):
+        await tts_health.record(redis, True, prefix=prefix)
+    for _ in range(4):
+        await tts_health.record(redis, False, prefix=prefix)
+    ok, err = await tts_health.window_stats(redis, prefix=prefix)
+    check("oyna statistikasi to'g'ri", (ok, err) == (2, 4), f"{ok}, {err}")
+    fired = await tts_health.check_and_alert(bot, redis, last_error="403", prefix=prefix)
+    check("xato ulushi >50% -> ogohlantirish tetiklanadi", fired is True)
+    first = len(bot.sent)
+    check("adminlarga yuborildi", first == len(settings.ADMIN_USER_IDS), str(first))
+    await tts_health.check_and_alert(bot, redis, last_error="403", prefix=prefix)
+    check("takroran yuborilmaydi (cooldown)", len(bot.sent) == first, str(len(bot.sent)))
 
 
 async def test_donate(user_id: int) -> None:
@@ -1796,6 +2088,135 @@ async def test_broadcast_resumable() -> None:
             delete(UserSettings).where(UserSettings.user_id.in_([u1.id, u2.id, u3.id]))
         )
         await session.execute(delete(User).where(User.id.in_([u1.id, u2.id, u3.id])))
+        await session.commit()
+
+
+async def test_broadcast_runner_guards() -> None:
+    """Tarqatish #64 (2026-10-19) saboqlari: bir ishga tushirishda har
+    foydalanuvchi FAQAT BIR MARTA jo'natiladi, bufer watermark kursordan
+    emas, fetch-chegaradan olinadi, `(broadcast, user)` uchun ko'pi bilan
+    bitta delivery qatori, tizimli xato zanjiri va avto-pauza sababi.
+    """
+    print("\n[14c] Tarqatish — takror yuborish va aylanishdan himoya")
+    from sqlalchemy import delete
+
+    from bot.database.models import Broadcast, BroadcastDelivery, User, UserSettings
+    from bot.database.repositories.broadcast_repository import BroadcastRepository
+    from bot.services.broadcast_errors import Classification, Kind
+    from bot.services.broadcast_progress import render_card
+    from bot.services.broadcast_runner import (
+        SYSTEMIC_FAILURE_STREAK,
+        _DispatchTracker,
+        _SystemicFailureGuard,
+    )
+
+    # ── _DispatchTracker: #64 ssenariysi ──
+    # Bufer [1..5] olindi, hammasi jo'natildi; 3,4,5 tugadi, 1 va 2 hali
+    # havoda. Eski kod keyingi buferni `id > cursor(None)` dan olib,
+    # 1..5 ni QAYTA jo'natardi — endi chegara 5 da, kursor esa hali None.
+    tracker = _DispatchTracker(cursor=None)
+    batch = [(i, 1000 + i) for i in range(1, 6)]
+    tracker.note_fetched(batch)
+    claimed = [tracker.claim(uid) for uid, _ in batch]
+    check("birinchi jo'natish hammaga ruxsat", all(claimed))
+    for uid in (3, 4, 5):
+        tracker.complete(uid)
+    check("havodagi 1,2 tufayli watermark siljimaydi", tracker.cursor is None, f"cursor={tracker.cursor}")
+    check("fetch-chegara esa oxirgi olingan id'da", tracker.fetch_after == 5, f"fetch_after={tracker.fetch_after}")
+
+    # Xuddi shu foydalanuvchi qaytadan buferga tushsa — rad etiladi, logga tushadi.
+    check("takror jo'natish rad etiladi", tracker.claim(3) is False)
+    check("takror sanaladi", tracker.duplicates_skipped == 1, str(tracker.duplicates_skipped))
+    check("rad etilgan takror navbatga qo'shilmaydi", tracker.in_flight == 5, str(tracker.in_flight))
+
+    tracker.complete(1)
+    check("1 tugadi -> kursor 1 (2 hali yo'q)", tracker.cursor == 1, f"cursor={tracker.cursor}")
+    tracker.complete(2)
+    check("2 tugadi -> kursor uzluksiz 5 gacha", tracker.cursor == 5 and tracker.in_flight == 0)
+
+    # Pauzadan davom: kursor 5 — chegara ham 5 dan boshlanadi.
+    resumed = _DispatchTracker(cursor=5)
+    check("davom ettirishda chegara kursordan boshlanadi", resumed.fetch_after == 5)
+    resumed.note_fetched([(7, 1007), (9, 1009)])
+    check("chegara faqat oldinga yuradi", resumed.fetch_after == 9)
+    resumed.note_fetched([])
+    check("bo'sh bufer chegarani o'zgartirmaydi", resumed.fetch_after == 9)
+
+    # ── _SystemicFailureGuard ──
+    def _cls(kind: str, **kw) -> Classification:
+        defaults = dict(detail=kind, passivate=False, retriable=False)
+        defaults.update(kw)
+        return Classification(kind=kind, **defaults)
+
+    guard = _SystemicFailureGuard(threshold=3)
+    check("1-tarmoq xatosi hali to'xtatmaydi", guard.record_failure(_cls(Kind.NETWORK)) is False)
+    check("2-tarmoq xatosi hali to'xtatmaydi", guard.record_failure(_cls(Kind.SERVER)) is False)
+    check("3-ketma-ket tizimli xato -> to'xtat", guard.record_failure(_cls(Kind.UNKNOWN)) is True)
+    check("oxirgi sabab saqlanadi", guard.last_detail == Kind.UNKNOWN, str(guard.last_detail))
+
+    guard = _SystemicFailureGuard(threshold=3)
+    guard.record_failure(_cls(Kind.NETWORK))
+    guard.record_failure(_cls(Kind.NETWORK))
+    # Bloklagan foydalanuvchi — Telegram javob bergan, tizim ishlayapti.
+    check(
+        "passiv xato (bloklagan) zanjirni uzadi",
+        guard.record_failure(_cls(Kind.BLOCKED, passivate=True)) is False and guard.streak == 0,
+    )
+    guard.record_failure(_cls(Kind.RATE_LIMIT, retriable=True))
+    guard.record_failure(_cls(Kind.RATE_LIMIT, retriable=True))
+    guard.record_success()
+    check("muvaffaqiyat zanjirni uzadi", guard.streak == 0)
+    check("`None` tasnif noma'lum (tizimli) deb sanaladi", guard.record_failure(None) is False and guard.streak == 1)
+    check("standart chegara oqilona (10..500)", 10 <= SYSTEMIC_FAILURE_STREAK <= 500, str(SYSTEMIC_FAILURE_STREAK))
+
+    # ── BroadcastRepository.add_delivery: (broadcast, user) uchun bitta qator ──
+    async with AsyncSessionLocal() as session:
+        repo = BroadcastRepository(session)
+        repo_user = UserRepository(session)
+        admin, _ = await repo_user.get_or_create(TEST_TELEGRAM_ID + 94, first_name="BcastGuard")
+        await session.commit()
+
+        bc = await repo.create_broadcast(
+            created_by=admin.id, mode="copy", content_preview="guard",
+            total_targets=5, src_chat_id=admin.telegram_id, src_message_id=1,
+        )
+        first = await repo.add_delivery(bc.id, admin.id, "failed", "Forbidden: bot was blocked by the user")
+        second = await repo.add_delivery(bc.id, admin.id, "failed", "Forbidden: bot was blocked by the user")
+        third = await repo.add_delivery(bc.id, admin.id, "failed", "boshqa matn")
+        await session.commit()
+        rows = (
+            await session.execute(
+                select(func.count(BroadcastDelivery.id)).where(BroadcastDelivery.broadcast_id == bc.id)
+            )
+        ).scalar_one()
+        check("birinchi yozuv qo'shiladi", first is True)
+        check("ikkinchi/uchinchi yozuv rad etiladi", second is False and third is False)
+        check("jadvalda aynan BITTA qator", rows == 1, f"rows={rows}")
+        reasons = await repo.failure_reasons(bc.id)
+        check(
+            "xato sabablari takrorsiz",
+            reasons == [("Forbidden: bot was blocked by the user", 1)],
+            str(reasons),
+        )
+
+        # Avto-pauza sababi kartada ko'rinadi, davom ettirilganda tozalanadi.
+        await repo.request_pause(bc.id)
+        await repo.mark_paused(
+            bc.id, cursor_user_id=None, active_seconds=3, success_count=0, failed_count=1,
+            error="50 ta ketma-ket yuborish tizimli xato bilan tugadi",
+        )
+        paused = await repo.get(bc.id)
+        await session.refresh(paused)
+        card = render_card(paused)
+        check("avto-pauza sababi saqlanadi", paused.status == "paused" and paused.error is not None)
+        check("sabab kartada ko'rinadi", "tizimli xato" in card)
+        await repo.resume(bc.id)
+        await session.refresh(paused)
+        check("davom ettirish sababni tozalaydi", paused.status == "running" and paused.error is None)
+
+        await session.execute(delete(Broadcast).where(Broadcast.created_by == admin.id))
+        await session.execute(delete(UserSettings).where(UserSettings.user_id == admin.id))
+        await session.execute(delete(User).where(User.id == admin.id))
         await session.commit()
 
 
@@ -2155,6 +2576,7 @@ async def main() -> None:
     await test_admin_users()
     result = await test_translation()
     await test_translation_providers()
+    await test_audit_fixes_2026_11()
     await test_translation_record(user_id, result)
     await test_events(user_id)
     await test_tts()
@@ -2163,8 +2585,10 @@ async def main() -> None:
     await test_donate(user_id)
     await test_broadcast()
     await test_broadcast_resumable()
+    await test_broadcast_runner_guards()
     await test_stats()
     await test_resilience()
+    await test_tts_health()
     await test_support_record()
     await test_admin_reply_pin()
     await test_support_parsing()

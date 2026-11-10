@@ -6,6 +6,12 @@ qilmaydi. Ovoz nomlari `languages.tts_voice` ustunida saqlanadi va migratsiya
 
 ky/tg/tk tillarida edge-tts da ovoz yo'q — ular uchun `supports_tts = false`,
 va ovoz tugmasi umuman ko'rsatilmaydi.
+
+DIQQAT — `edge-tts` versiyasi: Microsoft vaqti-vaqti bilan `Sec-MS-GEC`
+tokenini hisoblash usulini o'zgartiradi. 2026-10-12 dan 7.2.8 dagi eski
+(v1) token 100% so'rovda `403 Invalid response status` olardi; 7.3.1 yangi
+(v2) usulga o'tgan — kod o'zgarmadi, faqat pin yangilandi. Bunday sinish
+endi `tts_health` orqali adminga xabar qilinadi.
 """
 
 from __future__ import annotations
@@ -58,7 +64,9 @@ class EdgeTtsProvider:
         except asyncio.TimeoutError as exc:
             raise TtsError("timeout", "TTS provayderi javob bermadi") from exc
         except Exception as exc:
-            raise TtsError("provider_error", str(exc)) from exc
+            # `str(exc)` ichida butun wss URL (token so'rov parametrlari bilan)
+            # bo'ladi — log/ogohlantirish uchun `?` dan keyingi qism keraksiz.
+            raise TtsError("provider_error", str(exc).split("?", 1)[0]) from exc
 
         if not audio:
             raise TtsError("empty_result", "Bo'sh audio")

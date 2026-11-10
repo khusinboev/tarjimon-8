@@ -58,8 +58,12 @@ Rad etilgan nomzodlar: NLLB-3.3B va MADLAD-400-3B (int8 ~3.5–4 GB RAM,
 2–3 baravar sekin — bu serverga sig'maydi), HY-MT (o'zbek yo'q, litsenziya),
 TranslateGemma/kichik LLM'lar (CPU'da juda sekin).
 
-**Litsenziya:** NLLB-200 — CC-BY-NC-4.0 (tijoriy emas). Bot bepul, donat
-ixtiyoriy — shu asosda tanlandi. Bot pullik bo'lsa, qayta ko'rib chiqing.
+**Litsenziya:** NLLB-200 — CC-BY-NC-4.0 (tijoriy emas). Bot hammaga bepul;
+donat ixtiyoriy, VIP (Stars) faqat xarajatni qoplash uchun — 2026-11-10 holatiga
+butun davrda 4 ta to'lov / 35 Stars. Egasi qarori (2026-11-10): xavf past, qabul
+qilingan. Bot daromad manbaiga aylansa (VIP sotuvi sezilarli bo'lsa) — qayta
+ko'rib chiqiladi: Apache/MIT modelga o'tish (MADLAD-400, OPUS-MT) yoki lokal
+modelni pullik funksiyalardan ajratish.
 
 ## Dvigatel qarorlari (`engine.py`)
 

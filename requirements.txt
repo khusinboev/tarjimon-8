@@ -26,4 +26,4 @@ deep-translator==1.11.4
 py3langid==0.3.0
 
 # Ovoz (TTS)
-edge-tts==7.2.8
+edge-tts==7.3.1
