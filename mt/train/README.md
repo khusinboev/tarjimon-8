@@ -56,6 +56,10 @@ xato (`otvechay -> огонь`, `moshli makron -> Macron`), qolgani to'g'ri qisq
 lug'at juftliklari — narxi qabul qilinadigan. `curated/*.jsonl` — o'qitish
 uchun; `*.scored.jsonl` — barcha signallar bilan (ko'rib chiqish uchun).
 
+Natija (2026-11-11, to'liq korpus, laptop CPU 6 oqim, ~2.5 soat): train
+92 211 -> 80 625 (87.4%); sabablar: past ball 10 842, tarjima qilinmagan 1 066,
+boshqa til 43. dev 1 200 -> 1 051, test 1 347 -> 1 187.
+
 ## 3. Bazaviy o'lchov (o'qitishdan oldin)
 
 ```bash
@@ -73,6 +77,12 @@ Bazaviy natija — NLLB-1.3B (o'qitilmagan), beam 2, 2026-11-10 test to'plami:
 | en→ru | 81 | 58.10 | 39.82 |
 | ru→en | 66 | 61.21 | 41.79 |
 | **umumiy** | 1347 | **54.18** | |
+
+Tozalangan test (`curated/test.jsonl`) da bazaviy chrF++ **55.73** (en→uz 62.13,
+uz→en 60.15, ru→uz 50.52, uz→ru 43.99). DIQQAT: bu raqam NLLB foydasiga
+og'gan — saralashni shu model qilgan, u "rozi bo'lmagan" juftliklar tushib
+qolgan. Fine-tune'ni baholashda ASOSIY o'lchov — tozalanmagan test (54.18),
+tozalangani — qo'shimcha.
 
 ## 4. O'qitish (GPU)
 
