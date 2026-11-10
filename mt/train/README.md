@@ -34,6 +34,28 @@ yo'nalish). Train ~92k (en→uz 37k, ru→uz 22k, uz→en 19k, uz→ru 14k), dev
 Tushib qolganlar: boshqa yo'nalishlar, takror (eng yaxshi provayder qoladi),
 tarjima qilinmagan, noto'g'ri yozuv/til belgisi.
 
+## 2b. Sifat bo'yicha saralash (curate)
+
+"Muvaffaqiyatli" yozilgan tarjima ham xato bo'lishi mumkin (o'qituvchi
+provayder og'zaki o'zbekchada ko'p adashadi). `curate.py` har juftlikni
+NLLB-1.3B bilan ikki yo'nalishda majburiy dekodlab baholaydi (`fwd`, `bwd`),
+tarjima qilinmagan (`copy`) va boshqa tildagi (`lang_bad`) maqsadni aniqlaydi.
+Chegara har yo'nalish x uzunlik guruhi (1 / 2-3 / 4-8 / 9+ so'z) ichida —
+qisqa lug'at juftliklari tabiatan past ball oladi. Olib tashlanadi: eng past
+10% (o'zbekcha manbada 15%) + qoidalar.
+
+```bash
+# XOTIRA: skorlash 256k lug'at bo'yicha log-softmax — batch token bilan cheklangan;
+# baribir qattiq chegara ostida ishga tushiring (laptop bir marta qotgan).
+systemd-run --user --scope -p MemoryMax=4G -p MemorySwapMax=0 nice -n 15 \
+  python -m mt.train.curate --data prepared/ --model <nllb-1.3B ct2> --lid lid.176.ftz --out curated/
+```
+
+2000 lik namunada qo'lda tekshiruv: olib tashlanganlarning ~60-75% haqiqatan
+xato (`otvechay -> огонь`, `moshli makron -> Macron`), qolgani to'g'ri qisqa
+lug'at juftliklari — narxi qabul qilinadigan. `curated/*.jsonl` — o'qitish
+uchun; `*.scored.jsonl` — barcha signallar bilan (ko'rib chiqish uchun).
+
 ## 3. Bazaviy o'lchov (o'qitishdan oldin)
 
 ```bash
