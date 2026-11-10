@@ -14,10 +14,11 @@ DIQQAT: `data["session"]` bu paytda allaqachon yopilgan — ishlatilmaydi.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import traceback
 
-from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramNetworkError
 from aiogram.types import ErrorEvent
 
 from bot import locales
@@ -26,6 +27,32 @@ from bot.utils.telegram import is_benign_edit_error
 from bot.utils.text import html_escape
 
 logger = logging.getLogger(__name__)
+
+# `classify_error` natijalari.
+IGNORE = "ignore"  # xato emas, jim o'tkaziladi
+NETWORK = "network"  # Telegram tarmoq shovqini — WARNING, traceback'siz, alertsiz
+UNEXPECTED = "unexpected"  # haqiqiy xato — traceback + admin alert
+
+
+def classify_error(exc: BaseException) -> str:
+    """Istisnoni uch sinfga ajratadi (sof funksiya — smoke_test'da tekshiriladi).
+
+    Tarmoq shovqini (`TelegramNetworkError` "Request timeout", yuborishda
+    `TimeoutError`, to'xtashda `CancelledError`) 7 kunda ~37 ta to'liq
+    traceback va "Ushlanmagan xato" alertlarini berardi — bu bizning kodimiz
+    xatosi emas, logda WARNING yetarli; admin alerti haqiqiy istisnolarga
+    qolsin (aks holda ular shovqin ichida ko'rinmay qoladi).
+    """
+    # Foydalanuvchi botni bloklagan — javob berib bo'lmaydi, xato ham emas.
+    if isinstance(exc, TelegramForbiddenError):
+        return IGNORE
+    # Eski/o'chirilgan xabarni tahrirlash — zararsiz.
+    if isinstance(exc, TelegramBadRequest) and is_benign_edit_error(exc):
+        return IGNORE
+    # `asyncio.TimeoutError` 3.11+ da `TimeoutError`ning o'zi.
+    if isinstance(exc, (TelegramNetworkError, asyncio.CancelledError, TimeoutError)):
+        return NETWORK
+    return UNEXPECTED
 
 
 def _last_project_frame(exc: BaseException) -> str:
@@ -42,18 +69,24 @@ async def on_error(event: ErrorEvent, **data) -> bool:
     exc = event.exception
     update = event.update
 
-    # Foydalanuvchi botni bloklagan — javob berib bo'lmaydi, xato ham emas.
-    if isinstance(exc, TelegramForbiddenError):
+    kind = classify_error(exc)
+    if kind == IGNORE:
         return True
-    # Eski/o'chirilgan xabarni tahrirlash — zararsiz.
-    if isinstance(exc, TelegramBadRequest) and is_benign_edit_error(exc):
-        return True
-
-    logger.error(
-        "Ushlanmagan istisno (update=%s): %s: %s",
-        getattr(update, "update_id", "?"), type(exc).__name__, exc,
-        exc_info=exc,
-    )
+    if kind == NETWORK:
+        logger.warning(
+            "Telegram tarmoq xatosi (update=%s): %s: %s",
+            getattr(update, "update_id", "?"), type(exc).__name__, exc or "—",
+        )
+        # Jarayon to'xtayotganda (`CancelledError`) yuborishga urinish ma'nosiz;
+        # tarmoq uzilishida esa baribir yetib bormasligi mumkin — alert yo'q.
+        if isinstance(exc, asyncio.CancelledError):
+            return True
+    else:
+        logger.error(
+            "Ushlanmagan istisno (update=%s): %s: %s",
+            getattr(update, "update_id", "?"), type(exc).__name__, exc,
+            exc_info=exc,
+        )
 
     bot = data.get("bot")
     t = data.get("t")
@@ -78,6 +111,9 @@ async def on_error(event: ErrorEvent, **data) -> bool:
             await bot.send_message(chat_id, t.ERROR_DEFAULT)
         except Exception:
             logger.warning("Xato xabarini yuborib bo'lmadi (chat=%s)", chat_id)
+
+    if kind == NETWORK:
+        return True
 
     location = _last_project_frame(exc)
     await alert_admins_once(

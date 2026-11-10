@@ -115,21 +115,112 @@ async def provider_key_usage(
     return {idx: total for idx, total in rows.all() if idx is not None}
 
 
+# Shundan katta "limit" — amalda CHEKSIZ (lokal NLLB: 10**15). Bunday
+# provayder uchun oylik SUM so'rovi ma'nosiz, umuman bajarilmaydi.
+UNLIMITED_CHARS = 10**12
+
+# Hajm hisobi Redis'da shu muddat keshlanadi. Ilgari HAR tarjimada har bir
+# 1-daraja provayder uchun oylik `SUM(source_chars)` bajarilardi (4–5 ta
+# agregat so'rov/so'rov, oy o'tishi bilan sekinlashadigan). Endi DB'ga
+# provayder boshiga daqiqada ko'pi bilan bir marta murojaat qilinadi;
+# muvaffaqiyatli tarjima keshni darhol oshiradi (`record_key_usage`),
+# shuning uchun kesh eskirishidan kelib chiqadigan xato — bir daqiqa
+# ichida BOSHQA jarayon qilgan tarjimalar hajmi bilan cheklanadi (bir
+# necha ming belgi; limitlar 500k+ bo'lgani uchun ahamiyatsiz).
+USAGE_CACHE_TTL = 60
+# Hash'da hech bo'lmaganda bitta maydon bo'lishi uchun (bo'sh hajm ham
+# "keshlangan" deb bilinishi kerak — aks holda har safar DB'ga borilardi).
+_USAGE_CACHE_MARKER = "_"
+
+
+def _usage_cache_key(provider: str, period: str) -> str:
+    # Davr boshi kalitda — oy/kun almashganda eski kesh o'z-o'zidan
+    # ishlatilmay qoladi (TTL kutilmaydi).
+    return f"tr:usage:{provider}:{period}:{_period_start(period).date().isoformat()}"
+
+
+def _to_int(value) -> int:
+    if isinstance(value, bytes):
+        value = value.decode()
+    return int(value)
+
+
+async def _usage_cache_get(redis, provider: str, period: str) -> Optional[dict[int, int]]:
+    try:
+        raw = await redis.hgetall(_usage_cache_key(provider, period))
+    except Exception:
+        return None  # Redis nosoz — DB'ga tushamiz (fail-open)
+    if not raw:
+        return None
+    usage: dict[int, int] = {}
+    for field, total in raw.items():
+        name = field.decode() if isinstance(field, bytes) else field
+        if name == _USAGE_CACHE_MARKER:
+            continue
+        try:
+            usage[int(name)] = _to_int(total)
+        except (TypeError, ValueError):
+            continue
+    return usage
+
+
+async def _usage_cache_set(redis, provider: str, period: str, usage: dict[int, int]) -> None:
+    key = _usage_cache_key(provider, period)
+    mapping = {str(idx): int(total) for idx, total in usage.items()}
+    mapping[_USAGE_CACHE_MARKER] = 0
+    try:
+        await redis.hset(key, mapping=mapping)
+        await redis.expire(key, USAGE_CACHE_TTL)
+    except Exception:
+        pass  # Kesh yozilmasa ham tarjima davom etadi
+
+
+async def record_key_usage(redis, provider: str, index: Optional[int], chars: int, period: str = "month") -> None:
+    """Muvaffaqiyatli tarjimadan keyin keshdagi hajmni optimistik oshiradi.
+
+    Kesh YO'Q bo'lsa (muddati tugagan) hech narsa qilinmaydi — keyingi
+    `pick_key` DB'dan to'liq (shu tarjimani ham o'z ichiga olgan) hisobni
+    oladi. DB yozuvi handler'da keyinroq commit bo'ladi, lekin kesh 60 s
+    yashaydi — oshirish ikki marta hisoblanmaydi (yangi kesh DB'dan).
+    """
+    if redis is None or index is None or chars <= 0:
+        return
+    key = _usage_cache_key(provider, period)
+    try:
+        if await redis.exists(key):
+            await redis.hincrby(key, str(index), chars)
+    except Exception:
+        pass
+
+
 async def pick_key(
     session: AsyncSession,
     provider: str,
     keys: list[str],
     free_limit_chars: int,
     period: str = "month",
+    redis=None,
 ) -> Optional[tuple[int, str]]:
     """Eng kam ishlatilgan, hali bepul hajmidan oshmagan kalitni tanlaydi.
 
     Hech biri mos kelmasa (hammasi tugagan, yoki kalit umuman yo'q) —
     `None`, chaqiruvchi keyingi provayderga yoki bepul provayderga o'tadi.
+
+    Limit amalda cheksiz bo'lsa (lokal model) — hisob so'ralmaydi, birinchi
+    kalit qaytariladi. Aks holda hajm Redis keshidan (`USAGE_CACHE_TTL`),
+    kesh yo'q/nosoz bo'lsa DB'dan olinadi.
     """
     if not keys or free_limit_chars <= 0:
         return None
-    usage = await provider_key_usage(session, provider, period)
+    if free_limit_chars >= UNLIMITED_CHARS:
+        return 0, keys[0]
+    usage: Optional[dict[int, int]] = None
+    if redis is not None:
+        usage = await _usage_cache_get(redis, provider, period)
+    if usage is None:
+        usage = await provider_key_usage(session, provider, period)
+        if redis is not None:
+            await _usage_cache_set(redis, provider, period, usage)
     candidates = [i for i in range(len(keys)) if usage.get(i, 0) < free_limit_chars]
     if not candidates:
         return None
@@ -488,6 +579,7 @@ FREE_TIER_PROVIDER_CONFIG: dict[str, dict] = {
         # Kalit yo'q — bitta "soxta" kalit servis yoqilganini bildiradi
         # (`pick_key`/breaker shu indeks bilan ishlaydi).
         "keys": lambda: ["local"] if settings.LOCAL_MT_URL else [],
+        # `UNLIMITED_CHARS`dan katta — `pick_key` hajm so'rovini o'tkazib yuboradi.
         "free_limit": lambda: 10**15,
         "period": "month",
         "call": call_local_mt,

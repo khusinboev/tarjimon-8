@@ -7,10 +7,14 @@ _client: Redis | None = None
 def get_redis() -> Redis:
     global _client
     if _client is None:
+        # Parol FSM saqlagich (`REDIS_FSM_URL`) bilan bir xil manbadan —
+        # ilgari bu klient parolsiz ulanib, parolli Redis'da kesh/limit
+        # jimgina o'chib qolardi (bot "Redis ulanmadi" bilan davom etardi).
         _client = Redis(
             host=settings.REDIS_HOST,
             port=settings.REDIS_PORT,
             db=settings.REDIS_DB,
+            password=settings.REDIS_PASSWORD or None,
             decode_responses=True,
         )
     return _client
