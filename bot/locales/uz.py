@@ -250,3 +250,10 @@ RELAUNCH = (
     "🗣 <b>Interfeys tilingizda</b> — Telegram tilingizga qarab avtomatik\n\n"
     "Sinab ko'rish uchun shunchaki matn yuboring 👇"
 )
+
+# ── Noma'lum buyruq (handlers/user/fallback.py) — BOSHI ──
+UNKNOWN_COMMAND = (
+    "🤔 Noma'lum buyruq. Mavjud buyruqlar uchun /help ni bosing "
+    "yoki tarjima uchun shunchaki matn yuboring."
+)
+# ── Noma'lum buyruq — OXIRI ──

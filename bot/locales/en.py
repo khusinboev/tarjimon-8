@@ -250,3 +250,10 @@ RELAUNCH = (
     "🗣 <b>Your language</b> — the interface follows your Telegram language\n\n"
     "Just send any text to try it 👇"
 )
+
+# ── Unknown command (handlers/user/fallback.py) — START ──
+UNKNOWN_COMMAND = (
+    "🤔 Unknown command. Send /help to see the available commands, "
+    "or just send any text to translate it."
+)
+# ── Unknown command — END ──

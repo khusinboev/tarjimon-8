@@ -18,9 +18,10 @@ from bot.database.session import AsyncSessionLocal, init_db
 from bot.handlers import errors
 from bot.handlers.admin import panel
 from bot.handlers.user import common, donate, languages, start, subscription
-from bot.handlers.user import membership, support, translate, tts
+from bot.handlers.user import fallback, membership, support, translate, tts
 from bot.middlewares.context import ContextMiddleware
 from bot.middlewares.subscription import SubscriptionMiddleware
+from bot.services.daily_report import run_daily_report_loop
 from bot.services.translation import PROVIDERS as TRANSLATION_PROVIDERS
 from bot.services.tts import PROVIDERS as TTS_PROVIDERS
 
@@ -129,7 +130,9 @@ async def main() -> None:
     #  - menyu routerlari (`languages`, `common`, `donate`) `support` dan oldin: murojaat
     #    yozish holatida menyu tugmasi bosilsa u tugma sifatida ishlashi kerak,
     #    murojaat matni sifatida emas
-    #  - `translate` eng oxirida: uning `F.text` filtri juda keng
+    #  - `translate` oxirida: uning `F.text` filtri juda keng
+    #  - `fallback` ENG oxirida: faqat hech kim ushlamagan noma'lum
+    #    buyruqqa (shaxsiy chatda) javob beradi — mavjud buyruqlarni yutmaydi
     dp.include_router(start.router)
     # `my_chat_member` — boshqa update turi, tartibga bog'liq emas.
     dp.include_router(membership.router)
@@ -141,9 +144,16 @@ async def main() -> None:
     dp.include_router(tts.router)
     dp.include_router(panel.router)
     dp.include_router(translate.router)
+    dp.include_router(fallback.router)
 
     me = await bot.get_me()
     logger.info("Bot ishga tushdi: @%s (id=%s)", me.username, me.id)
+
+    # Kunlik admin hisoboti (09:00 Toshkent) — fon vazifasi. Restartlarda
+    # takror ketmasligi `daily_report.claim_day` (Redis kaliti) bilan.
+    daily_report_task = asyncio.create_task(
+        run_daily_report_loop(bot, redis), name="daily_report"
+    )
 
     try:
         while True:
@@ -156,6 +166,11 @@ async def main() -> None:
                 logger.warning("Tarmoq xatosi: %s. 5 soniyadan keyin qayta ulanish...", exc)
                 await asyncio.sleep(5)
     finally:
+        daily_report_task.cancel()
+        try:
+            await daily_report_task
+        except (asyncio.CancelledError, Exception):
+            pass
         await bot.session.close()
         if redis is not None:
             await redis.aclose()
