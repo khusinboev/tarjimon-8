@@ -40,16 +40,23 @@ from bot.services.translation_providers import (
     ProviderDeclined,
     pick_key,
 )
-from bot.utils.text import chunk, content_hash, normalize
+from bot.utils.text import chunk, content_hash, html_escape, normalize
 
 logger = logging.getLogger(__name__)
 
 
 class TranslationError(Exception):
-    """Tarjima amalga oshmadi. `code` — `translations.error_code` ga yoziladi."""
+    """Tarjima amalga oshmadi. `code` — `translations.error_code` ga yoziladi.
 
-    def __init__(self, code: str, message: str = ""):
+    `provider` — oxirgi sinalgan provayder nomi (`translations.provider`ga
+    yoziladi). Servis zanjirda qaysi provayderda yiqilganini biladi, handler
+    bilmaydi — ilgari handler har doim `settings.TRANSLATION_PROVIDER` yozib,
+    muvaffaqiyatsiz yozuvlar haqiqiy sababchini ko'rsatmasdi.
+    """
+
+    def __init__(self, code: str, message: str = "", provider: Optional[str] = None):
         self.code = code
+        self.provider = provider
         super().__init__(message or code)
 
 
@@ -311,8 +318,17 @@ class TranslationService:
 
     async def _attempt(
         self, name: str, index: int, api_key: str, call, text: str, source: str, target: str
-    ) -> tuple[Optional[str], Optional[str]]:
-        """Bitta provayder+kalitni sinaydi: `(tarjima, None)` yoki `(None, xato)`.
+    ) -> tuple[Optional[str], Optional[str], Optional[str]]:
+        """Bitta provayder+kalitni sinaydi: `(tarjima, None, model)`,
+        `(None, xato, None)` yoki rad etilganda `(None, None, None)`.
+
+        Rad etish (`ProviderDeclined`) XATO EMAS: `error=None` qaytariladi,
+        shunda `_dispatch` uni "provayder ishlamayapti" deb hisoblamaydi va
+        admin'ga soxta alert ketmaydi (lokal model qisqa matnni yoki tilini
+        aniqlay olmagan matnni har kuni ko'p marta rad etadi — bu normal).
+
+        `call` oddiy `str` yoki `(str, model_nomi)` qaytarishi mumkin
+        (`call_local_mt` modelni aytadi) — ikkalasi ham qabul qilinadi.
 
         Breaker hisobini shu yerda yuritadi. Log'da xato matni bo'sh bo'lsa
         (masalan ba'zi istisnolar `str()`da bo'sh) — tur nomi yoziladi;
@@ -324,7 +340,7 @@ class TranslationService:
             # Rad etish — nosozlik emas (masalan lokal model tilni aniqlay
             # olmadi): breaker'ga hisoblanmaydi, keyingi provayderga o'tamiz.
             logger.info("%s bu so'rovni rad etdi: %s", name, exc)
-            return None, f"rad etildi: {exc}"
+            return None, None, None
         except Exception as exc:
             reason = str(exc) or type(exc).__name__
             logger.warning("%s (kalit #%s) ishlamadi: %s", name, index, reason)
@@ -333,66 +349,79 @@ class TranslationService:
                     "%s (kalit #%s) ketma-ket yiqildi — %s soniya chetlab o'tiladi",
                     name, index, OPEN_SECONDS,
                 )
+                # Xato matni provayderdan keladi (`<`, `&` bo'lishi mumkin,
+                # masalan HTML xato sahifasi) — escape qilinmasa Telegram
+                # alertni rad etadi va admin hech narsa ko'rmaydi.
                 await alert_admins_once(
                     self.bot, self.redis, f"circuit_open:{name}:{index}",
                     f"⛔ <b>{name}</b> (kalit #{index}) ketma-ket xato qaytarmoqda — "
-                    f"vaqtincha chetlab o'tilmoqda. Oxirgi xato: {reason[:200]}",
+                    f"vaqtincha chetlab o'tilmoqda. Oxirgi xato: {html_escape(reason[:200])}",
                 )
-            return None, reason
+            return None, reason, None
+        model: Optional[str] = None
+        if isinstance(translated, tuple):
+            translated, model = translated
         if translated and translated.strip():
             await self.breaker.record_success(name, index)
-            return translated, None
+            return translated, None, model
         logger.warning("%s (kalit #%s) bo'sh javob qaytardi", name, index)
         await self.breaker.record_failure(name, index)
-        return None, "bo'sh javob qaytardi"
+        return None, "bo'sh javob qaytardi", None
 
     async def _dispatch(
         self, session: AsyncSession, text: str, source: str, target: str
-    ) -> tuple[str, str, Optional[int]]:
+    ) -> tuple[str, str, Optional[int], Optional[str]]:
         """Uch daraja: 1) Google/Azure/DeepL (bepul hajmi tugamagan bo'lsa,
         tasodifiy), 2) Gemini (arzon, tasodifiy kalit), 3) `deep_translator`
         (oxirgi, bepul-lekin-ishonchsiz zaxira).
 
+        Qaytaradi: `(tarjima, provayder, kalit_indeksi, model)` — `model`
+        faqat buni aytadigan provayderda (lokal NLLB) bor, qolganida `None`.
+
         1-darajada BIR nechta provayder bor — bittasi xato bersa qolganlari
         sinab ko'riladi; hammasi bo'sh/xato bo'lsagina pastga tushiladi.
+        Faqat RAD ETGAN (xato bermagan) provayderlar alert'ga sabab bo'lmaydi.
         """
         free_candidates = await self._pick_free_tier_candidates(session, source, target, len(text))
         last_free_error: Optional[str] = None
         last_free_provider: Optional[str] = None
         for name, index, api_key in free_candidates:
-            translated, error = await self._attempt(
+            translated, error, model = await self._attempt(
                 name, index, api_key, FREE_TIER_PROVIDER_CONFIG[name]["call"],
                 text, source, target,
             )
             if translated is not None:
-                return translated, name, index
-            last_free_error, last_free_provider = error, name
+                return translated, name, index, model
+            if error is not None:
+                last_free_error, last_free_provider = error, name
 
         # 1-daraja nomzodlari BOR edi (hajmi ham tugamagan — aks holda
         # `_pick_free_tier_candidates` allaqachon o'z alertini yuborgan
         # bo'lardi), lekin HAMMASI xato qaytardi — bu kvota tugashidan
         # BUTUNLAY boshqa muammo (masalan provayder API'si o'zi ishlamay
         # qolgan), cheap-tier bilan bir xil izchillikda alert beriladi.
+        # Hammasi shunchaki rad etgan bo'lsa `last_free_error` None qoladi.
         if free_candidates and last_free_error is not None:
             provider_label = last_free_provider or free_candidates[0][0]
             await alert_admins_once(
                 self.bot, self.redis, f"free_tier_failed:{provider_label}",
                 f"🚨 <b>{provider_label}</b> orqali tarjima ishlamayapti (hajmi "
                 f"hali tugamagan) — barcha kalitlar xato qaytardi. Oxirgi "
-                f"xato: {last_free_error}\nKeyingi bosqichga o'tilmoqda.",
+                f"xato: {html_escape(last_free_error[:300])}\nKeyingi bosqichga o'tilmoqda.",
             )
 
         cheap_candidates = await self._pick_cheap_tier_candidates()
         last_cheap_error: Optional[str] = None
         last_cheap_provider: Optional[str] = None
         for name, index, api_key in cheap_candidates:
-            translated, error = await self._attempt(
+            translated, error, model = await self._attempt(
                 name, index, api_key, CHEAP_PROVIDER_CONFIG[name]["call"],
                 text, source, target,
             )
             if translated is not None:
-                return translated, name, index
-            last_cheap_error, last_cheap_provider = error, name
+                return translated, name, index, model
+            if error is not None:
+                last_cheap_error, last_cheap_provider = error, name
 
         # 2-daraja sozlangan edi (kalitlari bor), lekin BARCHA kalitlari
         # ishlamadi — bu tasodifiy bitta xato emas, e'tibor talab qiladi
@@ -402,7 +431,7 @@ class TranslationService:
             await alert_admins_once(
                 self.bot, self.redis, f"cheap_tier_failed:{provider_label}",
                 f"🚨 <b>{provider_label}</b> orqali tarjima ishlamayapti — "
-                f"barcha kalitlar xato qaytardi. Oxirgi xato: {last_cheap_error}\n"
+                f"barcha kalitlar xato qaytardi. Oxirgi xato: {html_escape(last_cheap_error[:300])}\n"
                 "Hozircha bepul (ishonchsiz) zaxiraga tushilmoqda.",
             )
 
@@ -412,15 +441,16 @@ class TranslationService:
             # Oxirgi (3-daraja) zaxira ham ishlamadi — tarjima UMUMAN
             # ishlamayapti, foydalanuvchiga xato ko'rsatilishidan oldin
             # adminga xabar berish kerak (aks holda buni faqat shikoyatdan
-            # bilib qolamiz).
+            # bilib qolamiz). Yozuvda qaysi provayder yiqilgani ko'rinsin.
+            exc.provider = self.deep_provider.name
             await alert_admins_once(
                 self.bot, self.redis, "all_tiers_down",
                 "🆘 <b>Tarjima BUTUNLAY ishlamayapti</b> — barcha uch daraja "
                 f"(Google/Azure, Gemini, deep_translator) xato qaytardi. "
-                f"Oxirgi xato: {exc.code} — {exc}",
+                f"Oxirgi xato: {html_escape(exc.code)} — {html_escape(str(exc)[:300])}",
             )
             raise
-        return translated, self.deep_provider.name, None
+        return translated, self.deep_provider.name, None, None
 
     async def translate(
         self, session: AsyncSession, text: str, source: str, target: str
@@ -457,7 +487,9 @@ class TranslationService:
         # 15 daqiqa ichida biladi (2026-09-04…10 dagi bir haftalik ko'rlik
         # takrorlanmasin).
         try:
-            translated, provider_name, key_index = await self._dispatch(session, text, source, target)
+            translated, provider_name, key_index, provider_model = await self._dispatch(
+                session, text, source, target
+            )
         except TranslationError:
             await error_rate.record(self.redis, ok=False)
             await error_rate.check_and_alert(self.bot, self.redis)
@@ -466,7 +498,9 @@ class TranslationService:
         latency_ms = int((time.perf_counter() - started) * 1000)
 
         if not translated or not translated.strip():
-            raise TranslationError("empty_result", "Provayder bo'sh javob qaytardi")
+            raise TranslationError(
+                "empty_result", "Provayder bo'sh javob qaytardi", provider=provider_name
+            )
 
         await self._cache_set(key, translated)
         # `py3langid.classify` CPU-bog'liq (sync) — event loop'ni
@@ -477,7 +511,7 @@ class TranslationService:
             text=translated,
             source_lang_detected=detected,
             provider=provider_name,
-            provider_model=None,
+            provider_model=provider_model,
             provider_key_index=key_index,
             latency_ms=latency_ms,
             cache_hit=False,

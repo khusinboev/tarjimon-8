@@ -369,8 +369,48 @@ def local_mt_supports(source: str, target: str) -> bool:
     return target in LOCAL_MT_LANGS and (source == "auto" or source in LOCAL_MT_LANGS)
 
 
-async def call_local_mt(text: str, source: str, target: str, _api_key: str) -> str:
-    """Shu serverdagi lokal NLLB servisi (`mt/server.py`)."""
+def interpret_local_mt_response(status: int, data) -> tuple[str, Optional[str]]:
+    """Lokal servis javobini `(tarjima, model_nomi)`ga aylantiradi yoki
+    istisno ko'taradi. HTTP'siz, sof funksiya — smoke_test'da tarmoqsiz
+    tekshiriladi.
+
+    Qaysi javob RAD ETISH (`ProviderDeclined`, breaker'ga tushmaydi), qaysi
+    biri NOSOZLIK (`RuntimeError`, breaker'ga hisoblanadi) — farqi muhim:
+    servis sog' bo'lsa-da shu matnni qila olmasligi uning yiqilgani degani
+    emas. Ilgari 503 `busy` nosozlik deb hisoblanib, 120 s ichida 3 ta band
+    javob breaker'ni 5 daqiqaga ochib, sog' servisni butunlay chetlab
+    o'tishga olib kelardi.
+    """
+    if not isinstance(data, dict):
+        raise RuntimeError(f"lokal MT noto'g'ri javob (HTTP {status})")
+    if status in (413, 422):
+        # Til aniqlanmadi / qo'llanmaydi / chiqish shubhali / juda uzun —
+        # servis sog', faqat bu matnni boshqa provayder qilsin.
+        raise ProviderDeclined(data.get("error") or f"HTTP {status}")
+    if status == 503 and data.get("error") == "busy":
+        # Navbat to'la (`mt/server.py` MAX_QUEUE) — servis sog', faqat
+        # hozir band; bu so'rov boshqa provayderga ketadi.
+        raise ProviderDeclined("band (navbat to'la)")
+    if status >= 400:
+        raise RuntimeError(f"lokal MT HTTP {status}: {data.get('error', 'xato')}")
+    translated = (data.get("text") or "").strip()
+    if not translated:
+        raise RuntimeError("lokal MT bo'sh javob qaytardi")
+    model = data.get("model")
+    return translated, (str(model)[:64] if model else None)
+
+
+async def call_local_mt(
+    text: str, source: str, target: str, _api_key: str
+) -> tuple[str, Optional[str]]:
+    """Shu serverdagi lokal NLLB servisi (`mt/server.py`).
+
+    Boshqa provayderlardan farqli `(tarjima, model)` qaytaradi — servis
+    qaysi model (bazaviy NLLB yoki fine-tune) bilan ishlaganini aytadi,
+    bu `translations.provider_model`ga yoziladi (sifatni model bo'yicha
+    solishtirish uchun). `TranslationService._attempt` ikkala shaklni
+    ham qabul qiladi.
+    """
     if source == "auto" and len(" ".join(text.split())) < LOCAL_MT_MIN_AUTO_CHARS:
         raise ProviderDeclined("qisqa matn, til aniqlanmaydi")
     url = settings.LOCAL_MT_URL.rstrip("/") + "/translate"
@@ -387,18 +427,7 @@ async def call_local_mt(text: str, source: str, target: str, _api_key: str) -> s
     except aiohttp.ClientError as exc:
         raise RuntimeError(f"lokal MT ulanmadi: {exc}") from exc
 
-    if not isinstance(data, dict):
-        raise RuntimeError(f"lokal MT noto'g'ri javob (HTTP {status})")
-    if status in (413, 422):
-        # Til aniqlanmadi / qo'llanmaydi / chiqish shubhali / juda uzun —
-        # servis sog', faqat bu matnni boshqa provayder qilsin.
-        raise ProviderDeclined(data.get("error") or f"HTTP {status}")
-    if status >= 400:
-        raise RuntimeError(f"lokal MT HTTP {status}: {data.get('error', 'xato')}")
-    translated = (data.get("text") or "").strip()
-    if not translated:
-        raise RuntimeError("lokal MT bo'sh javob qaytardi")
-    return translated
+    return interpret_local_mt_response(status, data)
 
 
 # ── 1-daraja: bepul hajmi kuzatiladigan provayderlar ──────────────────
