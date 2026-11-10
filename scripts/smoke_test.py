@@ -2535,6 +2535,53 @@ async def test_content_extraction() -> None:
           produced <= set(INPUT_KINDS), str(produced - set(INPUT_KINDS)))
 
 
+async def test_membership_status() -> None:
+    """`my_chat_member`: bloklash/blokdan chiqarish darhol `users.status`ga."""
+    print("\n[my_chat_member] bloklash holati")
+    from types import SimpleNamespace
+
+    from bot.database.models import User
+    from bot.handlers.user.membership import on_private_membership
+
+    def upd(old: str, new: str, chat_id: int):
+        return SimpleNamespace(
+            chat=SimpleNamespace(id=chat_id, type="private"),
+            old_chat_member=SimpleNamespace(status=old),
+            new_chat_member=SimpleNamespace(status=new),
+        )
+
+    async with AsyncSessionLocal() as session:
+        repo = UserRepository(session)
+        user, _ = await repo.get_or_create(TEST_TELEGRAM_ID + 61, first_name="Member")
+        await session.execute(
+            User.__table__.update().where(User.id == user.id).values(status="active", blocked_at=None)
+        )
+        await session.commit()
+        events = EventService(session)
+
+        async def status() -> str:
+            await session.commit()
+            return (await session.execute(select(User.status).where(User.id == user.id))).scalar_one()
+
+        await on_private_membership(upd("member", "kicked", user.telegram_id), user, events, session)
+        check("kicked -> blocked_bot", await status() == "blocked_bot")
+        await on_private_membership(upd("kicked", "member", user.telegram_id), user, events, session)
+        check("member (kicked'dan) -> active", await status() == "active")
+
+        await session.execute(
+            User.__table__.update().where(User.id == user.id).values(status="banned")
+        )
+        await on_private_membership(upd("kicked", "member", user.telegram_id), user, events, session)
+        check("admin bani (banned) blokdan chiqishda o'zgarmaydi", await status() == "banned")
+
+        await session.execute(
+            User.__table__.update().where(User.id == user.id).values(status="active")
+        )
+        await on_private_membership(upd("member", "member", user.telegram_id), user, events, session)
+        check("holat o'zgarmasa -> hech narsa", await status() == "active")
+        await session.commit()
+
+
 async def cleanup() -> None:
     async with AsyncSessionLocal() as session:
         from sqlalchemy import delete
@@ -2589,6 +2636,7 @@ async def main() -> None:
     await test_stats()
     await test_resilience()
     await test_tts_health()
+    await test_membership_status()
     await test_support_record()
     await test_admin_reply_pin()
     await test_support_parsing()

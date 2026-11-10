@@ -6,12 +6,14 @@ from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config.settings import settings
 from bot.database.models import User
 from bot.keyboards.user import main_menu
 from bot.locales import HELP_BUTTONS
 from bot.services.events import EventService, EventType
+from bot.services.system_config import get_effective_limits
 
 router = Router(name="common")
 
@@ -19,6 +21,7 @@ router = Router(name="common")
 @router.message(F.text.in_(HELP_BUTTONS))
 async def show_help(
     message: Message,
+    session: AsyncSession,
     user: User,
     events: EventService,
     session_id,
@@ -33,9 +36,11 @@ async def show_help(
         session_id=session_id,
         menu="help",
     )
+    # `/help` (start.py) bilan bir xil: admin panelidagi amaldagi limit.
+    limits = await get_effective_limits(session)
     await message.answer(
         t.HELP.format(
-            limit=settings.DAILY_TRANSLATION_LIMIT,
+            limit=limits.translation,
             admin=settings.ADMIN_USERNAME,
         ),
         reply_markup=main_menu(t),
