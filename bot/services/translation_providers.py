@@ -349,15 +349,70 @@ async def call_mymemory(text: str, source: str, target: str, api_key: str) -> st
     return translated
 
 
+class ProviderDeclined(Exception):
+    """Provayder bu so'rovni o'zi RAD etdi (masalan lokal model tilni
+    aniqlay olmadi) — bu nosozlik EMAS, circuit breaker'ga hisoblanmaydi,
+    shunchaki keyingi provayderga o'tiladi."""
+
+
+# Lokal servis qo'llaydigan tillar (`mt/langs.py` NLLB_CODES bilan bir xil).
+LOCAL_MT_LANGS = frozenset({
+    "am", "ar", "az", "de", "en", "es", "fa", "fr", "hi", "id", "it", "ja",
+    "kk", "ko", "ky", "om", "ru", "tg", "tk", "tr", "uz", "zh",
+})
+# `auto` bilan shundan qisqa matnni servis baribir aniqlay olmaydi
+# (`mt/engine.py` MIN_DETECT_CHARS) — HTTP so'rovsiz o'tkazib yuboriladi.
+LOCAL_MT_MIN_AUTO_CHARS = 12
+
+
+def local_mt_supports(source: str, target: str) -> bool:
+    return target in LOCAL_MT_LANGS and (source == "auto" or source in LOCAL_MT_LANGS)
+
+
+async def call_local_mt(text: str, source: str, target: str, _api_key: str) -> str:
+    """Shu serverdagi lokal NLLB servisi (`mt/server.py`)."""
+    if source == "auto" and len(" ".join(text.split())) < LOCAL_MT_MIN_AUTO_CHARS:
+        raise ProviderDeclined("qisqa matn, til aniqlanmaydi")
+    url = settings.LOCAL_MT_URL.rstrip("/") + "/translate"
+    timeout = aiohttp.ClientTimeout(total=settings.LOCAL_MT_TIMEOUT)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as client:
+            async with client.post(
+                url, json={"text": text, "source": source, "target": target}
+            ) as response:
+                status = response.status
+                data = await response.json(content_type=None)
+    except asyncio.TimeoutError as exc:
+        raise RuntimeError(f"timeout {settings.LOCAL_MT_TIMEOUT}s") from exc
+    except aiohttp.ClientError as exc:
+        raise RuntimeError(f"lokal MT ulanmadi: {exc}") from exc
+
+    if not isinstance(data, dict):
+        raise RuntimeError(f"lokal MT noto'g'ri javob (HTTP {status})")
+    if status in (413, 422):
+        # Til aniqlanmadi / qo'llanmaydi / chiqish shubhali / juda uzun —
+        # servis sog', faqat bu matnni boshqa provayder qilsin.
+        raise ProviderDeclined(data.get("error") or f"HTTP {status}")
+    if status >= 400:
+        raise RuntimeError(f"lokal MT HTTP {status}: {data.get('error', 'xato')}")
+    translated = (data.get("text") or "").strip()
+    if not translated:
+        raise RuntimeError("lokal MT bo'sh javob qaytardi")
+    return translated
+
+
 # ── 1-daraja: bepul hajmi kuzatiladigan provayderlar ──────────────────
 # Provayder nomi -> kalitlar, bepul belgi hajmi (va davri: oy/kun), chaqiruv
 # funksiyasi, til/uzunlik tekshiruvi, ustunlik. `translation.py` bularni
 # bepul hajmi tugamagunicha ishlatadi.
 #
 #   priority 0 — asosiy sifatli provayderlar, o'zaro TASODIFIY;
-#   priority 1 — faqat 0-guruh yo'q/tugagan/yiqilgan bo'lsa (MyMemory —
-#                sifati pastroq, lekin `deep_translator` scraping'idan
-#                ancha ishonchli va rasmiy API).
+#   priority 1 — lokal NLLB (standart; `LOCAL_MT_PRIORITY` bilan o'zgaradi):
+#                0-guruh yo'q/tugagan/yiqilgan bo'lsa;
+#   priority 2 — MyMemory: sifati pastroq va 500 belgidan uzunini qabul
+#                qilmaydi, lekin `deep_translator` scraping'idan ancha
+#                ishonchli va rasmiy API.
+# `priority_fn` (bo'lsa) `priority`dan ustun — sozlamadan o'qiladi.
 FREE_TIER_PROVIDER_CONFIG: dict[str, dict] = {
     "google_translate": {
         "label": "Google Translate",
@@ -397,7 +452,19 @@ FREE_TIER_PROVIDER_CONFIG: dict[str, dict] = {
         "call": call_mymemory,
         "supports": _supports_all,
         "max_chars": MYMEMORY_MAX_CHARS,
-        "priority": 1,
+        "priority": 2,
+    },
+    "local_mt": {
+        "label": "Lokal NLLB",
+        # Kalit yo'q — bitta "soxta" kalit servis yoqilganini bildiradi
+        # (`pick_key`/breaker shu indeks bilan ishlaydi).
+        "keys": lambda: ["local"] if settings.LOCAL_MT_URL else [],
+        "free_limit": lambda: 10**15,
+        "period": "month",
+        "call": call_local_mt,
+        "supports": local_mt_supports,
+        "max_chars": None,
+        "priority_fn": lambda: settings.LOCAL_MT_PRIORITY,
     },
 }
 

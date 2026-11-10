@@ -140,6 +140,15 @@ class Settings(BaseSettings):
     MYMEMORY_EMAILS_RAW: str = Field(default="", alias="MYMEMORY_EMAILS")
     MYMEMORY_FREE_DAILY_CHARS: int = Field(default=50_000)
 
+    # Lokal tarjima modeli (NLLB-200, CTranslate2, CPU) — shu serverdagi
+    # alohida `tarjimon8-mt` xizmati (`mt/`, `deploy/tarjimon8-mt.service`).
+    # Bo'sh bo'lsa — o'chirilgan. Hajm/kalit yo'q, cheklovi faqat CPU.
+    # Ustunlik (`priority`): 0 — Google/Azure/DeepL bilan teng (tasodifiy),
+    # 1 — ulardan keyin, MyMemory'dan (2) oldin.
+    LOCAL_MT_URL: str = Field(default="", description="masalan http://127.0.0.1:8790")
+    LOCAL_MT_TIMEOUT: int = Field(default=30, description="soniya; uzun matn CPU'da sekin")
+    LOCAL_MT_PRIORITY: int = Field(default=1)
+
     @property
     def MYMEMORY_EMAILS(self) -> List[str]:
         return [k.strip() for k in self.MYMEMORY_EMAILS_RAW.split(",") if k.strip()]

@@ -2,7 +2,8 @@
 
 1-daraja: Google Cloud Translation / Azure Translator — bepul oylik BELGI
 hajmi hali tugamagan bo'lsa, ular orasidan TASODIFIY tanlanadi (rasmiy API,
-pullik, lekin bepul hajmi bor).
+pullik, lekin bepul hajmi bor). Shu darajada (ustunligi pastroq)
+lokal NLLB modeli (`LOCAL_MT_URL`, `mt/`) va MyMemory ham bor.
 
 2-daraja: Gemini — 1-daraja tugagan/yo'q bo'lsa ishlatiladi. Cloud
 Translation'dan ~40-150 barobar arzon, lekin cheklovi hajm emas so'rov
@@ -36,6 +37,7 @@ from bot.services.circuit_breaker import OPEN_SECONDS, CircuitBreaker
 from bot.services.translation_providers import (
     CHEAP_PROVIDER_CONFIG,
     FREE_TIER_PROVIDER_CONFIG,
+    ProviderDeclined,
     pick_key,
 )
 from bot.utils.text import chunk, content_hash, normalize
@@ -284,7 +286,8 @@ class TranslationService:
             index, api_key = picked
             if await self.breaker.is_open(name, index):
                 continue
-            groups.setdefault(cfg.get("priority", 0), []).append((name, index, api_key))
+            priority = cfg["priority_fn"]() if "priority_fn" in cfg else cfg.get("priority", 0)
+            groups.setdefault(priority, []).append((name, index, api_key))
 
         candidates: list[tuple[str, int, str]] = []
         for priority in sorted(groups):
@@ -317,6 +320,11 @@ class TranslationService:
         """
         try:
             translated = await call(text, source, target, api_key)
+        except ProviderDeclined as exc:
+            # Rad etish — nosozlik emas (masalan lokal model tilni aniqlay
+            # olmadi): breaker'ga hisoblanmaydi, keyingi provayderga o'tamiz.
+            logger.info("%s bu so'rovni rad etdi: %s", name, exc)
+            return None, f"rad etildi: {exc}"
         except Exception as exc:
             reason = str(exc) or type(exc).__name__
             logger.warning("%s (kalit #%s) ishlamadi: %s", name, index, reason)

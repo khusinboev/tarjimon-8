@@ -858,7 +858,7 @@ async def test_translation() -> None:
                 "provayder yozildi",
                 result.provider in (
                     "deep_translator", "google_translate", "azure_translator",
-                    "deepl", "mymemory", "gemini",
+                    "deepl", "mymemory", "gemini", "local_mt",
                 ),
                 result.provider,
             )
@@ -908,6 +908,11 @@ async def test_translation_providers() -> None:
     original_deepl_call = tp.FREE_TIER_PROVIDER_CONFIG["deepl"]["call"]
     original_mymemory_call = tp.FREE_TIER_PROVIDER_CONFIG["mymemory"]["call"]
     original_gemini_call = tp.CHEAP_PROVIDER_CONFIG["gemini"]["call"]
+    original_local_url = settings.LOCAL_MT_URL
+    original_local_priority = settings.LOCAL_MT_PRIORITY
+    original_local_call = tp.FREE_TIER_PROVIDER_CONFIG["local_mt"]["call"]
+    # Quyidagi sinovlar lokal servis O'CHIQ deb yozilgan; uniki alohida blokda.
+    settings.LOCAL_MT_URL = ""
 
     usage_by_provider: dict[str, dict[int, int]] = {}
 
@@ -1098,7 +1103,59 @@ async def test_translation_providers() -> None:
                 provider_name == "mymemory" and text_out == "mymemory:smoke@example.com",
                 f"{provider_name}, {text_out}",
             )
+
+            # ── Lokal NLLB (`local_mt`): ustunlik, rad etish != nosozlik ──
+            check("lokal o'chiq -> nomzod emas",
+                  all(c[0] != "local_mt" for c in await service._pick_free_tier_candidates(session, "en", "uz", 5)))
+            settings.LOCAL_MT_URL = "http://127.0.0.1:1"
+            settings.AZURE_TRANSLATOR_KEYS_RAW = original_azure_keys or "k1"
+            local_calls: list[str] = []
+
+            async def fake_local(text, _source, _target, _api_key) -> str:
+                local_calls.append(text)
+                return f"local:{text}"
+
+            tp.FREE_TIER_PROVIDER_CONFIG["local_mt"]["call"] = fake_local
+            settings.LOCAL_MT_PRIORITY = 1
+            names = [c[0] for c in await service._pick_free_tier_candidates(session, "en", "uz", 5)]
+            check(
+                "lokal: asosiylardan keyin, MyMemory'dan oldin",
+                "local_mt" in names and names.index("local_mt") == len(names) - 2 and names[-1] == "mymemory",
+                str(names),
+            )
+            check("lokal 600 belgida ham nomzod (MyMemory emas)",
+                  "local_mt" in [c[0] for c in await service._pick_free_tier_candidates(session, "en", "uz", 600)])
+            check("lokal qo'llanmaydigan til (pt) -> nomzod emas",
+                  "local_mt" not in [c[0] for c in await service._pick_free_tier_candidates(session, "en", "pt", 5)])
+            settings.LOCAL_MT_PRIORITY = 0
+            names = [c[0] for c in await service._pick_free_tier_candidates(session, "en", "uz", 5)]
+            check("LOCAL_MT_PRIORITY=0 -> asosiylar guruhida", names.index("local_mt") < len(names) - 1, str(names))
+
+            settings.AZURE_TRANSLATOR_KEYS_RAW = ""
+            settings.GOOGLE_TRANSLATE_API_KEYS_RAW = ""
+            settings.LOCAL_MT_PRIORITY = 1
+            text_out, provider_name, _ = await service._dispatch(session, "hello", "en", "uz")
+            check("asosiylar yo'q -> lokal ishlatiladi", provider_name == "local_mt", f"{provider_name}, {text_out}")
+
+            async def fake_local_declines(_text, _source, _target, _api_key) -> str:
+                raise tp.ProviderDeclined("detection_failed")
+
+            tp.FREE_TIER_PROVIDER_CONFIG["local_mt"]["call"] = fake_local_declines
+            for _ in range(5):
+                text_out, provider_name, _ = await service._dispatch(session, "hello there", "auto", "uz")
+            check("lokal rad etsa -> keyingi provayder (MyMemory)", provider_name == "mymemory", provider_name)
+            check("rad etish breaker'ni OCHMAYDI", not await service.breaker.is_open("local_mt", 0))
+
+            declined = []
+            try:
+                await tp.call_local_mt("ok", "auto", "uz", "local")
+            except tp.ProviderDeclined:
+                declined.append(True)
+            check("qisqa auto matn HTTP'siz rad etiladi", declined == [True])
     finally:
+        settings.LOCAL_MT_URL = original_local_url
+        settings.LOCAL_MT_PRIORITY = original_local_priority
+        tp.FREE_TIER_PROVIDER_CONFIG["local_mt"]["call"] = original_local_call
         settings.GOOGLE_TRANSLATE_API_KEYS_RAW = original_google_keys
         settings.AZURE_TRANSLATOR_KEYS_RAW = original_azure_keys
         settings.DEEPL_API_KEYS_RAW = original_deepl_keys

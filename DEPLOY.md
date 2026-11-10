@@ -208,6 +208,51 @@ git pull
 systemctl restart tarjimon8
 ```
 
+### Lokal tarjima modeli (`tarjimon8-mt`)
+
+NLLB-200 (CTranslate2 int8, CPU) — botdan ALOHIDA xizmat, faqat
+`127.0.0.1:8790`. Bot uni `LOCAL_MT_URL` orqali 1-darajadagi provayder
+sifatida ishlatadi (`bot/services/translation_providers.py` `local_mt`).
+Servis yiqilsa/sekinlashsa bot o'zi boshqa provayderlarga o'tadi —
+foydalanuvchi uchun xavfsiz. Qaror va o'lchovlar: `mt/README.md`.
+
+O'rnatish (bir marta):
+
+```bash
+cd /home/tarjimon8
+python3 -m venv mt-venv
+mt-venv/bin/pip install -r app/mt/requirements.txt huggingface_hub
+mkdir -p models/lid
+curl -sL -o models/lid/lid.176.ftz https://dl.fbaipublicfiles.com/fasttext/supervised-models/lid.176.ftz
+mt-venv/bin/hf download OpenNMT/nllb-200-distilled-1.3B-ct2-int8 --local-dir models/nllb-200-distilled-1.3B-ct2-int8
+
+cp app/deploy/tarjimon8-mt.service /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now tarjimon8-mt
+curl -s 127.0.0.1:8790/health
+curl -s 127.0.0.1:8790/translate -H 'content-type: application/json' \
+  -d '{"text":"Hello, how are you?","source":"en","target":"uz"}'
+```
+
+Botga ulash — `.env`:
+
+```ini
+LOCAL_MT_URL=http://127.0.0.1:8790
+LOCAL_MT_PRIORITY=1     # 0 — Google/Azure/DeepL bilan teng, 1 — ulardan keyin
+```
+
+`systemctl restart tarjimon8`. O'chirish (rollback): `.env`dan
+`LOCAL_MT_URL`ni olib tashlab botni qayta ishga tushirish kifoya.
+
+Model almashtirish: `deploy/tarjimon8-mt.service`dagi `MT_MODEL_DIR`
+(masalan tezroq `nllb-200-distilled-600M-ct2-int8`), keyin
+`systemctl daemon-reload && systemctl restart tarjimon8-mt`.
+
+```bash
+journalctl -u tarjimon8-mt -f          # har so'rov: yo'nalish, uzunlik, ms
+systemctl status tarjimon8-mt          # RAM (MemoryMax=2560M)
+```
+
 ### Kunlik zaxira (cron)
 
 ```bash
