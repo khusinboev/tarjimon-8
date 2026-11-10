@@ -29,7 +29,9 @@ def main() -> None:
 
     out = Path(args.out).expanduser()
     with tempfile.TemporaryDirectory() as tmp:
-        model = AutoModelForSeq2SeqLM.from_pretrained(args.base, dtype=torch.float32)
+        # fp16: vaqtinchalik nusxa 2.7 GB (fp32 da 5.5 GB — laptop diskiga sig'maydi);
+        # keyin int8 ga kvantlanadi, fp16 aniqligi bunga yetarli.
+        model = AutoModelForSeq2SeqLM.from_pretrained(args.base, dtype=torch.float16)
         model = PeftModel.from_pretrained(model, args.adapter).merge_and_unload()
         model.save_pretrained(tmp)
         AutoTokenizer.from_pretrained(args.base).save_pretrained(tmp)
