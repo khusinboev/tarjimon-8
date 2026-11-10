@@ -2095,6 +2095,155 @@ async def test_donate(user_id: int) -> None:
         await session.commit()
 
 
+async def test_donate_on_paid_idempotent(user_id: int) -> None:
+    """`on_paid` handleri: bir to'lov ikki marta kelsa — bitta yozuv, bitta VIP.
+
+    `test_donate` faqat DB cheklovini tekshiradi; bu yerda HANDLER o'zi
+    sinovdan o'tadi: Telegram `successful_payment`ni qayta yuborgan holatda
+    (bir xil `telegram_payment_charge_id`) foydalanuvchi ikkala safar
+    rahmat oladi, lekin VIP faqat bir marta beriladi va adminlarga
+    "DB xatosi" ogohlantirishi ketmaydi (takroriy xabar — kutilgan holat).
+
+    Eslatma: ikkinchi chaqiruv Postgres logida bitta `duplicate key`
+    yozuvi qoldiradi — bu ataylab, handlerning aynan shu yo'li sinaladi.
+    """
+    print("\n[13b] Homiylik — on_paid idempotent (takroriy successful_payment)")
+    from types import SimpleNamespace
+
+    from sqlalchemy import delete, update
+
+    from bot.database.models import Donation, User, UserSettings
+    from bot.handlers.user.donate import on_paid
+
+    t = locales.get("uz")
+    charge = "test_charge_smoke_onpaid"
+    stars = settings.QUICK_VIP_STARS
+
+    class _FakeBot:
+        def __init__(self) -> None:
+            self.sent: list[tuple[int, str]] = []
+
+        async def send_message(self, chat_id, text, *args, **kwargs) -> None:
+            self.sent.append((chat_id, text))
+
+    class _FakeMessage:
+        def __init__(self) -> None:
+            self.bot = _FakeBot()
+            self.chat = SimpleNamespace(id=TEST_TELEGRAM_ID, type="private")
+            self.successful_payment = SimpleNamespace(
+                currency="XTR",
+                total_amount=stars,
+                invoice_payload="quickvip",
+                telegram_payment_charge_id=charge,
+                provider_payment_charge_id=None,
+            )
+            self.answers: list[str] = []
+
+        async def answer(self, text, *args, **kwargs) -> None:
+            self.answers.append(text)
+
+    async def _state() -> tuple[int, int, object]:
+        async with AsyncSessionLocal() as s:
+            n_don = (
+                await s.execute(
+                    select(func.count()).select_from(Donation).where(
+                        Donation.telegram_payment_charge_id == charge
+                    )
+                )
+            ).scalar_one()
+            n_grant = (
+                await s.execute(
+                    select(func.count()).select_from(Event).where(
+                        Event.user_id == user_id,
+                        Event.event_type == EventType.PREMIUM_GRANTED,
+                        Event.payload["reason"].astext == "donation",
+                    )
+                )
+            ).scalar_one()
+            until = (
+                await s.execute(
+                    select(UserSettings.premium_until).where(
+                        UserSettings.user_id == user_id
+                    )
+                )
+            ).scalar_one_or_none()
+            return n_don, n_grant, until
+
+    async def _deliver() -> _FakeMessage:
+        # Har bir yetkazish — alohida sessiya, middleware'dagidek: handler
+        # flush qiladi, commit tashqarida.
+        msg = _FakeMessage()
+        async with AsyncSessionLocal() as s:
+            user = (
+                await s.execute(select(User).where(User.id == user_id))
+            ).scalar_one()
+            await on_paid(
+                msg, s, user, EventService(s), None, t, redis=None
+            )
+            await s.commit()
+        return msg
+
+    # Toza boshlanish: VIP yo'q, shu charge yo'q, oldingi grant voqealari yo'q.
+    async with AsyncSessionLocal() as s:
+        await s.execute(delete(Donation).where(Donation.user_id == user_id))
+        await s.execute(
+            delete(Event).where(
+                Event.user_id == user_id,
+                Event.event_type.in_([EventType.PREMIUM_GRANTED, EventType.DONATE_PAID]),
+            )
+        )
+        await s.execute(
+            update(UserSettings)
+            .where(UserSettings.user_id == user_id)
+            .values(premium_until=None)
+        )
+        await s.commit()
+
+    first = await _deliver()
+    n_don, n_grant, until1 = await _state()
+    check("birinchi to'lov yozildi", n_don == 1, f"{n_don} yozuv")
+    check("VIP berildi (premium.granted = 1)", n_grant == 1, str(n_grant))
+    expected_days = settings.QUICK_VIP_DAYS
+    check(
+        f"quickvip -> {expected_days} kun",
+        until1 is not None
+        and abs((until1 - utcnow()).days - expected_days) <= 1,
+        str(until1),
+    )
+    check("foydalanuvchiga rahmat yuborildi", len(first.answers) == 1)
+    check(
+        "adminga 'yangi homiylik' xabari ketdi",
+        len(first.bot.sent) == len(settings.ADMIN_USER_IDS),
+        str(len(first.bot.sent)),
+    )
+
+    # Telegram xuddi shu to'lovni qayta yubordi.
+    second = await _deliver()
+    n_don2, n_grant2, until2 = await _state()
+    check("takroriy xabar ikkinchi yozuv yaratmadi", n_don2 == 1, f"{n_don2} yozuv")
+    check("VIP ikki marta berilmadi", n_grant2 == 1 and until2 == until1, str(until2))
+    check(
+        "takrorda ham foydalanuvchi rahmat oladi",
+        len(second.answers) == 1
+        and second.answers[0] == t.DONATE_THANKS.format(stars=stars),
+    )
+    check(
+        "takrorda admin ogohlantirishi (DB xatosi) ketmadi",
+        not any("To'lov yozilmadi" in text for _, text in second.bot.sent),
+        str(len(second.bot.sent)),
+    )
+
+    # Tozalash — `cleanup()` ham qiladi, lekin keyingi testlar VIP'siz boshlasin.
+    async with AsyncSessionLocal() as s:
+        await s.execute(delete(Donation).where(Donation.user_id == user_id))
+        await s.execute(
+            update(UserSettings)
+            .where(UserSettings.user_id == user_id)
+            .values(premium_until=None)
+        )
+        await s.commit()
+
+
 async def test_broadcast() -> None:
     """Tarqatish: tezlik cheklovi va xatolarni tasniflash."""
     print("\n[14] Tarqatish")
@@ -3241,6 +3390,7 @@ async def main() -> None:
     await test_keyboards()
     await test_support()
     await test_donate(user_id)
+    await test_donate_on_paid_idempotent(user_id)
     await test_broadcast()
     await test_broadcast_resumable()
     await test_broadcast_runner_guards()
