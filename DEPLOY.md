@@ -214,7 +214,7 @@ NLLB-200 (CTranslate2 int8, CPU) — botdan ALOHIDA xizmat, faqat
 `127.0.0.1:8790`. Bot uni `LOCAL_MT_URL` orqali 1-darajadagi provayder
 sifatida ishlatadi (`bot/services/translation_providers.py` `local_mt`).
 Servis yiqilsa/sekinlashsa bot o'zi boshqa provayderlarga o'tadi —
-foydalanuvchi uchun xavfsiz. Qaror va o'lchovlar: `mt/README.md`.
+foydalanuvchi uchun xavfsiz. Qaror va o‘lchovlar: `mt/README.md`.
 
 O'rnatish (bir marta):
 
@@ -238,7 +238,8 @@ Botga ulash — `.env`:
 
 ```ini
 LOCAL_MT_URL=http://127.0.0.1:8790
-LOCAL_MT_PRIORITY=1     # 0 — Google/Azure/DeepL bilan teng, 1 — ulardan keyin
+LOCAL_MT_PRIORITY=3     # 0 — Google/Azure/DeepL bilan teng, 1 — ulardan keyin, 3 — MyMemory'dan ham keyin
+LOCAL_MT_TIMEOUT=60
 ```
 
 `systemctl restart tarjimon8`. O'chirish (rollback): `.env`dan
