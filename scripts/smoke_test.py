@@ -2091,6 +2091,135 @@ async def test_broadcast_resumable() -> None:
         await session.commit()
 
 
+async def test_broadcast_runner_guards() -> None:
+    """Tarqatish #64 (2026-10-19) saboqlari: bir ishga tushirishda har
+    foydalanuvchi FAQAT BIR MARTA jo'natiladi, bufer watermark kursordan
+    emas, fetch-chegaradan olinadi, `(broadcast, user)` uchun ko'pi bilan
+    bitta delivery qatori, tizimli xato zanjiri va avto-pauza sababi.
+    """
+    print("\n[14c] Tarqatish — takror yuborish va aylanishdan himoya")
+    from sqlalchemy import delete
+
+    from bot.database.models import Broadcast, BroadcastDelivery, User, UserSettings
+    from bot.database.repositories.broadcast_repository import BroadcastRepository
+    from bot.services.broadcast_errors import Classification, Kind
+    from bot.services.broadcast_progress import render_card
+    from bot.services.broadcast_runner import (
+        SYSTEMIC_FAILURE_STREAK,
+        _DispatchTracker,
+        _SystemicFailureGuard,
+    )
+
+    # ── _DispatchTracker: #64 ssenariysi ──
+    # Bufer [1..5] olindi, hammasi jo'natildi; 3,4,5 tugadi, 1 va 2 hali
+    # havoda. Eski kod keyingi buferni `id > cursor(None)` dan olib,
+    # 1..5 ni QAYTA jo'natardi — endi chegara 5 da, kursor esa hali None.
+    tracker = _DispatchTracker(cursor=None)
+    batch = [(i, 1000 + i) for i in range(1, 6)]
+    tracker.note_fetched(batch)
+    claimed = [tracker.claim(uid) for uid, _ in batch]
+    check("birinchi jo'natish hammaga ruxsat", all(claimed))
+    for uid in (3, 4, 5):
+        tracker.complete(uid)
+    check("havodagi 1,2 tufayli watermark siljimaydi", tracker.cursor is None, f"cursor={tracker.cursor}")
+    check("fetch-chegara esa oxirgi olingan id'da", tracker.fetch_after == 5, f"fetch_after={tracker.fetch_after}")
+
+    # Xuddi shu foydalanuvchi qaytadan buferga tushsa — rad etiladi, logga tushadi.
+    check("takror jo'natish rad etiladi", tracker.claim(3) is False)
+    check("takror sanaladi", tracker.duplicates_skipped == 1, str(tracker.duplicates_skipped))
+    check("rad etilgan takror navbatga qo'shilmaydi", tracker.in_flight == 5, str(tracker.in_flight))
+
+    tracker.complete(1)
+    check("1 tugadi -> kursor 1 (2 hali yo'q)", tracker.cursor == 1, f"cursor={tracker.cursor}")
+    tracker.complete(2)
+    check("2 tugadi -> kursor uzluksiz 5 gacha", tracker.cursor == 5 and tracker.in_flight == 0)
+
+    # Pauzadan davom: kursor 5 — chegara ham 5 dan boshlanadi.
+    resumed = _DispatchTracker(cursor=5)
+    check("davom ettirishda chegara kursordan boshlanadi", resumed.fetch_after == 5)
+    resumed.note_fetched([(7, 1007), (9, 1009)])
+    check("chegara faqat oldinga yuradi", resumed.fetch_after == 9)
+    resumed.note_fetched([])
+    check("bo'sh bufer chegarani o'zgartirmaydi", resumed.fetch_after == 9)
+
+    # ── _SystemicFailureGuard ──
+    def _cls(kind: str, **kw) -> Classification:
+        defaults = dict(detail=kind, passivate=False, retriable=False)
+        defaults.update(kw)
+        return Classification(kind=kind, **defaults)
+
+    guard = _SystemicFailureGuard(threshold=3)
+    check("1-tarmoq xatosi hali to'xtatmaydi", guard.record_failure(_cls(Kind.NETWORK)) is False)
+    check("2-tarmoq xatosi hali to'xtatmaydi", guard.record_failure(_cls(Kind.SERVER)) is False)
+    check("3-ketma-ket tizimli xato -> to'xtat", guard.record_failure(_cls(Kind.UNKNOWN)) is True)
+    check("oxirgi sabab saqlanadi", guard.last_detail == Kind.UNKNOWN, str(guard.last_detail))
+
+    guard = _SystemicFailureGuard(threshold=3)
+    guard.record_failure(_cls(Kind.NETWORK))
+    guard.record_failure(_cls(Kind.NETWORK))
+    # Bloklagan foydalanuvchi — Telegram javob bergan, tizim ishlayapti.
+    check(
+        "passiv xato (bloklagan) zanjirni uzadi",
+        guard.record_failure(_cls(Kind.BLOCKED, passivate=True)) is False and guard.streak == 0,
+    )
+    guard.record_failure(_cls(Kind.RATE_LIMIT, retriable=True))
+    guard.record_failure(_cls(Kind.RATE_LIMIT, retriable=True))
+    guard.record_success()
+    check("muvaffaqiyat zanjirni uzadi", guard.streak == 0)
+    check("`None` tasnif noma'lum (tizimli) deb sanaladi", guard.record_failure(None) is False and guard.streak == 1)
+    check("standart chegara oqilona (10..500)", 10 <= SYSTEMIC_FAILURE_STREAK <= 500, str(SYSTEMIC_FAILURE_STREAK))
+
+    # ── BroadcastRepository.add_delivery: (broadcast, user) uchun bitta qator ──
+    async with AsyncSessionLocal() as session:
+        repo = BroadcastRepository(session)
+        repo_user = UserRepository(session)
+        admin, _ = await repo_user.get_or_create(TEST_TELEGRAM_ID + 94, first_name="BcastGuard")
+        await session.commit()
+
+        bc = await repo.create_broadcast(
+            created_by=admin.id, mode="copy", content_preview="guard",
+            total_targets=5, src_chat_id=admin.telegram_id, src_message_id=1,
+        )
+        first = await repo.add_delivery(bc.id, admin.id, "failed", "Forbidden: bot was blocked by the user")
+        second = await repo.add_delivery(bc.id, admin.id, "failed", "Forbidden: bot was blocked by the user")
+        third = await repo.add_delivery(bc.id, admin.id, "failed", "boshqa matn")
+        await session.commit()
+        rows = (
+            await session.execute(
+                select(func.count(BroadcastDelivery.id)).where(BroadcastDelivery.broadcast_id == bc.id)
+            )
+        ).scalar_one()
+        check("birinchi yozuv qo'shiladi", first is True)
+        check("ikkinchi/uchinchi yozuv rad etiladi", second is False and third is False)
+        check("jadvalda aynan BITTA qator", rows == 1, f"rows={rows}")
+        reasons = await repo.failure_reasons(bc.id)
+        check(
+            "xato sabablari takrorsiz",
+            reasons == [("Forbidden: bot was blocked by the user", 1)],
+            str(reasons),
+        )
+
+        # Avto-pauza sababi kartada ko'rinadi, davom ettirilganda tozalanadi.
+        await repo.request_pause(bc.id)
+        await repo.mark_paused(
+            bc.id, cursor_user_id=None, active_seconds=3, success_count=0, failed_count=1,
+            error="50 ta ketma-ket yuborish tizimli xato bilan tugadi",
+        )
+        paused = await repo.get(bc.id)
+        await session.refresh(paused)
+        card = render_card(paused)
+        check("avto-pauza sababi saqlanadi", paused.status == "paused" and paused.error is not None)
+        check("sabab kartada ko'rinadi", "tizimli xato" in card)
+        await repo.resume(bc.id)
+        await session.refresh(paused)
+        check("davom ettirish sababni tozalaydi", paused.status == "running" and paused.error is None)
+
+        await session.execute(delete(Broadcast).where(Broadcast.created_by == admin.id))
+        await session.execute(delete(UserSettings).where(UserSettings.user_id == admin.id))
+        await session.execute(delete(User).where(User.id == admin.id))
+        await session.commit()
+
+
 async def test_stats() -> None:
     """Statistika: ma'lumot yig'iladi va Telegram chegarasiga sig'adi."""
     print("\n[15] Statistika")
@@ -2456,6 +2585,7 @@ async def main() -> None:
     await test_donate(user_id)
     await test_broadcast()
     await test_broadcast_resumable()
+    await test_broadcast_runner_guards()
     await test_stats()
     await test_resilience()
     await test_tts_health()

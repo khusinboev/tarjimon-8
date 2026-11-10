@@ -1,4 +1,4 @@
-from sqlalchemy import func, select, update
+from sqlalchemy import BigInteger, String, Text, func, insert, literal, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from bot.database.models import Broadcast, BroadcastDelivery
@@ -46,15 +46,46 @@ class BroadcastRepository:
         await self.session.refresh(broadcast)
         return broadcast
 
-    async def add_delivery(self, broadcast_id: int, user_id: int, status: str, error: str | None = None) -> None:
-        delivery = BroadcastDelivery(
-            broadcast_id=broadcast_id,
-            user_id=user_id,
-            status=status,
-            error=error,
+    async def add_delivery(
+        self, broadcast_id: int, user_id: int, status: str, error: str | None = None
+    ) -> bool:
+        """`(broadcast_id, user_id)` uchun KO'PI BILAN BITTA qator yozadi.
+
+        `True` — yangi qator qo'shildi; `False` — bu foydalanuvchi shu
+        tarqatishda allaqachon yozilgan (hech narsa o'zgarmadi).
+
+        Nega `INSERT ... SELECT ... WHERE NOT EXISTS`: tarqatish #64
+        (2026-10-19) quvurdagi aylanish xatosi tufayli ~128 foydalanuvchiga
+        ~24 000 martadan "failed" qatori yozib, jadvalni 3,3 mln qator /
+        530 MB ga shishirgan. Quvur endi takror jo'natmaydi, lekin bu
+        yerda DB darajasida ham ikkinchi to'siq turadi: xato qaytib kelsa
+        ham jadval emas, faqat hisob buziladi. UNIQUE indeks ataylab
+        qo'yilmagan — mavjud 3 mln takror qator ustida yaratib bo'lmaydi
+        (tozalashdan keyin qo'shish mumkin, u holda ham bu so'rov o'zgarmaydi).
+        Yozuvchi bitta (`ux_broadcasts_single_active` + `_active_tasks`),
+        shuning uchun NOT EXISTS poygasiz ishlaydi.
+
+        Commit yo'q — chaqiruvchi partiyalab commit qiladi.
+        """
+        already = (
+            select(BroadcastDelivery.id)
+            .where(
+                BroadcastDelivery.broadcast_id == broadcast_id,
+                BroadcastDelivery.user_id == user_id,
+            )
+            .exists()
         )
-        self.session.add(delivery)
-        # No commit here — caller commits in batches
+        source = select(
+            literal(broadcast_id, BigInteger),
+            literal(user_id, BigInteger),
+            literal(status, String(20)),
+            literal(error, Text),
+        ).where(~already)
+        stmt = insert(BroadcastDelivery).from_select(
+            ["broadcast_id", "user_id", "status", "error"], source
+        )
+        result = await self.session.execute(stmt)
+        return (result.rowcount or 0) > 0
 
     async def finish_broadcast(
         self, broadcast_id: int, success_count: int, failed_count: int,
@@ -158,6 +189,7 @@ class BroadcastRepository:
     async def mark_paused(
         self, broadcast_id: int, *, cursor_user_id: int | None, active_seconds: int,
         success_count: int, failed_count: int, total_targets: int | None = None,
+        error: str | None = None,
     ) -> None:
         """Background vazifa pauza so'rovini ko'rib, o'zini to'xtatganda chaqiradi.
 
@@ -165,6 +197,10 @@ class BroadcastRepository:
         HAR DOIM ham yangilangan sonni bilmasligi mumkin, lekin bilsa
         (chaqiruvchida bor bo'lsa) saqlanadi — aks holda "Pauzada" karta
         eski (tarqatish boshlangandagi) taxminiy sonni ko'rsatib qolardi.
+
+        `error` — AVTOMATIK pauza sababi (tizimli xato zanjiri, aylanish
+        himoyasi). Kartada ko'rinadi, admin nega to'xtaganini bilsin;
+        `resume()` uni tozalaydi. Admin o'zi pauza qilsa `None` qoladi.
         """
         values: dict = {
             "status": "paused",
@@ -172,6 +208,7 @@ class BroadcastRepository:
             "active_seconds": active_seconds,
             "success_count": success_count,
             "failed_count": failed_count,
+            "error": error,
         }
         if total_targets is not None:
             values["total_targets"] = total_targets
@@ -186,7 +223,9 @@ class BroadcastRepository:
         result = await self.session.execute(
             update(Broadcast)
             .where(Broadcast.id == broadcast_id, Broadcast.status == "paused")
-            .values(status="running")
+            # Avtomatik pauza sababi (`mark_paused(error=...)`) tozalanadi —
+            # davom etgan tarqatish kartasida eski ogohlantirish qolmasin.
+            .values(status="running", error=None)
         )
         await self.session.commit()
         return (result.rowcount or 0) > 0
