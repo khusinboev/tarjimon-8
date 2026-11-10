@@ -4,8 +4,18 @@ Eski yondashuvda har bir handler o'zi `AsyncSessionLocal()` ochardi. Bu ikki
 muammo tug'diradi: bitta xabar ustida bir nechta tranzaksiya (atomarlik yo'q)
 va handler ichida ulanish boshqaruvi (takroriy kod).
 
-Bu middleware bitta update = bitta session = bitta commit qoidasini o'rnatadi.
-Handlerlar `data` dan tayyor obyektlarni oladi.
+Bu middleware bitta update = bitta session qoidasini o'rnatadi; odatda
+bitta commit ham (oxirida). Handlerlar `data` dan tayyor obyektlarni oladi.
+
+Istisno — sekin tashqi chaqiruvli oqimlar (`handlers/user/translate.py`):
+ular provayder/OCR chaqiruvidan OLDIN `session.commit()` qilib, ulanishni
+pool'ga qaytaradi (aks holda 15–60 s davomida ulanish + `daily_usage`
+qator qulfi band turardi va ~30 parallel sekin tarjima pool'ni to'ldirardi).
+`expire_on_commit=False` bo'lgani uchun `user` va boshqa ORM obyektlar
+commit'dan keyin ham ishlaydi; keyingi so'rov yangi tranzaksiya boshlaydi
+va pastdagi yakuniy `commit()` uni yopadi (tranzaksiya yo'q bo'lsa — no-op).
+Erta commit'dan keyingi xatoda bu yerdagi `rollback()` kvotani qaytara
+olmaydi — o'sha handlerlar uni o'zlari qaytaradi (`*_detached`).
 """
 
 from __future__ import annotations

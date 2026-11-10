@@ -250,3 +250,6 @@ RELAUNCH = (
     "🗣 <b>Your language</b> — the interface follows your Telegram language\n\n"
     "Just send any text to try it 👇"
 )
+
+# ── Uzun matn: tarjima davomida ko'rsatiladigan "⏳" xabari (translate.py) ──
+TRANSLATING_LONG_TEXT = "⏳ Translating, one moment…"

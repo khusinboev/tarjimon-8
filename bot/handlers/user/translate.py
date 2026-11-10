@@ -16,6 +16,7 @@ from bot.config.settings import settings
 from bot.database.models import User
 from bot.database.repositories.language_repository import LanguageRepository
 from bot.database.repositories.translation_repository import TranslationRepository
+from bot.database.session import StatementScopedSession
 from bot.keyboards.user import quota_exceeded_keyboard, translation_actions
 from bot.locales import MENU_BUTTONS
 from bot.services.admin_alerts import alert_admins_once
@@ -34,6 +35,21 @@ router = Router(name="translate")
 
 # Telegram xabar chegarasi 4096; `<code>` teglari va zaxira uchun kamaytiramiz.
 MESSAGE_LIMIT = 3800
+
+# Shundan uzun matnda provayder sezilarli (6–16 s) vaqt oladi — "⏳" xabari
+# ko'rsatiladi. Qisqa matnda u faqat shovqin bo'lardi (javob 1–2 s da keladi).
+PROGRESS_NOTICE_MIN_CHARS = 500
+
+
+async def _delete_quietly(msg: Optional[Message]) -> None:
+    """"⏳" xabarini o'chiradi; xato ahamiyatsiz (allaqachon o'chirilgan,
+    huquq yo'q, tarmoq) — asosiy natijaga ta'sir qilmasligi kerak."""
+    if msg is None:
+        return
+    try:
+        await msg.delete()
+    except Exception:
+        pass
 
 
 async def _translate(
@@ -172,113 +188,166 @@ async def _translate(
             translation_id=previous.id, user_id=user.id, signal="retranslated"
         )
 
+    # Band qilingan kvota, "requested" voqeasi va signal SHU YERDA commit
+    # qilinadi — provayder chaqiruvi (15 s, lokal model 60 s gacha) davomida
+    # tranzaksiya ham, pool ulanishi ham ushlab turilmaydi. `daily_usage`
+    # qator qulfi ham bo'shaydi: bir user ketma-ket ikki xabar yuborsa
+    # ikkinchisi birinchisining tarjimasi tugashini kutmaydi.
+    # `expire_on_commit=False` (session.py) — `user`/`user.settings` keyin
+    # ham bemalol o'qiladi. Shu nuqtadan boshlab middleware'ning rollback'i
+    # kvotani qaytara OLMAYDI — pastdagi `quota_held` shuning uchun.
+    await session.commit()
+    quota_held = manage_quota
+
     service = TranslationService(redis, bot=message.bot)
     await message.bot.send_chat_action(message.chat.id, "typing")
 
+    # Uzun matn 6–16 s oladi — foydalanuvchi "bot qotib qoldi" deb o'ylamasin.
+    # Xabar yuborilmasa ham tarjima davom etadi (bu faqat qulaylik).
+    progress: Optional[Message] = None
+    if len(text) > PROGRESS_NOTICE_MIN_CHARS:
+        try:
+            progress = await message.answer(t.TRANSLATING_LONG_TEXT)
+        except Exception:
+            progress = None
+
     try:
-        result = await service.translate(session, text, source, target)
-    except TranslationError as exc:
-        if manage_quota:
-            # Band qilingan joy (yuqorida `try_reserve_translation`) ortga
-            # qaytariladi — muvaffaqiyatsiz urinish kvotadan sarflanmasligi
-            # kerak (avvalgi xulq-atvor bilan bir xil: faqat muvaffaqiyatli
-            # urinish hisoblanadi).
-            await quota.release_translation(user.id, chars=len(text))
-        # Muvaffaqiyatsiz urinish ham yoziladi — provayder sog'lig'ini kuzatish uchun.
-        # `exc.provider` — oxirgi sinalgan provayder (`TranslationService`
-        # qo'yadi); servisga yetmasdan yiqilgan holatlarda (bo'sh matn va
-        # h.k.) yo'q, unda standart zaxira nomi yoziladi.
-        failed_provider = exc.provider or settings.TRANSLATION_PROVIDER
-        await repo.create(
+        try:
+            # `StatementScopedSession` — servis ichidagi `pick_key` SELECT'lari
+            # har biri o'z qisqa tranzaksiyasida yakunlanadi, HTTP chaqiruv
+            # paytida ulanish band bo'lmaydi (izoh: `session.py`).
+            result = await service.translate(
+                StatementScopedSession(session), text, source, target
+            )
+        except TranslationError as exc:
+            if quota_held:
+                # Band qilingan joy (yuqorida `try_reserve_translation`) ortga
+                # qaytariladi — muvaffaqiyatsiz urinish kvotadan sarflanmasligi
+                # kerak (faqat muvaffaqiyatli urinish hisoblanadi). Alohida
+                # tranzaksiyada — pastdagi xato-qatori yozuvi yiqilsa ham
+                # qaytarish bekor bo'lmasin.
+                await quota.release_translation_detached(user.id, chars=len(text))
+                quota_held = False
+            # Muvaffaqiyatsiz urinish ham yoziladi — provayder sog'lig'ini kuzatish uchun.
+            # `exc.provider` — oxirgi sinalgan provayder (`TranslationService`
+            # qo'yadi); servisga yetmasdan yiqilgan holatlarda (bo'sh matn va
+            # h.k.) yo'q, unda standart zaxira nomi yoziladi.
+            failed_provider = exc.provider or settings.TRANSLATION_PROVIDER
+            await repo.create(
+                user_id=user.id,
+                chat_id=message.chat.id,
+                chat_type=message.chat.type,
+                input_kind=input_kind,
+                **source_ref,
+                source_lang_requested=source,
+                target_lang=target,
+                source_text=text,
+                source_hash=source_hash,
+                source_chars=len(text),
+                provider=failed_provider,
+                ocr_provider=ocr_provider,
+                ocr_key_index=ocr_key_index,
+                status="timeout" if exc.code == "timeout" else "error",
+                error_code=exc.code,
+                error_message=str(exc)[:500],
+            )
+            await events.log(
+                EventType.TRANSLATE_FAILED,
+                user_id=user.id,
+                chat_id=message.chat.id,
+                session_id=session_id,
+                error_code=exc.code,
+                provider=failed_provider,
+            )
+            # Telegram'ga yuborishdan oldin yakunlanadi — tarmoq kutishi
+            # tranzaksiya ichida bo'lmasin.
+            await session.commit()
+            await _delete_quietly(progress)
+            progress = None
+            await message.answer(t.ERRORS.get(exc.code, t.ERROR_DEFAULT))
+            return
+
+        detected = result.source_lang_detected or (source if source != "auto" else None)
+
+        # Har bir tarjima yoziladi: tugmalar (ovoz, almashtirish) shu yozuvga
+        # tayanadi va bu jadval ML uchun asosiy manba.
+        translation = await repo.create(
             user_id=user.id,
             chat_id=message.chat.id,
             chat_type=message.chat.type,
             input_kind=input_kind,
             **source_ref,
             source_lang_requested=source,
+            source_lang_detected=detected,
             target_lang=target,
             source_text=text,
+            target_text=result.text,
             source_hash=source_hash,
             source_chars=len(text),
-            provider=failed_provider,
+            target_chars=len(result.text),
+            provider=result.provider,
+            provider_model=result.provider_model,
+            provider_key_index=result.provider_key_index,
             ocr_provider=ocr_provider,
             ocr_key_index=ocr_key_index,
-            status="timeout" if exc.code == "timeout" else "error",
-            error_code=exc.code,
-            error_message=str(exc)[:500],
+            status="success",
+            latency_ms=result.latency_ms,
+            cache_hit=result.cache_hit,
         )
+
+        # Kvota allaqachon yuqorida (`try_reserve_translation`) band qilingan —
+        # muvaffaqiyat bo'lgani uchun band qilingan joy shunday qoladi,
+        # qo'shimcha oshirish shart emas.
+
+        # Referal bonusi: faqat yangi userning BIRINCHI muvaffaqiyatli tarjimasida
+        # ishlaydi (`grant_referral_bonus` ichida bayroq bilan tekshiriladi).
+        # Tarjima natijasidan oldin chaqiramiz — bonus xabari (agar bo'lsa) ham,
+        # tarjima natijasi ham foydalanuvchiga bir xil javob ichida ketadi.
+        await grant_referral_bonus(message, session, events, user, session_id)
+
         await events.log(
-            EventType.TRANSLATE_FAILED,
+            EventType.TRANSLATE_SUCCEEDED,
             user_id=user.id,
             chat_id=message.chat.id,
             session_id=session_id,
-            error_code=exc.code,
-            provider=failed_provider,
+            translation_id=translation.id,
+            latency_ms=result.latency_ms,
+            provider=result.provider,
+            detected=detected,
+            cache_hit=result.cache_hit,
         )
-        await message.answer(t.ERRORS.get(exc.code, t.ERROR_DEFAULT))
-        return
 
-    detected = result.source_lang_detected or (source if source != "auto" else None)
+        voice = await langs.tts_voice(target)
+        # Ovoz tugmasi sozlanmaydi — til qo'llab-quvvatlasa doim ko'rinadi.
+        has_tts = bool(voice)
 
-    # Har bir tarjima yoziladi: tugmalar (ovoz, almashtirish) shu yozuvga
-    # tayanadi va bu jadval ML uchun asosiy manba.
-    translation = await repo.create(
-        user_id=user.id,
-        chat_id=message.chat.id,
-        chat_type=message.chat.type,
-        input_kind=input_kind,
-        **source_ref,
-        source_lang_requested=source,
-        source_lang_detected=detected,
-        target_lang=target,
-        source_text=text,
-        target_text=result.text,
-        source_hash=source_hash,
-        source_chars=len(text),
-        target_chars=len(result.text),
-        provider=result.provider,
-        provider_model=result.provider_model,
-        provider_key_index=result.provider_key_index,
-        ocr_provider=ocr_provider,
-        ocr_key_index=ocr_key_index,
-        status="success",
-        latency_ms=result.latency_ms,
-        cache_hit=result.cache_hit,
-    )
+        markup = translation_actions(
+            t,
+            translation.id,
+            has_tts=has_tts,
+            source=await langs.by_code(source),
+            target=await langs.by_code(target),
+        )
 
-    # Kvota allaqachon yuqorida (`try_reserve_translation`) band qilingan —
-    # muvaffaqiyat bo'lgani uchun band qilingan joy shunday qoladi,
-    # qo'shimcha oshirish shart emas.
-
-    # Referal bonusi: faqat yangi userning BIRINCHI muvaffaqiyatli tarjimasida
-    # ishlaydi (`grant_referral_bonus` ichida bayroq bilan tekshiriladi).
-    # Tarjima natijasidan oldin chaqiramiz — bonus xabari (agar bo'lsa) ham,
-    # tarjima natijasi ham foydalanuvchiga bir xil javob ichida ketadi.
-    await grant_referral_bonus(message, session, events, user, session_id)
-
-    await events.log(
-        EventType.TRANSLATE_SUCCEEDED,
-        user_id=user.id,
-        chat_id=message.chat.id,
-        session_id=session_id,
-        translation_id=translation.id,
-        latency_ms=result.latency_ms,
-        provider=result.provider,
-        detected=detected,
-        cache_hit=result.cache_hit,
-    )
-
-    voice = await langs.tts_voice(target)
-    # Ovoz tugmasi sozlanmaydi — til qo'llab-quvvatlasa doim ko'rinadi.
-    has_tts = bool(voice)
-
-    markup = translation_actions(
-        t,
-        translation.id,
-        has_tts=has_tts,
-        source=await langs.by_code(source),
-        target=await langs.by_code(target),
-    )
+        # Tarjima qatori + voqealar yozildi — Telegram'ga yuborishdan oldin
+        # yakunlanadi (sekin tarmoq tranzaksiyani ushlab turmasin). Shundan
+        # keyin kvota HAQLI ravishda sarflangan: tarjima bajarildi va saqlandi.
+        await session.commit()
+        quota_held = False
+    except BaseException:
+        # Kutilmagan xato (baza, Telegram, bekor qilinish) — kvota allaqachon
+        # commit qilingan, middleware rollback'i yetmaydi: o'zimiz qaytaramiz.
+        # Ikkinchi darajali xato asl xatoni yashirmasin — faqat log.
+        if quota_held:
+            try:
+                await quota.release_translation_detached(user.id, chars=len(text))
+            except Exception:
+                logger.exception(
+                    "Kvotani qaytarib bo'lmadi (user_id=%s) — bugun 1 ta joy oqib ketdi",
+                    user.id,
+                )
+        await _delete_quietly(progress)
+        raise
 
     # Tarjima `<code>` ichida yuboriladi — Telegram'da ustiga bosib nusxa olinadi.
     # Uzun tarjima bo'laklanadi, tugmalar oxirgi bo'lakka biriktiriladi.
@@ -289,6 +358,9 @@ async def _translate(
             f"<code>{html_escape(part)}</code>",
             reply_markup=markup if is_last else None,
         )
+    # Natija yetib bordi — "⏳" endi kerak emas. Natijadan KEYIN o'chiriladi:
+    # avval o'chirilsa chatda bir lahza bo'shliq ko'rinardi.
+    await _delete_quietly(progress)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -389,43 +461,52 @@ async def handle_photo(
         )
         return
 
-    await message.bot.send_chat_action(message.chat.id, "typing")
     await events.log(
         EventType.IMAGE_OCR_REQUESTED,
         user_id=user.id,
         chat_id=message.chat.id,
         session_id=session_id,
     )
+    # Rasm kvotasi + voqea commit qilinadi — rasmni yuklab olish va OCR
+    # (ikkalasi ham sekin tashqi chaqiruv) tranzaksiya/ulanishni ushlab
+    # turmasin (izoh: `_translate`dagi bir xil commit). Shundan boshlab
+    # xatoda kvota `release_image_detached` bilan o'zimiz qaytaramiz.
+    await session.commit()
+    quota_held = True
+    await message.bot.send_chat_action(message.chat.id, "typing")
 
     try:
-        photo_file = await message.bot.download(message.photo[-1].file_id)
-        image_bytes = photo_file.read()
-    except (TelegramNetworkError, TelegramBadRequest, asyncio.TimeoutError) as exc:
-        # Telegram'dan rasmni olib bo'lmadi (tarmoq timeout — 1.4GB'lik
-        # serverda katta rasmda uchraydi). Ilgari ushlanmasdan crash
-        # bo'lib, foydalanuvchi jim qolardi va rasm kvotasi sarflanib
-        # ketardi — OCR chaqirilmagani uchun band qilingan joy qaytariladi.
-        await quota.release_image(user.id)
-        await events.log(
-            EventType.IMAGE_OCR_FAILED,
-            user_id=user.id,
-            chat_id=message.chat.id,
-            session_id=session_id,
-            error_code="download_failed",
-        )
-        logging.getLogger(__name__).warning(
-            "Rasmni yuklab bo'lmadi (user_id=%s): %s", user.id, exc
-        )
-        await message.answer(t.IMAGE_DOWNLOAD_FAILED)
-        return
+        try:
+            photo_file = await message.bot.download(message.photo[-1].file_id)
+            image_bytes = photo_file.read()
+        except (TelegramNetworkError, TelegramBadRequest, asyncio.TimeoutError) as exc:
+            # Telegram'dan rasmni olib bo'lmadi (tarmoq timeout — 1.4GB'lik
+            # serverda katta rasmda uchraydi). Ilgari ushlanmasdan crash
+            # bo'lib, foydalanuvchi jim qolardi va rasm kvotasi sarflanib
+            # ketardi — OCR chaqirilmagani uchun band qilingan joy qaytariladi.
+            await quota.release_image_detached(user.id)
+            quota_held = False
+            await events.log(
+                EventType.IMAGE_OCR_FAILED,
+                user_id=user.id,
+                chat_id=message.chat.id,
+                session_id=session_id,
+                error_code="download_failed",
+            )
+            logging.getLogger(__name__).warning(
+                "Rasmni yuklab bo'lmadi (user_id=%s): %s", user.id, exc
+            )
+            await message.answer(t.IMAGE_DOWNLOAD_FAILED)
+            return
 
-    try:
-        result = await extract_text(session, image_bytes)
+        # `StatementScopedSession` — OCR ichidagi hisob SELECT'lari o'z qisqa
+        # tranzaksiyasida yakunlanadi, HTTP paytida ulanish band bo'lmaydi.
+        result = await extract_text(StatementScopedSession(session), image_bytes)
     except OcrError as exc:
         # OCR o'zi ishlamadi (hech narsa sarflanmadi) — band qilingan joy
         # ortga qaytariladi, aks holda muvaffaqiyatsiz urinish ham rasm
         # kvotasidan yeb qo'yardi.
-        await quota.release_image(user.id)
+        await quota.release_image_detached(user.id)
         await events.log(
             EventType.IMAGE_OCR_FAILED,
             user_id=user.id,
@@ -455,6 +536,21 @@ async def handle_photo(
         text = t.IMAGE_OCR_UNAVAILABLE if exc.code == "not_configured" else t.IMAGE_OCR_FAILED
         await message.answer(text)
         return
+    except BaseException:
+        # Kutilmagan xato (yuklab olishda `OcrError`/tarmoq xatosidan boshqa
+        # narsa, bekor qilinish) — OCR'ga pul sarflanmadi, lekin kvota
+        # allaqachon commit qilingan: middleware rollback'i yetmaydi.
+        # `quota_held` — yuqoridagi yuklab-olish branch'i allaqachon
+        # qaytargan bo'lsa ikkinchi marta kamaytirmaslik uchun.
+        if quota_held:
+            try:
+                await quota.release_image_detached(user.id)
+            except Exception:
+                logger.exception(
+                    "Rasm kvotasini qaytarib bo'lmadi (user_id=%s) — 1 ta joy oqib ketdi",
+                    user.id,
+                )
+        raise
 
     if result.ocrspace_quota_exhausted:
         await alert_admins_once(

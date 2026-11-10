@@ -45,6 +45,12 @@ class UsageRepository:
         if instance is not None:
             self.session.expire(instance)
 
+    def expire_cached(self, user_id: int, day: Optional[date_type] = None) -> None:
+        """Shu (user_id, kun) qatori BOSHQA sessiyada o'zgartirilganda (masalan
+        `QuotaService.release_translation_detached`) bu sessiyadagi nusxani
+        eskirtirish uchun ochiq nom — `_expire_cached_row` bilan bir xil."""
+        self._expire_cached_row(user_id, day or self.today())
+
     async def get(self, user_id: int, day: Optional[date_type] = None) -> Optional[DailyUsage]:
         result = await self.session.execute(
             select(DailyUsage).where(

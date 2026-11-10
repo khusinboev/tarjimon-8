@@ -249,3 +249,6 @@ RELAUNCH = (
     "🗣 <b>Bahasa Anda</b> — antarmuka mengikuti bahasa Telegram Anda\n\n"
     "Kirim teks apa pun untuk mencoba 👇"
 )
+
+# ── Uzun matn: tarjima davomida ko'rsatiladigan "⏳" xabari (translate.py) ──
+TRANSLATING_LONG_TEXT = "⏳ Sedang menerjemahkan, mohon tunggu…"

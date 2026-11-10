@@ -2582,6 +2582,175 @@ async def test_membership_status() -> None:
         await session.commit()
 
 
+async def test_no_db_transaction_during_provider_call() -> None:
+    """P1 (audit 2026-11): provayder chaqiruvi paytida sessiyada OCHIQ
+    TRANZAKSIYA bo'lmasligi kerak — aks holda pool ulanishi (10+20) va
+    `daily_usage` qator qulfi 15–60 s band turardi.
+
+    Haqiqiy handler (`_translate`) haqiqiy sessiya bilan ishga tushiriladi,
+    faqat provayder (`TranslationService.translate`) monkeypatch qilinadi:
+    u chaqirilgan NUQTADA `session.in_transaction()` tekshiriladi. Uch holat:
+    provayder xatosi (kvota qaytariladi), muvaffaqiyat (kvota sarflanadi),
+    kutilmagan xato (kvota qaytariladi, xato yuqoriga ko'tariladi).
+    """
+    print("\n[7c] Provayder chaqiruvida tranzaksiya ushlab turilmaydi")
+    from types import SimpleNamespace
+
+    from sqlalchemy import delete
+
+    from bot.database.models import DailyUsage, User, UserSettings
+    from bot.handlers.user import translate as handler
+    from bot.services.translation import TranslationResult
+
+    telegram_id = TEST_TELEGRAM_ID + 93
+    seen: dict = {}
+    outcome: dict = {}
+
+    class _FakeSent:
+        """`message.answer()` qaytargan xabar — faqat `delete()` kerak."""
+
+        def __init__(self, log: list) -> None:
+            self._log = log
+
+        async def delete(self) -> None:
+            self._log.append("deleted")
+
+    class _FakeBot:
+        async def send_chat_action(self, *args, **kwargs) -> None:
+            return None
+
+        async def send_message(self, *args, **kwargs) -> None:
+            return None
+
+    class _FakeMessage:
+        def __init__(self) -> None:
+            self.bot = _FakeBot()
+            self.chat = SimpleNamespace(id=telegram_id, type="private")
+            self.message_id = 1
+            self.sent: list = []
+
+        async def answer(self, text, **kwargs) -> _FakeSent:
+            self.sent.append(text)
+            return _FakeSent(self.sent)
+
+    real_session_holder: dict = {}
+
+    async def fake_translate(self, session, text, source, target):
+        real_session = real_session_holder["session"]
+        seen["wrapper_in_tx"] = session.in_transaction()
+        seen["real_in_tx"] = real_session.in_transaction()
+        # Servis ichidagi `pick_key` kabi SELECT ham ulanishni qoldirmasin
+        # (handler `StatementScopedSession` beradi — har so'rov o'z commit'i).
+        rows = await session.execute(select(func.count(User.id)))
+        seen["select_result_usable"] = rows.scalar_one() >= 1
+        seen["after_select_in_tx"] = real_session.in_transaction()
+        mode = outcome["mode"]
+        if mode == "fail":
+            raise TranslationError("provider_error", "sinov", provider="deep_translator")
+        if mode == "crash":
+            raise RuntimeError("sinov: kutilmagan xato")
+        return TranslationResult(
+            text="ok", source_lang_detected="uz", provider="deep_translator",
+            provider_model=None, latency_ms=1,
+        )
+
+    original_translate = TranslationService.translate
+    TranslationService.translate = fake_translate  # type: ignore[method-assign]
+    try:
+        async with AsyncSessionLocal() as session:
+            real_session_holder["session"] = session
+            repo = UserRepository(session)
+            user, _ = await repo.get_or_create(telegram_id, first_name="TxSinov")
+            await session.commit()
+            user_id = user.id
+            events = EventService(session)
+            t = locales.get("uz")
+            usage = QuotaService(session).usage
+            # > 500 belgi — "⏳" xabari chiqishi kerak.
+            long_text = "Salom dunyo, bu uzun sinov matni. " * 20
+            check("sinov matni 500 belgidan uzun", len(long_text) > handler.PROGRESS_NOTICE_MIN_CHARS)
+
+            async def run(mode: str, text: str) -> _FakeMessage:
+                outcome["mode"] = mode
+                seen.clear()
+                msg = _FakeMessage()
+                try:
+                    await handler._translate(
+                        msg, session, user, events, None, t, None,
+                        text=text, input_kind="text",
+                    )
+                    await session.commit()  # middleware kabi
+                except RuntimeError:
+                    await session.rollback()  # middleware kabi
+                    seen["raised"] = True
+                return msg
+
+            # 1) Provayder xatosi.
+            msg = await run("fail", long_text)
+            check(
+                "provayder chaqiruvida tranzaksiya yo'q",
+                seen.get("real_in_tx") is False and seen.get("wrapper_in_tx") is False,
+                f"real={seen.get('real_in_tx')} wrapper={seen.get('wrapper_in_tx')}",
+            )
+            check(
+                "servis SELECT'idan keyin ham tranzaksiya yo'q",
+                seen.get("after_select_in_tx") is False and seen.get("select_result_usable"),
+            )
+            row = await usage.get(user_id)
+            used = row.translations_count if row else 0
+            check("provayder xatosida kvota qaytarildi", used == 0, f"used={used}")
+            check(
+                "⏳ xabari yuborildi va o'chirildi",
+                msg.sent[:1] == [t.TRANSLATING_LONG_TEXT] and "deleted" in msg.sent,
+                str(msg.sent),
+            )
+            check("xato xabari yuborildi", t.ERRORS["provider_error"] in msg.sent)
+            failed = (
+                await session.execute(
+                    select(func.count(Translation.id)).where(
+                        Translation.user_id == user_id, Translation.status == "error"
+                    )
+                )
+            ).scalar_one()
+            check("xato qatori yozildi", failed == 1, f"{failed} ta")
+
+            # 2) Muvaffaqiyat.
+            msg = await run("ok", long_text)
+            row = await usage.get(user_id)
+            used = row.translations_count if row else 0
+            check("muvaffaqiyatda kvota sarflandi", used == 1, f"used={used}")
+            check("natija yuborildi", any("<code>ok</code>" in s for s in msg.sent), str(msg.sent))
+            check("muvaffaqiyatda ham ⏳ o'chirildi", "deleted" in msg.sent)
+            ok_rows = (
+                await session.execute(
+                    select(func.count(Translation.id)).where(
+                        Translation.user_id == user_id, Translation.status == "success"
+                    )
+                )
+            ).scalar_one()
+            check("muvaffaqiyat qatori yozildi", ok_rows == 1, f"{ok_rows} ta")
+
+            # 3) Kutilmagan xato — erta commit'dan keyin middleware rollback'i
+            # kvotani qaytara olmaydi, handler o'zi qaytarishi kerak.
+            msg = await run("crash", "qisqa matn")
+            check("kutilmagan xato yuqoriga ko'tarildi", seen.get("raised") is True)
+            row = await usage.get(user_id)
+            used = row.translations_count if row else 0
+            check("kutilmagan xatoda ham kvota qaytarildi", used == 1, f"used={used}")
+            check("qisqa matnda ⏳ chiqmaydi", t.TRANSLATING_LONG_TEXT not in msg.sent)
+            check("handlerdan keyin sessiyada tranzaksiya yo'q", session.in_transaction() is False)
+
+            await session.execute(delete(TranslationSignal).where(TranslationSignal.user_id == user_id))
+            await session.execute(delete(Event).where(Event.user_id == user_id))
+            await session.execute(delete(Translation).where(Translation.user_id == user_id))
+            await session.execute(delete(DailyUsage).where(DailyUsage.user_id == user_id))
+            await session.execute(delete(UserSettings).where(UserSettings.user_id == user_id))
+            await session.execute(delete(User).where(User.id == user_id))
+            await session.commit()
+    finally:
+        TranslationService.translate = original_translate  # type: ignore[method-assign]
+
+
 async def cleanup() -> None:
     async with AsyncSessionLocal() as session:
         from sqlalchemy import delete
@@ -2624,6 +2793,7 @@ async def main() -> None:
     result = await test_translation()
     await test_translation_providers()
     await test_audit_fixes_2026_11()
+    await test_no_db_transaction_during_provider_call()
     await test_translation_record(user_id, result)
     await test_events(user_id)
     await test_tts()
