@@ -3223,6 +3223,12 @@ async def test_no_db_transaction_during_provider_call() -> None:
             user, _ = await repo.get_or_create(telegram_id, first_name="TxSinov")
             await session.commit()
             user_id = user.id
+            # Oldingi (yarim yo'lda to'xtagan) ishga tushirishdan qolgan qatorlar
+            # sanoqlarni buzmasin — sinov toza holatdan boshlanadi.
+            from bot.database.models import DailyUsage
+            await session.execute(delete(Translation).where(Translation.user_id == user_id))
+            await session.execute(delete(DailyUsage).where(DailyUsage.user_id == user_id))
+            await session.commit()
             events = EventService(session)
             t = locales.get("uz")
             usage = QuotaService(session).usage
@@ -3293,12 +3299,14 @@ async def test_no_db_transaction_during_provider_call() -> None:
             # 3) Kutilmagan xato — erta commit'dan keyin middleware rollback'i
             # kvotani qaytara olmaydi, handler o'zi qaytarishi kerak.
             msg = await run("crash", "qisqa matn")
+            # Middleware kabi rollback'dan so'ng — testning o'z SELECT'laridan OLDIN
+            # (ular yangi tranzaksiyani o'zi ochib qo'yadi).
+            check("handlerdan keyin sessiyada tranzaksiya yo'q", session.in_transaction() is False)
             check("kutilmagan xato yuqoriga ko'tarildi", seen.get("raised") is True)
             row = await usage.get(user_id)
             used = row.translations_count if row else 0
             check("kutilmagan xatoda ham kvota qaytarildi", used == 1, f"used={used}")
             check("qisqa matnda ⏳ chiqmaydi", t.TRANSLATING_LONG_TEXT not in msg.sent)
-            check("handlerdan keyin sessiyada tranzaksiya yo'q", session.in_transaction() is False)
 
             await session.execute(delete(TranslationSignal).where(TranslationSignal.user_id == user_id))
             await session.execute(delete(Event).where(Event.user_id == user_id))
