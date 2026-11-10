@@ -52,3 +52,6 @@ alembic/versions/__pycache__/
 
 # Baza nusxasi (mahalliy tahlil uchun — hech qachon commit qilinmasin)
 data/
+
+# Claude Code agent worktree'lari
+.claude/worktrees/
