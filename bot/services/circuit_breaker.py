@@ -15,6 +15,9 @@ tushiradi, bitta xato esa yana sanaydi; bu darajada shu yetarli).
 Holat Redis'da (jarayonlar/restart'lar o'rtasida umumiy); Redis yo'q yoki
 nosoz bo'lsa — jarayon xotirasida (fail-open: shubhada provayder OCHIQ deb
 hisoblanmaydi, ya'ni uriladi — buzilgan Redis tarjimani to'xtatmasin).
+Xotira holati MODUL darajasida (barcha nusxalar uchun umumiy):
+`TranslationService` har so'rovda yangi yaratiladi, holat nusxada bo'lsa
+Redis'siz breaker hech qachon ochilmasdi (har so'rov 0 dan boshlardi).
 
 Til mos kelmasligi (`supports`) — XATO EMAS, bu yerga tushmaydi.
 """
@@ -32,14 +35,25 @@ FAILURE_THRESHOLD = 3
 WINDOW_SECONDS = 120
 OPEN_SECONDS = 300
 
+# Xotira zaxirasi — jarayon bo'yicha umumiy (izoh: modul docstring'i).
+# key -> (xato soni, oyna tugash vaqti)
+_MEM_FAIL: dict[str, tuple[int, float]] = {}
+# key -> ochiq holat tugash vaqti
+_MEM_OPEN: dict[str, float] = {}
+
 
 class CircuitBreaker:
     def __init__(self, redis=None):
         self.redis = redis
-        # Xotira zaxirasi: key -> (xato soni, oyna tugash vaqti)
-        self._mem_fail: dict[str, tuple[int, float]] = {}
-        # key -> ochiq holat tugash vaqti
-        self._mem_open: dict[str, float] = {}
+        self._mem_fail = _MEM_FAIL
+        self._mem_open = _MEM_OPEN
+
+    @staticmethod
+    def reset_memory() -> None:
+        """Xotira holatini tozalaydi — faqat sinovlar uchun (umumiy holat
+        bir sinovdan ikkinchisiga o'tib ketmasin)."""
+        _MEM_FAIL.clear()
+        _MEM_OPEN.clear()
 
     @staticmethod
     def _key(name: str, index: int) -> str:

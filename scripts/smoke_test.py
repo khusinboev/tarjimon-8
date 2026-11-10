@@ -911,8 +911,12 @@ async def test_translation_providers() -> None:
     original_local_url = settings.LOCAL_MT_URL
     original_local_priority = settings.LOCAL_MT_PRIORITY
     original_local_call = tp.FREE_TIER_PROVIDER_CONFIG["local_mt"]["call"]
+    original_deep_enabled = settings.DEEP_TRANSLATOR_ENABLED
     # Quyidagi sinovlar lokal servis O'CHIQ deb yozilgan; uniki alohida blokda.
     settings.LOCAL_MT_URL = ""
+    # 3-daraja o'chiq (standart) — haqiqiy tarmoq chaqiruvi bo'lmasin,
+    # "hamma tugadi" holati darhol TranslationError bilan yakunlanishi kutiladi.
+    settings.DEEP_TRANSLATOR_ENABLED = False
 
     usage_by_provider: dict[str, dict[int, int]] = {}
 
@@ -986,24 +990,16 @@ async def test_translation_providers() -> None:
             candidates = await service._pick_free_tier_candidates(session, "auto", "en", 5)
             check("hamma kalit tugagan -> nomzod yo'q", candidates == [])
 
-            # 1-daraja (Google/Azure) tugagan, Gemini ham sozlanmagan — endi
-            # `deep_translator` haqiqiy tarmoq chaqiruvi qiladi. Google o'zi
-            # vaqti-vaqti bilan band/bloklangan bo'lishi mumkin (2026-08-24/25
-            # voqeasi) — bu holatda `TranslationError` ko'tariladi, bu ham
-            # TO'G'RI xulq (fallback chaqirilgani isbotlangan), shuning uchun
-            # smoke_test'ni yiqitmaydi.
+            # 1-daraja (Google/Azure) tugagan, Gemini ham sozlanmagan, 3-daraja
+            # o'chiq (DEEP_TRANSLATOR_ENABLED=false) — darhol `no_provider`.
             try:
                 _, provider_name, _, _ = await service._dispatch(session, "salom", "auto", "en")
-                check(
-                    "hamma pullik tugagan, Gemini yo'q -> bepul provayderga (haqiqiy chaqiruv)",
-                    provider_name == "deep_translator",
-                    provider_name,
-                )
+                check("hamma pullik tugagan, Gemini yo'q, zaxira o'chiq -> xato", False, provider_name)
             except TranslationError as exc:
                 check(
-                    "hamma pullik tugagan, Gemini yo'q -> bepul provayderga urinildi (u xato qaytardi)",
-                    True,
-                    f"deep_translator ham hozir ishlamadi: {exc.code}",
+                    "hamma pullik tugagan, Gemini yo'q, zaxira o'chiq -> no_provider",
+                    exc.code == "no_provider",
+                    exc.code,
                 )
 
             # 2-daraja: 1-daraja hali tugagan holatda Gemini sozlansa, shu ishlatiladi.
@@ -1015,20 +1011,16 @@ async def test_translation_providers() -> None:
                 f"{provider_name}, {key_index}, {text_out}",
             )
 
-            # Gemini ham ishlamasa (xato) -> oxirgi zaxira `deep_translator`ga o'tadi.
+            # Gemini ham ishlamasa (xato), zaxira o'chiq -> xatoda Gemini ko'rinadi.
             tp.CHEAP_PROVIDER_CONFIG["gemini"]["call"] = fake_gemini_fails
             try:
                 _, provider_name, _, _ = await service._dispatch(session, "salom", "auto", "en")
-                check(
-                    "Gemini ham ishlamasa -> bepul provayderga (haqiqiy chaqiruv)",
-                    provider_name == "deep_translator",
-                    provider_name,
-                )
+                check("Gemini ham ishlamasa, zaxira o'chiq -> xato", False, provider_name)
             except TranslationError as exc:
                 check(
-                    "Gemini ham ishlamasa -> bepul provayderga urinildi (u xato qaytardi)",
-                    True,
-                    f"deep_translator ham hozir ishlamadi: {exc.code}",
+                    "Gemini ham ishlamasa, zaxira o'chiq -> provider_error (gemini)",
+                    exc.code == "provider_error" and exc.provider == "gemini",
+                    f"{exc.code}, {exc.provider}",
                 )
             tp.CHEAP_PROVIDER_CONFIG["gemini"]["call"] = fake_gemini
             settings.GEMINI_API_KEYS_RAW = ""
@@ -1153,6 +1145,7 @@ async def test_translation_providers() -> None:
                 declined.append(True)
             check("qisqa auto matn HTTP'siz rad etiladi", declined == [True])
     finally:
+        settings.DEEP_TRANSLATOR_ENABLED = original_deep_enabled
         settings.LOCAL_MT_URL = original_local_url
         settings.LOCAL_MT_PRIORITY = original_local_priority
         tp.FREE_TIER_PROVIDER_CONFIG["local_mt"]["call"] = original_local_call
@@ -1317,9 +1310,13 @@ async def test_audit_fixes_2026_11() -> None:
         "gemini": settings.GEMINI_API_KEYS_RAW,
         "local_url": settings.LOCAL_MT_URL,
         "local_priority": settings.LOCAL_MT_PRIORITY,
+        "deep_enabled": settings.DEEP_TRANSLATOR_ENABLED,
     }
     tr_module.alert_admins_once = fake_alert
     tp.provider_key_usage = fake_usage
+    # Bu sinov 3-darajani soxta (`FakeDeepOk/Down`) bilan tekshiradi —
+    # zanjir unga yetib borishi uchun yoqilgan bo'lishi kerak.
+    settings.DEEP_TRANSLATOR_ENABLED = True
     tp.FREE_TIER_PROVIDER_CONFIG["mymemory"]["call"] = fake_mymemory
     settings.GOOGLE_TRANSLATE_API_KEYS_RAW = ""
     settings.AZURE_TRANSLATOR_KEYS_RAW = ""
@@ -1384,7 +1381,10 @@ async def test_audit_fixes_2026_11() -> None:
             # 6c. Lokal muvaffaqiyat — model nomi natijaga tushadi; `str`
             # qaytaradigan provayderda model None.
             tp.FREE_TIER_PROVIDER_CONFIG["local_mt"]["call"] = fake_local_with_model
-            service = TranslationService(redis=None)  # yangi breaker (avvalgisi ochiq)
+            # Breaker xotirasi endi barcha nusxalar uchun umumiy — yangi
+            # servis yaratish yetmaydi, holat aniq tozalanadi.
+            service.breaker.reset_memory()
+            service = TranslationService(redis=None)
             service.deep_provider = FakeDeepOk()
             text_out, provider_name, _, model = await service._dispatch(session, "hello there", "auto", "uz")
             check(
@@ -1433,6 +1433,232 @@ async def test_audit_fixes_2026_11() -> None:
         settings.GEMINI_API_KEYS_RAW = saved["gemini"]
         settings.LOCAL_MT_URL = saved["local_url"]
         settings.LOCAL_MT_PRIORITY = saved["local_priority"]
+        settings.DEEP_TRANSLATOR_ENABLED = saved["deep_enabled"]
+
+
+async def test_translation_service_cleanup() -> None:
+    """2026-11 audit (tarjima servisi tozalash) — regressiya qo'riqchilari.
+
+    1) cheksiz limitli provayder (lokal) oylik SUM so'rovini chaqirmaydi;
+    2) hajm hisobi Redis'da keshlanadi, muvaffaqiyat keshni oshiradi,
+       Redis nosoz bo'lsa DB'ga tushiladi; 3) `DEEP_TRANSLATOR_ENABLED=false`
+       -> 3-daraja CHAQIRILMAYDI, yakuniy xato darhol, `all_tiers_down`
+       alerti bor; 4) breaker xotirasi servis nusxalari orasida umumiy;
+       5) errors.py tarmoq shovqinini ajratadi.
+    """
+    print("\n[7e] Tarjima servisi tozalash (2026-11)")
+    import time as _time
+
+    from aiogram.exceptions import TelegramForbiddenError, TelegramNetworkError
+
+    from bot.handlers import errors as errors_module
+    from bot.services import translation as tr_module
+    from bot.services import translation_providers as tp
+    from bot.services.circuit_breaker import FAILURE_THRESHOLD, CircuitBreaker
+    from bot.services.translation import TranslationService
+
+    usage_calls: list[str] = []
+    usage_value: dict[int, int] = {0: 100, 1: 150}
+
+    async def counting_usage(_session, provider: str, _period: str = "month") -> dict:
+        usage_calls.append(provider)
+        return dict(usage_value)
+
+    class FakeRedis:
+        """Hash buyruqlari — `pick_key`/`record_key_usage` uchun yetarli."""
+
+        def __init__(self):
+            self.store: dict[str, dict[str, str]] = {}
+
+        async def hgetall(self, key):
+            return dict(self.store.get(key, {}))
+
+        async def hset(self, key, mapping):
+            self.store.setdefault(key, {}).update({k: str(v) for k, v in mapping.items()})
+
+        async def expire(self, _key, _ttl):
+            return True
+
+        async def exists(self, key):
+            return 1 if key in self.store else 0
+
+        async def hincrby(self, key, field, amount):
+            bucket = self.store.setdefault(key, {})
+            bucket[field] = str(int(bucket.get(field, "0")) + amount)
+
+    class BrokenRedis(FakeRedis):
+        async def hgetall(self, _key):
+            raise ConnectionError("redis down")
+
+        async def hset(self, _key, mapping):
+            raise ConnectionError("redis down")
+
+    sent: list[tuple[str, str]] = []
+
+    async def fake_alert(_bot, _redis, key: str, text: str) -> None:
+        sent.append((key, text))
+
+    deep_calls: list[str] = []
+
+    class FakeDeep:
+        name = "deep_translator"
+
+        async def translate(self, text, _source, _target) -> str:
+            deep_calls.append(text)
+            return f"deep:{text}"
+
+    async def fake_mymemory_fails(_text, _source, _target, _api_key) -> str:
+        raise RuntimeError("MyMemory 429: band")
+
+    async def fake_mymemory_timeout(_text, _source, _target, _api_key) -> str:
+        raise RuntimeError("timeout 15s")
+
+    saved = {
+        "usage": tp.provider_key_usage,
+        "alert": tr_module.alert_admins_once,
+        "mymemory_call": tp.FREE_TIER_PROVIDER_CONFIG["mymemory"]["call"],
+        "google": settings.GOOGLE_TRANSLATE_API_KEYS_RAW,
+        "azure": settings.AZURE_TRANSLATOR_KEYS_RAW,
+        "deepl": settings.DEEPL_API_KEYS_RAW,
+        "mymemory": settings.MYMEMORY_EMAILS_RAW,
+        "gemini": settings.GEMINI_API_KEYS_RAW,
+        "local_url": settings.LOCAL_MT_URL,
+        "deep_enabled": settings.DEEP_TRANSLATOR_ENABLED,
+    }
+    tp.provider_key_usage = counting_usage
+    tr_module.alert_admins_once = fake_alert
+    settings.GOOGLE_TRANSLATE_API_KEYS_RAW = ""
+    settings.AZURE_TRANSLATOR_KEYS_RAW = ""
+    settings.DEEPL_API_KEYS_RAW = ""
+    settings.MYMEMORY_EMAILS_RAW = ""
+    settings.GEMINI_API_KEYS_RAW = ""
+    CircuitBreaker.reset_memory()
+
+    try:
+        async with AsyncSessionLocal() as session:
+            # ── 1. Cheksiz limit -> SUM so'rovi yo'q ──
+            settings.LOCAL_MT_URL = "http://127.0.0.1:1"
+            service = TranslationService(redis=None)
+            usage_calls.clear()
+            candidates = await service._pick_free_tier_candidates(session, "en", "uz", 5)
+            check("lokal MT nomzod", any(c[0] == "local_mt" for c in candidates), str(candidates))
+            check("cheksiz limitda SUM so'rovi CHAQIRILMAYDI", usage_calls == [], str(usage_calls))
+            picked = await tp.pick_key(session, "local_mt", ["local"], 10**15, "month", redis=None)
+            check("pick_key cheksiz -> birinchi kalit, so'rovsiz", picked == (0, "local") and usage_calls == [])
+            settings.LOCAL_MT_URL = ""
+
+            # ── 2. Hajm keshi ──
+            fake_redis = FakeRedis()
+            usage_calls.clear()
+            p1 = await tp.pick_key(session, "google_translate", ["k0", "k1"], 500_000, "month", redis=fake_redis)
+            p2 = await tp.pick_key(session, "google_translate", ["k0", "k1"], 500_000, "month", redis=fake_redis)
+            check("ikki pick_key -> DB bir marta", usage_calls == ["google_translate"], str(usage_calls))
+            check("keshdan ham kam ishlatilgan kalit (k0)", p1 == (0, "k0") and p2 == (0, "k0"), f"{p1}, {p2}")
+            await tp.record_key_usage(fake_redis, "google_translate", 0, 100, "month")
+            p3 = await tp.pick_key(session, "google_translate", ["k0", "k1"], 500_000, "month", redis=fake_redis)
+            check("muvaffaqiyat keshni oshiradi -> endi k1 kamroq", p3 == (1, "k1") and len(usage_calls) == 1, f"{p3}, {usage_calls}")
+            await tp.record_key_usage(fake_redis, "google_translate", 1, 500_000, "month")
+            p4 = await tp.pick_key(session, "google_translate", ["k0", "k1"], 500_000, "month", redis=fake_redis)
+            check("keshda limitga yetgan kalit chetlanadi", p4 == (0, "k0"), str(p4))
+            empty_redis = FakeRedis()
+            usage_value_backup = dict(usage_value)
+            usage_value.clear()
+            usage_calls.clear()
+            await tp.pick_key(session, "azure_translator", ["a0"], 2_000_000, "month", redis=empty_redis)
+            await tp.pick_key(session, "azure_translator", ["a0"], 2_000_000, "month", redis=empty_redis)
+            check("bo'sh hajm ({}) ham keshlanadi", usage_calls == ["azure_translator"], str(usage_calls))
+            usage_value.update(usage_value_backup)
+            usage_calls.clear()
+            p5 = await tp.pick_key(session, "google_translate", ["k0", "k1"], 500_000, "month", redis=BrokenRedis())
+            check("Redis nosoz -> DB'ga tushadi (fail-open)", p5 == (0, "k0") and usage_calls == ["google_translate"], f"{p5}, {usage_calls}")
+            cache_key = tp._usage_cache_key("google_translate", "month")
+            check("kesh kaliti davr boshini o'z ichiga oladi", cache_key.startswith("tr:usage:google_translate:month:20"), cache_key)
+
+            # ── 3. deep_translator o'chiq ──
+            settings.DEEP_TRANSLATOR_ENABLED = False
+            service = TranslationService(redis=None)
+            service.deep_provider = FakeDeep()
+            sent.clear()
+            deep_calls.clear()
+            started = _time.perf_counter()
+            caught = None
+            try:
+                await service._dispatch(session, "hello there", "auto", "uz")
+            except TranslationError as exc:
+                caught = exc
+            elapsed = _time.perf_counter() - started
+            check("zaxira o'chiq, nomzod yo'q -> no_provider", caught is not None and caught.code == "no_provider", repr(caught))
+            check("3-daraja CHAQIRILMAGAN", deep_calls == [])
+            check("xato darhol (<2 s)", elapsed < 2, f"{elapsed:.2f}s")
+            check("all_tiers_down alerti bor", any(k == "all_tiers_down" for k, _ in sent), str([k for k, _ in sent]))
+
+            settings.MYMEMORY_EMAILS_RAW = "smoke@example.com"
+            tp.FREE_TIER_PROVIDER_CONFIG["mymemory"]["call"] = fake_mymemory_fails
+            caught = None
+            try:
+                await service._dispatch(session, "hello there", "auto", "uz")
+            except TranslationError as exc:
+                caught = exc
+            check(
+                "provayder xato bersa -> provider_error, exc.provider = mymemory",
+                caught is not None and caught.code == "provider_error" and caught.provider == "mymemory",
+                repr(caught) + f" provider={getattr(caught, 'provider', None)}",
+            )
+            CircuitBreaker.reset_memory()
+            tp.FREE_TIER_PROVIDER_CONFIG["mymemory"]["call"] = fake_mymemory_timeout
+            caught = None
+            try:
+                await service._dispatch(session, "hello there", "auto", "uz")
+            except TranslationError as exc:
+                caught = exc
+            check("timeout sababi -> code=timeout (status statistikasi uchun)", caught is not None and caught.code == "timeout", repr(caught))
+            check("3-daraja hali ham chaqirilmagan", deep_calls == [])
+
+            settings.DEEP_TRANSLATOR_ENABLED = True
+            CircuitBreaker.reset_memory()
+            _, provider_name, _, _ = await service._dispatch(session, "hello there", "auto", "uz")
+            check("yoqilsa -> 3-daraja chaqiriladi", provider_name == "deep_translator" and deep_calls == ["hello there"], f"{provider_name}, {deep_calls}")
+            settings.MYMEMORY_EMAILS_RAW = ""
+            settings.DEEP_TRANSLATOR_ENABLED = False
+
+            # ── 4. Breaker nusxalar orasida umumiy ──
+            CircuitBreaker.reset_memory()
+            s1 = TranslationService(redis=None)
+            s2 = TranslationService(redis=None)
+            for _ in range(FAILURE_THRESHOLD):
+                await s1.breaker.record_failure("shared_p", 0)
+            check("bir nusxada ochilgan breaker ikkinchisida ko'rinadi", await s2.breaker.is_open("shared_p", 0))
+            check("boshqa kalitga ta'sir qilmaydi", not await s2.breaker.is_open("shared_p", 1))
+            CircuitBreaker.reset_memory()
+            check("reset_memory tozalaydi", not await s2.breaker.is_open("shared_p", 0))
+
+        # ── 5. errors.py: tarmoq shovqini ──
+        classify = errors_module.classify_error
+        check(
+            "TelegramNetworkError 'Request timeout' -> network",
+            classify(TelegramNetworkError(method=None, message="Request timeout")) == errors_module.NETWORK,
+        )
+        check("CancelledError -> network", classify(asyncio.CancelledError()) == errors_module.NETWORK)
+        check("TimeoutError -> network", classify(TimeoutError()) == errors_module.NETWORK)
+        check("asyncio.TimeoutError -> network", classify(asyncio.TimeoutError()) == errors_module.NETWORK)
+        check(
+            "TelegramForbiddenError -> ignore",
+            classify(TelegramForbiddenError(method=None, message="bot was blocked")) == errors_module.IGNORE,
+        )
+        check("ValueError -> unexpected", classify(ValueError("x")) == errors_module.UNEXPECTED)
+        check("KeyError -> unexpected", classify(KeyError("x")) == errors_module.UNEXPECTED)
+    finally:
+        tp.provider_key_usage = saved["usage"]
+        tr_module.alert_admins_once = saved["alert"]
+        tp.FREE_TIER_PROVIDER_CONFIG["mymemory"]["call"] = saved["mymemory_call"]
+        settings.GOOGLE_TRANSLATE_API_KEYS_RAW = saved["google"]
+        settings.AZURE_TRANSLATOR_KEYS_RAW = saved["azure"]
+        settings.DEEPL_API_KEYS_RAW = saved["deepl"]
+        settings.MYMEMORY_EMAILS_RAW = saved["mymemory"]
+        settings.GEMINI_API_KEYS_RAW = saved["gemini"]
+        settings.LOCAL_MT_URL = saved["local_url"]
+        settings.DEEP_TRANSLATOR_ENABLED = saved["deep_enabled"]
+        CircuitBreaker.reset_memory()
 
 
 async def test_translation_record(user_id: int, result) -> None:
@@ -2624,6 +2850,7 @@ async def main() -> None:
     result = await test_translation()
     await test_translation_providers()
     await test_audit_fixes_2026_11()
+    await test_translation_service_cleanup()
     await test_translation_record(user_id, result)
     await test_events(user_id)
     await test_tts()
