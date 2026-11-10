@@ -29,6 +29,7 @@ logda BO'SH sabab bilan yozilardi (2026-09-10 gacha Gemini xatolarining
 from __future__ import annotations
 
 import asyncio
+import html
 import random
 from datetime import datetime, timezone
 from typing import Optional
@@ -427,7 +428,10 @@ async def call_mymemory(text: str, source: str, target: str, api_key: str) -> st
     if not isinstance(data, dict):
         raise RuntimeError(f"MyMemory noto'g'ri javob qaytardi (HTTP {status})")
     response_data = data.get("responseData") or {}
-    translated = (response_data.get("translatedText") or "").strip()
+    # MyMemory tarjimani HTML-entity bilan qaytaradi ("o&#39;tdi"). Handler natijani
+    # `<code>` uchun o'zi escape qiladi — dekodlanmasa foydalanuvchi "&#39;" ni
+    # ko'radi (2026-09-12 dan 30 kunda MyMemory tarjimalarining ~17%i).
+    translated = html.unescape(response_data.get("translatedText") or "").strip()
     api_status = data.get("responseStatus")
     if api_status not in (200, "200") or status >= 400:
         raise RuntimeError(f"MyMemory {api_status}: {translated or data.get('responseDetails') or 'xato'}")
