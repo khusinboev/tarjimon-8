@@ -1,0 +1,58 @@
+# Minimal tekshiruv: har push/PR'da sintaksis va import xatolari deploy'dan
+# OLDIN ushlansin. To'liq `scripts/smoke_test.py` jonli baza/Redis/tarmoq talab
+# qiladi — u serverda qo'lda ishga tushiriladi (DEPLOY.md).
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Bog'liqliklar
+        run: |
+          pip install -r requirements.txt
+          pip install -r mt/requirements.txt
+      - name: Sintaksis (compileall)
+        run: python -m compileall -q bot mt scripts alembic
+      - name: Barcha bot modullari import bo'ladi
+        env:
+          BOT_TOKEN: "123456:ci-dummy"
+          ADMIN_USER_ID: "1"
+        run: |
+          python - <<'EOF'
+          import importlib, pkgutil
+          import bot
+          failed = []
+          for m in pkgutil.walk_packages(bot.__path__, "bot."):
+              try:
+                  importlib.import_module(m.name)
+              except Exception as exc:
+                  failed.append(f"{m.name}: {type(exc).__name__}: {exc}")
+          import mt.langs, mt.lid, mt.engine  # model kerak emas
+          print("\n".join(failed) or "hammasi import bo'ldi")
+          raise SystemExit(1 if failed else 0)
+          EOF
+      - name: mt — modelsiz birlik sinovlari
+        run: |
+          python - <<'EOF'
+          from mt.engine import _is_passthrough, _split_edges, _tidy
+          from mt.langs import uz_cyr_to_lat
+          from mt.lid import uz_latin_score
+          assert uz_cyr_to_lat("Ўзбекистон") == "Oʻzbekiston"
+          assert _is_passthrough("https://t.me/x") and not _is_passthrough("Salom 😀")
+          assert _split_edges("❌ Bekor qilish") == ("❌", "Bekor qilish", "")
+          assert _tidy("Can you wait 15 minutes ?", "en") == "Can you wait 15 minutes?"
+          assert uz_latin_score("Bugun havo juda yaxshi, sayrga chiqamiz") > 0.3
+          assert uz_latin_score("Today the weather is nice") < 0.3
+          print("OK")
+          EOF
