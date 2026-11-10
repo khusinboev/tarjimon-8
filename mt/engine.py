@@ -2,8 +2,9 @@
 
 Asosiy qarorlar:
 - NLLB gap darajasida o'qitilgan: uzun matn qatorlarga, qatorlar gaplarga
-  bo'linadi, hammasi BITTA batch'da tarjima qilinadi va qayta yig'iladi
-  (qator tuzilishi saqlanadi).
+  bo'linadi, qo'shni gaplar ~120 tokengacha qayta birlashtiriladi (juda
+  qisqa bo'lak gallyutsinatsiya qiladi), hammasi BITTA batch'da tarjima
+  qilinadi va qayta yig'iladi (qator tuzilishi saqlanadi).
 - Harfsiz bo'laklar (raqam, emoji, URL, @username) tarjimaga berilmaydi —
   NLLB ularda "gallyutsinatsiya" qiladi.
 - Chiqish kirishdan shubhali uzun yoki takrorlanuvchi bo'lsa — o'sha bo'lak
@@ -31,6 +32,7 @@ _HAS_LETTER = re.compile(r"[^\W\d_]")
 _PASSTHROUGH = re.compile(r"(?:https?://\S+|www\.\S+|@\w+|#\w+|\S+@\S+\.\w+)")
 
 MAX_SEGMENT_TOKENS = 200
+MAX_CHUNK_TOKENS = 120
 MIN_DETECT_CHARS = 12
 MIN_DETECT_PROB = 0.60
 
@@ -134,10 +136,27 @@ class Engine:
             if not line:
                 layout.append([])
                 continue
+            # Qo'shni gaplar MAX_CHUNK_TOKENS gacha BIRLASHTIRILADI: juda qisqa
+            # alohida bo'lak ("Привет!") NLLB'da gallyutsinatsiyaga olib keladi
+            # ("Salom! - Qaniydi!"). Tarjima qilinmaydigan bo'lak (URL) zanjirni uzadi.
             segs: list[str] = []
+            current = ""
             for sentence in _SENT_SPLIT.split(line):
-                if sentence.strip():
-                    segs.extend(self._split_long(sentence.strip()))
+                for piece in self._split_long(sentence.strip()) if sentence.strip() else []:
+                    if _is_passthrough(piece):
+                        if current:
+                            segs.append(current)
+                        segs.append(piece)
+                        current = ""
+                        continue
+                    candidate = f"{current} {piece}".strip()
+                    if current and len(self._tokens(candidate)) > MAX_CHUNK_TOKENS:
+                        segs.append(current)
+                        current = piece
+                    else:
+                        current = candidate
+            if current:
+                segs.append(current)
             layout.append(segs)
         return layout
 
