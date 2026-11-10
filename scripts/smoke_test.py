@@ -1491,6 +1491,68 @@ async def test_resilience() -> None:
         await client.aclose()
 
 
+async def test_tts_health() -> None:
+    """TTS xato-darajasi ogohlantirishi — sof mantiq, xotiradagi soxta Redis."""
+    print("\n[7d] TTS salomatligi — xato darajasi ogohlantirishi")
+    from bot.services import tts_health
+
+    # Sof qaror mantig'i.
+    check("kam so'rovda jim (4/4 xato)", not tts_health.should_alert(0, 4))
+    check("aynan 50% — jim", not tts_health.should_alert(3, 3))
+    check(">50% va >=5 so'rov — ogohlantiradi", tts_health.should_alert(2, 3))
+    check("hammasi yiqilsa — ogohlantiradi", tts_health.should_alert(0, 5))
+    check("sog'lom — jim", not tts_health.should_alert(20, 1))
+
+    # Dinamik xato matni HTML'ni buzmasligi kerak.
+    text = tts_health.alert_text(0, 5, "403 <b>&")
+    check("xato matni ekranlanadi", "&lt;b&gt;&amp;" in text and "<b>&" not in text, text)
+
+    # Redis yo'q — jim, xatosiz.
+    await tts_health.record(None, ok=False)
+    check("Redis yo'q — ogohlantirish yo'q", await tts_health.check_and_alert(None, None) is False)
+
+    class _FakeRedis:
+        """`atomic_rate_incr` (eval), `mget` va `set(nx=)` uchun yetarli."""
+
+        def __init__(self):
+            self.data: dict = {}
+
+        async def eval(self, _script, _n, key, _ttl):
+            self.data[key] = int(self.data.get(key, 0)) + 1
+            return self.data[key]
+
+        async def mget(self, *keys):
+            return [self.data.get(k) for k in keys]
+
+        async def set(self, key, value, ex=None, nx=False):
+            if nx and key in self.data:
+                return None
+            self.data[key] = value
+            return True
+
+    class _FakeBot:
+        def __init__(self):
+            self.sent: list = []
+
+        async def send_message(self, chat_id, text):
+            self.sent.append((chat_id, text))
+
+    redis, bot = _FakeRedis(), _FakeBot()
+    prefix = "smoke:tts:stat"
+    for _ in range(2):
+        await tts_health.record(redis, True, prefix=prefix)
+    for _ in range(4):
+        await tts_health.record(redis, False, prefix=prefix)
+    ok, err = await tts_health.window_stats(redis, prefix=prefix)
+    check("oyna statistikasi to'g'ri", (ok, err) == (2, 4), f"{ok}, {err}")
+    fired = await tts_health.check_and_alert(bot, redis, last_error="403", prefix=prefix)
+    check("xato ulushi >50% -> ogohlantirish tetiklanadi", fired is True)
+    first = len(bot.sent)
+    check("adminlarga yuborildi", first == len(settings.ADMIN_USER_IDS), str(first))
+    await tts_health.check_and_alert(bot, redis, last_error="403", prefix=prefix)
+    check("takroran yuborilmaydi (cooldown)", len(bot.sent) == first, str(len(bot.sent)))
+
+
 async def test_donate(user_id: int) -> None:
     """Homiylik: klaviatura, yozuv va takroriy to'lov himoyasi."""
     print("\n[13] Homiylik (Telegram Stars)")
@@ -2165,6 +2227,7 @@ async def main() -> None:
     await test_broadcast_resumable()
     await test_stats()
     await test_resilience()
+    await test_tts_health()
     await test_support_record()
     await test_admin_reply_pin()
     await test_support_parsing()
