@@ -115,3 +115,29 @@ python -m mt.train.evaluate --model nllb-1.3B-tarjimon-v1-ct2-int8 --test prepar
 Qabul mezoni: test chrF++ sezilarli oshgan, FLORES ≤1 chrF++ pasaygan,
 `mt/test_engine.py` o'tadi. Keyin serverga `/home/tarjimon8/models/` ostiga
 ko'chirib, `MT_MODEL_DIR`ni almashtiring (eski papka orqaga qaytish uchun qoladi).
+
+## Natija: v1 (2026-11-11)
+
+O'qitish: laptop RTX 4050 6 GB, LoRA r=16, bf16, `--max-tokens 1000 --grad-accum 12`
+(3000 token batch 256k lug'at logits'i tufayli VRAM'ga sig'madi), 2 epoch = 304
+qadam, ~1 soat. Dev chrF++ (greedy, 300 gap): 49.44 -> 58.41 (250-qadam eng yaxshi).
+
+| Test | Asl 1.3B | v1 | Farq |
+|---|---|---|---|
+| Bot testi (tozalanmagan, 1347) | 54.18 | **60.98** | +6.80 |
+| Bot testi (tozalangan, 1187) | 55.73 | 62.99 | +7.26 |
+| FLORES o'rtacha (8 yo'nalish) | 52.56 | 53.58 | +1.03 |
+
+Bot testi yo'nalishlar bo'yicha: en→uz +6.40, uz→en +6.61, ru→uz +6.71, uz→ru +4.42,
+en→ru +4.94, ru→en +14.81. FLORES: en→uz +1.24, uz→en +0.76, ru→uz +1.64,
+uz→ru +0.60, en→ru +0.57, ru→en −0.58, en→am +3.59, en→id +0.40 — rasmiy matnda
+pasayish yo'q (mezon ≤1).
+
+Ehtiyot: FLORES dastlab uz→en 20 ga "tushgan" edi — `run_bench.py` HF
+AutoTokenizer'ni ishlatadi, model papkasida faqat `tokenizer.json` bo'lgani uchun
+NllbTokenizer emas umumiy tokenizator yuklanib, `src_lang` e'tiborsiz qolgan
+(hamma manba eng_Latn). `merge_and_convert.py` endi tokenizer_config va
+special_tokens_map'ni ham ko'chiradi. `mt.engine` bunga bog'liq emas.
+
+Keyingi qadam: `LOCAL_MT_PRIORITY` (hozir 3, MyMemory'dan keyin) ni pasaytirish
+— A/B kuzatuvdan keyin (kunlik hisobotda local_mt ulushi va shikoyatlar).

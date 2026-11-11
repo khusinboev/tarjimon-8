@@ -40,7 +40,13 @@ def main() -> None:
         # (torch'siz) olib qolishi mumkin; bu yerda doim joriy muhit ishlatiladi.
         from ctranslate2.converters import TransformersConverter
 
-        TransformersConverter(tmp, copy_files=["tokenizer.json"], low_cpu_mem_usage=True).convert(
+        # Faqat tokenizer.json bo'lsa, transformers AutoTokenizer uni umumiy
+        # tokenizator deb yuklaydi va `src_lang` e'tiborsiz qoladi (hamma manba
+        # "eng_Latn" bo'lib qoladi) — FLORES'da uz->en 59 -> 20 ga "tushgan" edi.
+        # mt.engine bunga bog'liq emas, lekin har qanday HF asbob to'g'ri ishlashi uchun.
+        TransformersConverter(tmp, copy_files=["tokenizer.json", "tokenizer_config.json",
+                                               "special_tokens_map.json", "sentencepiece.bpe.model"],
+                              low_cpu_mem_usage=True).convert(
             str(out), quantization="int8", force=True)
     print("tayyor:", out)
 
