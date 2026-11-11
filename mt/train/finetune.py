@@ -81,7 +81,7 @@ def evaluate(model, tok, rows: list[dict], device, limit: int = 400) -> float:
         tok.src_lang = NLLB_CODES[r["src_lang"]]
         enc = tok(r["src"], return_tensors="pt", max_length=MAX_LEN, truncation=True).to(device)
         out = model.generate(**enc, forced_bos_token_id=tok.convert_tokens_to_ids(NLLB_CODES[r["tgt_lang"]]),
-                             max_new_tokens=MAX_LEN, num_beams=1)
+                             max_new_tokens=MAX_LEN, max_length=None, num_beams=1)
         hyps.append(tok.decode(out[0], skip_special_tokens=True))
         refs.append(r["tgt"])
     model.train()
@@ -101,6 +101,7 @@ def main() -> None:
     ap.add_argument("--grad-accum", type=int, default=4)
     ap.add_argument("--eval-steps", type=int, default=500)
     ap.add_argument("--seed", type=int, default=13)
+    ap.add_argument("--eval-limit", type=int, default=400, help="dev'dan nechta gap (CPU sinovida kichik)")
     args = ap.parse_args()
 
     torch.manual_seed(args.seed)
@@ -136,7 +137,7 @@ def main() -> None:
     opt = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=args.lr, weight_decay=0.0)
     sched = get_cosine_schedule_with_warmup(opt, int(0.03 * total_steps), total_steps)
 
-    base_chrf = evaluate(model, tok, dev_rows, device)
+    base_chrf = evaluate(model, tok, dev_rows, device, args.eval_limit)
     print(f"dev chrF++ (boshlang'ich): {base_chrf:.2f}", flush=True)
     best = base_chrf
     log = [{"step": 0, "dev_chrf": base_chrf}]
@@ -162,7 +163,7 @@ def main() -> None:
                       f"{(time.time() - t0) / step:.2f}s/qadam", flush=True)
                 running = 0.0
             if step % args.eval_steps == 0 or step == total_steps:
-                chrf = evaluate(model, tok, dev_rows, device)
+                chrf = evaluate(model, tok, dev_rows, device, args.eval_limit)
                 log.append({"step": step, "dev_chrf": chrf})
                 print(f"qadam {step}: dev chrF++ {chrf:.2f} (eng yaxshi {best:.2f})", flush=True)
                 if chrf > best:
@@ -172,8 +173,13 @@ def main() -> None:
             if step >= total_steps:
                 break
 
+    # Oxirgi holat har doim saqlanadi — dev balli oshmagan bo'lsa ham
+    # (`best` bo'lmaydi), keyingi qadamlar (merge, baholash) ishlay olsin.
+    model.save_pretrained(out / "last")
+    tok.save_pretrained(out / "last")
     (out / "train_log.json").write_text(json.dumps(log, indent=1), encoding="utf-8")
-    print(f"tugadi: dev chrF++ {base_chrf:.2f} -> {best:.2f}; adapter: {out / 'best'}")
+    chosen = out / "best" if (out / "best").exists() else out / "last"
+    print(f"tugadi: dev chrF++ {base_chrf:.2f} -> {best:.2f}; adapter: {chosen}")
 
 
 if __name__ == "__main__":
