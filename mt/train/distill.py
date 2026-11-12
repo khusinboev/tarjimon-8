@@ -227,6 +227,8 @@ def main() -> None:
     ap.add_argument("--eval-limit", type=int, default=300)
     ap.add_argument("--smoothing", type=float, default=0.1)
     ap.add_argument("--seed", type=int, default=13)
+    ap.add_argument("--init", default="", help="oldingi o'quvchi papkasi: dekoder shundan boshlanadi "
+                    "(davom ettirish yoki undan sayozroq o'quvchi; --layers uning qatlamlari ichidan bo'lishi kerak)")
     args = ap.parse_args()
 
     torch.manual_seed(args.seed)
@@ -240,6 +242,17 @@ def main() -> None:
     keep_ids = torch.tensor(sorted(tok.convert_tokens_to_ids(keep_tokens)))
     layers = [int(x) for x in args.layers.split(",")]
     st = Student(args.teacher, layers, keep_ids, device)
+    if args.init:
+        from safetensors.torch import load_file
+        src_layers = json.loads((Path(args.init) / "student.json").read_text())["layers"]
+        state = load_file(str(Path(args.init) / "decoder.safetensors"))
+        for i, tl in enumerate(layers):
+            j = src_layers.index(tl)
+            st.dec.layers[i].load_state_dict(
+                {k[len(f"layers.{j}."):]: v for k, v in state.items() if k.startswith(f"layers.{j}.")})
+        st.dec.layer_norm.load_state_dict(
+            {k[len("layer_norm."):]: v for k, v in state.items() if k.startswith("layer_norm.")})
+        del state
     n_train = sum(p.numel() for p in st.trainable())
     print(f"qurilma={device} dekoder qatlamlari={layers} o'qitiladigan={n_train/1e6:.0f}M lug'at={len(keep_ids)}", flush=True)
 

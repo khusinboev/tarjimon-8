@@ -26,9 +26,10 @@ def main() -> None:
     ap.add_argument("--out", required=True)
     ap.add_argument("--threads", type=int, default=6)
     ap.add_argument("--beam", type=int, default=2, help="serverdagi bilan bir xil")
+    ap.add_argument("--device", default="cpu", help="cuda — laptopda tez baholash uchun")
     args = ap.parse_args()
 
-    engine = Engine(args.model, threads=args.threads, beam_size=args.beam)
+    engine = Engine(args.model, threads=args.threads, beam_size=args.beam, device=args.device)
     groups: dict[str, list[dict]] = defaultdict(list)
     for line in open(args.test, encoding="utf-8"):
         r = json.loads(line)
