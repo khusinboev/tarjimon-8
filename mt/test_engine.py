@@ -40,6 +40,12 @@ def main() -> int:
         check(f"tidy: {raw!r}", _tidy(raw, "en") == want, _tidy(raw, "en"))
     check("tidy fr: probel qoladi", _tidy("Comment ?", "fr") == "Comment ?")
 
+    from mt.normalize import normalize_punct
+    check("norm: ’ ‘ -> '", normalize_punct("bo’ladi o‘zbek") == "bo'ladi o'zbek")
+    check("norm: “ ” « » -> \"", normalize_punct("“a” «b»") == '"a" "b"')
+    check("norm: — – -> -", normalize_punct("a — b – c") == "a - b - c")
+    check("norm: ʻ standartda tegilmaydi", normalize_punct("oʻzbek", "uz") == "oʻzbek")
+
     t = time.time()
     e = Engine(os.environ["MT_MODEL_DIR"], threads=4, lid_path=os.environ.get("MT_LID_PATH"))
     print(f"  yuklandi {time.time()-t:.1f}s")
@@ -78,6 +84,9 @@ def main() -> int:
     check("emoji saqlandi (bosh)", r.text.startswith("❌"), r.text)
     r = e.translate("We have class now📚", "en", "ru")
     check("emoji saqlandi (oxir)", r.text.endswith("📚"), r.text)
+
+    toks = e._tokens("Ertaga imtihon bo’ladi — “kech qolmang”", "uz")
+    check("tipografik belgilar <unk> emas", "<unk>" not in toks, str(toks))
 
     words = ("This is a long sentence with many words that keeps going without any "
              "punctuation at all and it should still be translated properly ") * 12

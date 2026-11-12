@@ -9,13 +9,17 @@ Type=simple
 # Imtiyozsiz vaqtinchalik foydalanuvchi — faqat o'qiydi, hech narsa yozmaydi.
 DynamicUser=yes
 WorkingDirectory=/home/tarjimon8/app
-# v1 — bot korpusida LoRA fine-tune (2026-11-11, mt/train/README.md).
-# Orqaga qaytish: nllb-200-distilled-1.3B-ct2-int8 (papka serverda saqlangan).
-Environment=MT_MODEL_DIR=/home/tarjimon8/models/nllb-1.3B-tarjimon-v1-ct2-int8
+# v1p — v1 (bot korpusida LoRA fine-tune) + lug'at 256k -> 133k (22 til),
+# mt/tools/prune_vocab.py; sifat bir xil (FLORES devtest 44 yo'nalish 54.86 = 54.86).
+# Orqaga qaytish: nllb-1.3B-tarjimon-v1-ct2-int8 yoki nllb-200-distilled-1.3B-ct2-int8.
+Environment=MT_MODEL_DIR=/home/tarjimon8/models/nllb-1.3B-tarjimon-v1p-ct2-int8
 Environment=MT_LID_PATH=/home/tarjimon8/models/lid/lid.176.ftz
 Environment=MT_HOST=127.0.0.1
 Environment=MT_PORT=8790
-Environment=MT_THREADS=3
+# 2 — o'lchov bilan tanlangan (2026-11-12, shu serverda, navbatma-navbat):
+# qisqa gap 2 oqim ~1.0-1.4 s, 1 oqim 1.6 s, 3 oqim 2.8-3.9 s, 4 oqim 3.5 s.
+# 4 vCPU umumiy (oversubscribed) — 3+ OpenMP oqimi bir-birini kutib qoladi.
+Environment=MT_THREADS=2
 Environment=MT_BEAM=2
 Environment=MT_MAX_QUEUE=8
 Environment=PYTHONUNBUFFERED=1
