@@ -24,6 +24,7 @@ from typing import Optional
 
 from mt.langs import NLLB_CODES, NO_SPACE_JOIN, has_cyrillic, uz_cyr_to_lat
 from mt.lid import LanguageDetector
+from mt.normalize import normalize_punct
 
 # Gap chegarasi: tinish belgisi (+ yopuvchi qo'shtirnoq/qavs) dan keyin probel.
 _SENT_SPLIT = re.compile(r"(?<=[.!?…。！？])[\"'»”)\]]*\s+")
@@ -106,17 +107,24 @@ def _repetitive(tokens: list[str], n: int = 3, limit: int = 4) -> bool:
 
 class Engine:
     def __init__(self, model_dir: str, threads: int = 2, beam_size: int = 2,
-                 lid_path: Optional[str] = None):
+                 lid_path: Optional[str] = None, device: str = "cpu",
+                 compute_type: str = "int8"):
         import ctranslate2
         from tokenizers import Tokenizer
 
         self.model_dir = Path(model_dir)
         self.model_name = self.model_dir.name
         self.beam_size = beam_size
+        # `device="cuda"` — faqat baholash/tajriba uchun (server CPU'da ishlaydi).
         self.translator = ctranslate2.Translator(
-            str(self.model_dir), device="cpu", compute_type="int8",
+            str(self.model_dir), device=device, compute_type=compute_type,
             intra_threads=threads, inter_threads=1,
         )
+        # A/B o'lchov uchun o'chirib-yoqiladi (mt/normalize.py).
+        self.normalize = True
+        # ʻ/` -> ' birxillashtirish: A/B'da foydasi isbotlanmadi (bot matnida
+        # -0.14, FLORES'da +0.13 chrF++) — standart o'chiq.
+        self.uz_apostrophe = False
         self.tok = Tokenizer.from_file(str(self.model_dir / "tokenizer.json"))
         self.detector = LanguageDetector(lid_path)
         # CTranslate2 Translator thread-safe, lekin bitta CPU yadrosi
@@ -128,7 +136,9 @@ class Engine:
         return self.detector.detect(text, MIN_DETECT_CHARS)
 
     # ── bo'laklash ──────────────────────────────────────────────
-    def _tokens(self, text: str) -> list[str]:
+    def _tokens(self, text: str, lang: Optional[str] = None) -> list[str]:
+        if self.normalize:
+            text = normalize_punct(text, lang, uz_apostrophe=self.uz_apostrophe)
         return self.tok.encode(text, add_special_tokens=False).tokens
 
     def _split_long(self, sentence: str) -> list[str]:
@@ -239,7 +249,7 @@ class Engine:
                     continue
                 lead, core, trail = _split_edges(seg)
                 jobs.append((li, si, lead, trail))
-                batch.append([src_code] + self._tokens(core) + ["</s>"])
+                batch.append([src_code] + self._tokens(core, source) + ["</s>"])
 
         if batch:
             with self._lock:

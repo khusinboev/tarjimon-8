@@ -100,3 +100,21 @@ breaker'ga hisoblanmaydi (`ProviderDeclined`).
 3. Google/Azure/DeepL kalitlarini tuzatish yoki `.env`dan olib tashlash —
    hozir har so'rovga bekor kechikish qo'shadi (breaker 5 daqiqada qayta
    sinaydi).
+
+## Model auditi (2026-11-12)
+
+- **Og'irliklar sog'lom**: CT2 `model.bin` dagi 1055 o'zgaruvchi tekshirildi — NaN/inf,
+  nol qator, int8 to'yinishi yo'q. Bitta embedding matritsasi (V x 1024, qator bo'yicha
+  scale) enkoder kirishi va dekoder chiqishi uchun umumiy.
+- **`<unk>` belgilar**: bot manba matnlarining 7.5%ida `’ ‘ “ ” « » – —` `<unk>` edi
+  (NLLB Moses-normallashtirilgan matnda o'qitilgan). `mt/normalize.py` — tuzatildi.
+- **Lug'at qisqartirildi** (`mt/tools/prune_vocab.py`): 256 206 -> 133 133 token,
+  model 1378 -> 1251 MB, RAM ~1.95 -> ~1.67 GB. FLORES devtest (44 yo'nalish, 22 til):
+  54.86 = 54.86, tarjimalarning 95.4%i so'zma-so'z bir xil. CPU'da ~8-12% tezroq.
+- **Oqimlar soni** — eng katta topilma: serverda `MT_THREADS=3` bilan 2 oqimga nisbatan
+  2-3x SEKIN (4 vCPU umumiy; qisqa gap 2 oqim ~1.0-1.4 s, 3 oqim 2.8-3.9 s, 1 oqim 1.6 s).
+  Production 3 da ishlagan: uzun matnlar 45-72 s (bot kutish chegarasi 60 s). Endi 2.
+- **Beam**: 1 vs 2 bot testida -0.32 chrF++ (61.01 -> 60.69); CPU'da ~10-25% tezroq.
+  Hozircha beam 2 qoldirildi (oqimlar tuzatishi yetarli yutuq berdi).
+
+Keyingi tezlatish yo'li — dekoderni ixchamlash (24 qatlam -> kamroq, distillatsiya).
