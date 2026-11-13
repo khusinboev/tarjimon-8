@@ -118,3 +118,23 @@ breaker'ga hisoblanmaydi (`ProviderDeclined`).
   Hozircha beam 2 qoldirildi (oqimlar tuzatishi yetarli yutuq berdi).
 
 Keyingi tezlatish yo'li — dekoderni ixchamlash (24 qatlam -> kamroq, distillatsiya).
+
+## Dekoder distillatsiyasi (2026-11-13, tajriba — deploy QILINMAGAN)
+
+`mt/train/distill.py`: enkoder + embedding muzlatilgan, dekoder 24 -> 12 qatlam
+(o'qituvchining 0,2,…,20,23-qatlamlari), o'qituvchi (v1) tarjimalaridan o'qitiladi.
+Qayta o'qitmasdan qatlam tashlash yaroqsiz (dec12: 58.0 -> 32.1).
+
+| model | hajm | bot testi (1347) | FLORES devtest (44 yo'n.) | en→X | X→en |
+|---|---|---|---|---|---|
+| v1p (production) | 1251 MB | 61.01 | 54.86 | — | — |
+| s12 (318k juftlik, 2564 qadam) | 948 MB | 60.01 | 52.44 | −3.7 | −1.2 |
+| s12b (+141k juftlik, +3700 qadam) | 948 MB | 60.50 | 52.94 | −2.8 | −1.1 |
+
+Server tezligi (2 oqim, beam 2, v1p bilan navbatma-navbat, s12): qisqa gap 0.97 -> 0.54 s
+(1.8x), o'rta 2.9 -> 2.1 s (1.4x), ~965 belgi 6.7–8.1 -> 4.9–5.1 s (1.3–1.6x); RAM ~ −300 MB.
+
+Xulosa: asosiy yo'qotish — inglizchadan boshqa tillarga (maqsad tilda matn kam: yo'nalishiga
+4–9 ming gap). Ma'lumot qo'shish yordam beryapti (en→ru −5.0 -> −2.5, uz→ru −2.8 -> −1.6).
+Keyingi qadam: yana o'qituvchi ma'lumoti (har maqsad tilga 20k+ gap) va `--init` bilan davom.
+s12b serverda `/root/mt-stage/` da (xizmatga ulanmagan).
