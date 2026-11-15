@@ -1198,6 +1198,23 @@ async def test_translation_providers() -> None:
         await session.commit()
 
 
+async def test_auto_target_lang() -> None:
+    """Maqsad til `auto` (eski botdan qolgan) — tarjima yiqilmasin, tanlab bo'lmasin."""
+    print("\n[7c] Maqsad til `auto`")
+    import inspect
+
+    from bot.handlers.user import languages as lang_handlers
+    from bot.utils.langs import effective_target_lang
+
+    check("auto -> en (eski ma'nosi)", effective_target_lang("uz", "auto") == "en")
+    check("auto manba + auto maqsad -> en", effective_target_lang("auto", "auto") == "en")
+    check("manba en bo'lsa -> standart til",
+          effective_target_lang("en", "auto") == settings.DEFAULT_TARGET_LANG)
+    check("oddiy maqsad o'zgarmaydi", effective_target_lang("en", "ru") == "ru")
+    src = inspect.getsource(lang_handlers.set_language)
+    check("set_language maqsadga `auto` ni rad etadi", 'code == "auto" and slot != "source"' in src)
+
+
 async def test_audit_fixes_2026_11() -> None:
     """2026-11 audit tuzatishlari — regressiya qo'riqchilari.
 
@@ -3600,6 +3617,7 @@ async def main() -> None:
     await test_admin_users()
     result = await test_translation()
     await test_translation_providers()
+    await test_auto_target_lang()
     await test_audit_fixes_2026_11()
     await test_translation_service_cleanup()
 

@@ -26,6 +26,7 @@ from bot.services.quota import QuotaService, resolve_limit_override
 from bot.services.referral import grant_referral_bonus
 from bot.services.system_config import get_effective_limits
 from bot.services.translation import TranslationError, TranslationService
+from bot.utils.langs import effective_target_lang
 from bot.utils.content import extract
 from bot.utils.media import extract_media
 from bot.utils.text import chunk_html_safe, content_hash, html_escape
@@ -89,7 +90,7 @@ async def _translate(
     user_settings = user.settings
     langs = LanguageRepository(session)
     source = user_settings.source_lang
-    target = user_settings.target_lang
+    target = effective_target_lang(source, user_settings.target_lang)
 
     quota = QuotaService(session, redis)
 
