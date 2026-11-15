@@ -103,7 +103,9 @@ async def set_language(
 
     langs = LanguageRepository(session)
     chosen = await langs.by_code(code)
-    if chosen is None:
+    # `auto` faqat manba til — maqsad tanlovida ko'rsatilmaydi, lekin eski
+    # klaviatura yoki qo'lda yasalgan callback uni yuborishi mumkin.
+    if chosen is None or (code == "auto" and slot != "source"):
         await callback.answer(t.LANGUAGE_NOT_AVAILABLE, show_alert=True)
         return
 
