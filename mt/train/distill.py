@@ -190,8 +190,8 @@ class Student:
         (path / "student.json").write_text(json.dumps({"layers": layers}), encoding="utf-8")
 
 
-def assemble(teacher_dir: str, student_dir: str, out_dir: str) -> None:
-    """O'qituvchi (fp16) + o'quvchi dekoderi -> to'liq HF model (CT2'ga o'girish uchun)."""
+def build_model(teacher_dir: str, student_dir: str):
+    """O'qituvchi (fp16) + o'quvchi dekoderi -> to'liq HF model (xotirada)."""
     from safetensors.torch import load_file
 
     info = json.loads((Path(student_dir) / "student.json").read_text())
@@ -206,8 +206,27 @@ def assemble(teacher_dir: str, student_dir: str, out_dir: str) -> None:
                 attn.layer_idx = i
     dec.layer_norm.load_state_dict({k[len("layer_norm."):]: v for k, v in state.items() if k.startswith("layer_norm.")})
     model.config.decoder_layers = len(info["layers"])
-    model.save_pretrained(out_dir)
+    return model
+
+
+def assemble(teacher_dir: str, student_dir: str, out_dir: str) -> None:
+    """To'liq HF modelni diskka yozadi (CT2'ga o'girish uchun `to_ct2` diskni kamroq talab qiladi)."""
+    build_model(teacher_dir, student_dir).save_pretrained(out_dir)
     AutoTokenizer.from_pretrained(teacher_dir).save_pretrained(out_dir)
+
+
+def to_ct2(teacher_dir: str, student_dir: str, out_dir: str, quantization: str = "int8") -> None:
+    """O'quvchini HF nusxasini diskka yozmasdan CTranslate2'ga o'giradi (konfiguratsiya va
+    tokenizator o'qituvchi papkasidan, og'irliklar xotiradagi yig'ilgan modeldan)."""
+    from ctranslate2.converters import TransformersConverter
+
+    model = build_model(teacher_dir, student_dir)
+
+    class _Conv(TransformersConverter):
+        def load_model(self, model_class, model_name_or_path, **kwargs):
+            return model
+
+    _Conv(teacher_dir, copy_files=["tokenizer.json"]).convert(out_dir, quantization=quantization, force=True)
 
 
 def main() -> None:
@@ -227,6 +246,8 @@ def main() -> None:
     ap.add_argument("--eval-limit", type=int, default=300)
     ap.add_argument("--smoothing", type=float, default=0.1)
     ap.add_argument("--seed", type=int, default=13)
+    ap.add_argument("--keep-last", action="store_true",
+                    help="har baholashda `last` ham yoziladi (+600 MB disk); aks holda faqat `best` va oxirida `last`")
     ap.add_argument("--init", default="", help="oldingi o'quvchi papkasi: dekoder shundan boshlanadi "
                     "(davom ettirish yoki undan sayozroq o'quvchi; --layers uning qatlamlari ichidan bo'lishi kerak)")
     args = ap.parse_args()
@@ -302,7 +323,8 @@ def main() -> None:
                 running = 0.0
             if step % args.eval_steps == 0 or step == total:
                 score = run_eval(step)
-                st.save(out / "last", layers)
+                if args.keep_last or step >= total:
+                    st.save(out / "last", layers)
                 if score > best:
                     best = score
                     st.save(out / "best", layers)
