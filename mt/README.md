@@ -117,4 +117,10 @@ breaker'ga hisoblanmaydi (`ProviderDeclined`).
 - **Beam**: 1 vs 2 bot testida -0.32 chrF++ (61.01 -> 60.69); CPU'da ~10-25% tezroq.
   Hozircha beam 2 qoldirildi (oqimlar tuzatishi yetarli yutuq berdi).
 
+- **Navbat** (`mt/server.py` `Scheduler`, 2026-11-16): 2026-11-15 da bir foydalanuvchining 8 ta
+  4096 belgili bo'lagi bir vaqtda kelgan; bitta ishchi ularni ketma-ket qilgan — 1-si 35 s da,
+  qolgan 7 tasi bot voz kechgandan keyin (69..326 s) tugagan. Server 5.5 daqiqa keraksiz ishlagan,
+  12 ta timeout breaker'ga hisoblangan. Endi: qisqa matn oldin; muddatga (55 s) sig'maydigan ish
+  boshlanmasdan 503 `busy` (rad etish, breaker'ga tushmaydi). Sinov: `python -m mt.test_server`.
+
 Keyingi tezlatish yo'li — dekoderni ixchamlash (24 qatlam -> kamroq, distillatsiya).
