@@ -246,6 +246,8 @@ def main() -> None:
     ap.add_argument("--eval-limit", type=int, default=300)
     ap.add_argument("--smoothing", type=float, default=0.1)
     ap.add_argument("--seed", type=int, default=13)
+    ap.add_argument("--grad-ckpt", action="store_true",
+                    help="dekoderda gradient checkpointing (VRAM tejaydi, ~25%% sekin) — 16+ qatlam uchun")
     ap.add_argument("--keep-last", action="store_true",
                     help="har baholashda `last` ham yoziladi (+600 MB disk); aks holda faqat `best` va oxirida `last`")
     ap.add_argument("--init", default="", help="oldingi o'quvchi papkasi: dekoder shundan boshlanadi "
@@ -263,6 +265,8 @@ def main() -> None:
     keep_ids = torch.tensor(sorted(tok.convert_tokens_to_ids(keep_tokens)))
     layers = [int(x) for x in args.layers.split(",")]
     st = Student(args.teacher, layers, keep_ids, device)
+    if args.grad_ckpt:
+        st.model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     if args.init:
         from safetensors.torch import load_file
         src_layers = json.loads((Path(args.init) / "student.json").read_text())["layers"]

@@ -130,11 +130,18 @@ Qayta o'qitmasdan qatlam tashlash yaroqsiz (dec12: 58.0 -> 32.1).
 | v1p (production) | 1251 MB | 61.01 | 54.86 | — | — |
 | s12 (318k juftlik, 2564 qadam) | 948 MB | 60.01 | 52.44 | −3.7 | −1.2 |
 | s12b (+141k juftlik, +3700 qadam) | 948 MB | 60.50 | 52.94 | −2.8 | −1.1 |
+| s12c (+308k en→X va bot juftligi, +3300 qadam) | 948 MB | 60.38 | 52.92 | −2.8 | −1.1 |
 
 Server tezligi (2 oqim, beam 2, v1p bilan navbatma-navbat, s12): qisqa gap 0.97 -> 0.54 s
 (1.8x), o'rta 2.9 -> 2.1 s (1.4x), ~965 belgi 6.7–8.1 -> 4.9–5.1 s (1.3–1.6x); RAM ~ −300 MB.
 
 Xulosa: asosiy yo'qotish — inglizchadan boshqa tillarga (maqsad tilda matn kam: yo'nalishiga
 4–9 ming gap). Ma'lumot qo'shish yordam beryapti (en→ru −5.0 -> −2.5, uz→ru −2.8 -> −1.6).
-Keyingi qadam: yana o'qituvchi ma'lumoti (har maqsad tilga 20k+ gap) va `--init` bilan davom.
+3-tur (s12c) yutuq bermadi — 12 qatlamli dekoder sig'imi chegarasida, ma'lumot qo'shish endi yordam bermaydi.
+
+Production trafigi (14 kun, muvaffaqiyatli): en→uz 21%, **en→am 16%**, uz→en 10.6%, ru→uz 8.7%,
+uz→ru 6.2%, am→en 6%, en→id 4.9%, id→en 4.4%, auto→uz 4.3%, en→om 1.6%. en→X (am/id/om) ~23% —
+aynan s12'ning zaif joyi (en→am −3.3). Shu sababli 12 qatlam deploy qilinmaydi.
+Keyingi: 16 qatlam (`--layers 0,2,3,5,6,8,9,11,12,14,15,17,18,20,21,23 --grad-ckpt --max-tokens 350`;
+6 GB VRAM'ga checkpointing'siz sig'maydi).
 s12b serverda `/root/mt-stage/` da (xizmatga ulanmagan).
