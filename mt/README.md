@@ -131,6 +131,7 @@ Qayta o'qitmasdan qatlam tashlash yaroqsiz (dec12: 58.0 -> 32.1).
 | s12 (318k juftlik, 2564 qadam) | 948 MB | 60.01 | 52.44 | −3.7 | −1.2 |
 | s12b (+141k juftlik, +3700 qadam) | 948 MB | 60.50 | 52.94 | −2.8 | −1.1 |
 | s12c (+308k en→X va bot juftligi, +3300 qadam) | 948 MB | 60.38 | 52.92 | −2.8 | −1.1 |
+| **s16** (16 qatlam, 767k juftlik, 3000 qadam) | 1049 MB | **60.92** | **54.02** | −1.1 | −0.6 |
 
 Server tezligi (2 oqim, beam 2, v1p bilan navbatma-navbat, s12): qisqa gap 0.97 -> 0.54 s
 (1.8x), o'rta 2.9 -> 2.1 s (1.4x), ~965 belgi 6.7–8.1 -> 4.9–5.1 s (1.3–1.6x); RAM ~ −300 MB.
@@ -144,4 +145,11 @@ uz→ru 6.2%, am→en 6%, en→id 4.9%, id→en 4.4%, auto→uz 4.3%, en→om 1.
 aynan s12'ning zaif joyi (en→am −3.3). Shu sababli 12 qatlam deploy qilinmaydi.
 Keyingi: 16 qatlam (`--layers 0,2,3,5,6,8,9,11,12,14,15,17,18,20,21,23 --grad-ckpt --max-tokens 350`;
 6 GB VRAM'ga checkpointing'siz sig'maydi).
+
+**s16 natijasi (2026-11-16):** deploy mezoniga mos (bot ≥ 60.8, FLORES yo'qotishi ≤ 1.0).
+Trafikdagi asosiy yo'nalishlar (FLORES, v1p -> s16): en→uz 51.92 -> 51.85, en→am 37.94 -> 36.54,
+uz→en 60.42 -> 59.12, ru→uz 47.23 -> 47.61, uz→ru 49.07 -> 48.99, en→id 67.48 -> 67.07.
+Bot testi: en→uz 66.93 -> 67.59, ru→uz 55.85 -> 56.20, uz→en 65.59 -> 64.54, en→ru 63.48 -> 61.77.
+Server tezligi: o'lchanmoqda (`/root/mt-stage/speed-s16.log`). Checkpoint: `/var/tmp/myllm-work/s16/best`
+(laptop), model: `/root/mt-stage/nllb-1.3B-tarjimon-s16-ct2-int8` (server).
 s12b serverda `/root/mt-stage/` da (xizmatga ulanmagan).

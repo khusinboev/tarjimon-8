@@ -38,3 +38,12 @@ Keyingi qadamlar:
 3. Serverda tezlik: `bench/srv_speed.py` -> `/root/mt-stage/`, `setsid nohup` bilan.
 4. Deploy mezoni: bot testi ≥ 60.8 va FLORES yo'qotishi ≤ 1.0.
 Diqqat: laptop diski ~13 GB bo'sh — teacher3 + o'qitish uchun yetadi (~2–3 GB).
+
+## 2026-11-16 ertalab
+- **s16** (16 qatlamli dekoder) tayyor: bot 60.92 (v1p 61.01), FLORES 54.02 (54.86) — deploy mezoniga mos.
+  Server tezligi `/root/mt-stage/speed-s16.log` da (laptop o'chishidan oldin ishga tushirildi). Tezlik
+  ≥1.2x bo'lsa — deploy (MT_MODEL_DIR -> s16, orqaga qaytish: v1p papkasi).
+- Og'ir fayllar `/var/tmp/myllm-work` da (`/home` to'la): teacher3.jsonl, s16/best, s12c, s16 CT2.
+- Production tuzatishlari (deploy qilingan): PR #11 MT navbati (qisqa oldin, muddatli rad), PR #12
+  maqsad til `auto` (142 foydalanuvchi, zaxira `/root/backup-019-auto-target.csv`).
+- Ochiq: "matn allaqachon maqsad tilida" UX, oromo qisqa salomlari aniqlanmaydi.
