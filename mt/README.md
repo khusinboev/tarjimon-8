@@ -119,7 +119,7 @@ breaker'ga hisoblanmaydi (`ProviderDeclined`).
 
 Keyingi tezlatish yo'li — dekoderni ixchamlash (24 qatlam -> kamroq, distillatsiya).
 
-## Dekoder distillatsiyasi (2026-11-13, tajriba — deploy QILINMAGAN)
+## Dekoder distillatsiyasi (2026-11-13..16) — s16 production'da (2026-11-16)
 
 `mt/train/distill.py`: enkoder + embedding muzlatilgan, dekoder 24 -> 12 qatlam
 (o'qituvchining 0,2,…,20,23-qatlamlari), o'qituvchi (v1) tarjimalaridan o'qitiladi.
