@@ -12,7 +12,7 @@ WorkingDirectory=/home/tarjimon8/app
 # v1p — v1 (bot korpusida LoRA fine-tune) + lug'at 256k -> 133k (22 til),
 # mt/tools/prune_vocab.py; sifat bir xil (FLORES devtest 44 yo'nalish 54.86 = 54.86).
 # Orqaga qaytish: nllb-1.3B-tarjimon-v1-ct2-int8 yoki nllb-200-distilled-1.3B-ct2-int8.
-Environment=MT_MODEL_DIR=/home/tarjimon8/models/nllb-1.3B-tarjimon-v1p-ct2-int8
+Environment=MT_MODEL_DIR=/home/tarjimon8/models/nllb-1.3B-tarjimon-s16-ct2-int8
 Environment=MT_LID_PATH=/home/tarjimon8/models/lid/lid.176.ftz
 Environment=MT_HOST=127.0.0.1
 Environment=MT_PORT=8790

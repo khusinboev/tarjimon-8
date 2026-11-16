@@ -150,6 +150,6 @@ Keyingi: 16 qatlam (`--layers 0,2,3,5,6,8,9,11,12,14,15,17,18,20,21,23 --grad-ck
 Trafikdagi asosiy yo'nalishlar (FLORES, v1p -> s16): en→uz 51.92 -> 51.85, en→am 37.94 -> 36.54,
 uz→en 60.42 -> 59.12, ru→uz 47.23 -> 47.61, uz→ru 49.07 -> 48.99, en→id 67.48 -> 67.07.
 Bot testi: en→uz 66.93 -> 67.59, ru→uz 55.85 -> 56.20, uz→en 65.59 -> 64.54, en→ru 63.48 -> 61.77.
-Server tezligi: o'lchanmoqda (`/root/mt-stage/speed-s16.log`). Checkpoint: `/var/tmp/myllm-work/s16/best`
+Server tezligi (2 oqim, beam 2, median): qisqa 0.96 -> 0.68 s, o'rta 2.94 -> 1.99 s, uzun 7.0 -> 5.4 s (1.1-1.5x).
 (laptop), model: `/root/mt-stage/nllb-1.3B-tarjimon-s16-ct2-int8` (server).
 s12b serverda `/root/mt-stage/` da (xizmatga ulanmagan).
