@@ -47,3 +47,12 @@ Diqqat: laptop diski ~13 GB bo'sh — teacher3 + o'qitish uchun yetadi (~2–3 G
 - Production tuzatishlari (deploy qilingan): PR #11 MT navbati (qisqa oldin, muddatli rad), PR #12
   maqsad til `auto` (142 foydalanuvchi, zaxira `/root/backup-019-auto-target.csv`).
 - Ochiq: "matn allaqachon maqsad tilida" UX, oromo qisqa salomlari aniqlanmaydi.
+
+## Disk (2026-11-17)
+`/home` to'la edi — og'ir fayllar Windows bo'limiga (`nvme0n1p5`, "New Volume", NTFS) ko'chirildi,
+eski joylarida symlink: `myllm/train-venv`, `myllm/hf-base`, `myllm/models` ->
+`/media/adhambek/New Volume/myllm-store/...`; s16 checkpoint: `.../myllm-store/ckpt/s16/best`.
+**Qayta yoqilgandan keyin bo'lim avtomatik ulanmaydi** — ishdan oldin:
+`udisksctl mount -b /dev/nvme0n1p5` (parolsiz ishlaydi). Ulanmasa symlinklar bo'sh.
+Korpusdan olingan ma'lumot (`data/`, teacher*.jsonl) NTFS'ga ko'chirilmadi — u yerda ruxsatlar
+hamma uchun ochiq; `/home` dagi 700 papkada qoladi.
